@@ -481,6 +481,7 @@ mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
     use axum::http::{Method, Request};
+    use burd_protocol::sha256_hex;
     use serde_json::Value;
     use std::ffi::OsString;
     use std::fs;
@@ -514,14 +515,20 @@ mod tests {
     }
 
     async fn request_json(method: Method, path: &str) -> (StatusCode, Value) {
+        request_json_with_auth(method, path, None).await
+    }
+
+    async fn request_json_with_auth(
+        method: Method,
+        path: &str,
+        token: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder().method(method).uri(path);
+        if let Some(token) = token {
+            builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
         let response = router(test_state())
-            .oneshot(
-                Request::builder()
-                    .method(method)
-                    .uri(path)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(builder.body(Body::empty()).unwrap())
             .await
             .unwrap();
         let status = response.status();
@@ -597,6 +604,31 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn protected_endpoint_accepts_valid_token_and_rejects_invalid_token() {
+        let _lock = env_lock().await;
+        let env = TestEnv::new(true);
+        env.write_auth_config();
+
+        let (missing_status, missing_value) = request_json(Method::GET, "/api/v1/config").await;
+        assert_eq!(missing_status, StatusCode::UNAUTHORIZED);
+        assert_eq!(missing_value["status"], "unauthorized");
+
+        let (invalid_status, invalid_value) =
+            request_json_with_auth(Method::GET, "/api/v1/config", Some("invalid-token")).await;
+        assert_eq!(invalid_status, StatusCode::UNAUTHORIZED);
+        assert_eq!(invalid_value["status"], "unauthorized");
+
+        let (valid_status, valid_value) =
+            request_json_with_auth(Method::GET, "/api/v1/config", Some(&env.api_token)).await;
+        assert_eq!(valid_status, StatusCode::OK);
+        assert_eq!(valid_value["private_key_path"], "[redacted]");
+        assert_eq!(valid_value["api_token_hash"], "[redacted]");
+        let serialized = serde_json::to_string(&valid_value).unwrap();
+        assert!(!serialized.contains(&env.api_token));
+        assert!(!serialized.contains(&env.api_token_hash));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn redacted_config_does_not_expose_secret_values() {
         let _lock = env_lock().await;
         let env = TestEnv::new(true);
@@ -645,6 +677,7 @@ mod tests {
         state_dir: PathBuf,
         config_path: PathBuf,
         private_key_path: PathBuf,
+        api_token: String,
         api_token_hash: String,
     }
 
@@ -654,6 +687,8 @@ mod tests {
             fs::create_dir_all(&state_dir).unwrap();
             let config_path = state_dir.join("agent.json");
             let private_key_path = state_dir.join("agent.key");
+            let api_token = "burd-api-local-test-token".to_string();
+            let api_token_hash = sha256_hex(api_token.as_bytes());
             let previous_home = std::env::var_os("BURD_AGENT_HOME");
             let previous_config = std::env::var_os("BURD_AGENT_CONFIG");
 
@@ -670,7 +705,8 @@ mod tests {
                 state_dir,
                 config_path,
                 private_key_path,
-                api_token_hash: "0123456789abcdef0123456789abcdef".to_string(),
+                api_token,
+                api_token_hash,
             }
         }
 

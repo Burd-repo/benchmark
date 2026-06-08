@@ -95,6 +95,12 @@ after the June 2026 reliability pass.
 - Local API contract tests cover health, lightweight public endpoints,
   protected endpoint 401 behavior when token auth is enabled, and config/raw
   redaction expectations without starting `serve`.
+- Persistent local contract tests cover signed reports, local challenge
+  verification, registration payloads, benchmark history, API token status,
+  raw/config redaction, and provider readiness states.
+- Contract tests create isolated temporary `BURD_AGENT_HOME` and
+  `BURD_AGENT_CONFIG` paths. They do not read or write the user's real
+  `~/.burd` directory and clean up the temp state automatically.
 
 ## Still Mocked Or Future
 
@@ -124,3 +130,22 @@ after the June 2026 reliability pass.
 - `~/.burd/uptime.json`: heartbeat history.
 - `~/.burd/actions.json`: action records.
 - `~/.burd/logs.json`: task logs.
+
+## Contract Test Coverage
+
+The current local test suite protects the Provider Agent contracts without
+starting the API server or depending on host state:
+
+- signed report envelope fields, canonical hash, Ed25519 signature, local
+  verification, and absence of private key/API token material;
+- mock challenge response shape, nonce binding, expiry handling, required test
+  failures, wrong nonce rejection, signed report hash/signature checks, and
+  absence of secret material;
+- registration payload shape, latest signed report hash, public identity,
+  capabilities, pricing, verification summary, and `secrets_included: false`;
+- benchmark history empty/list/latest/export behavior, signed report metadata,
+  challenge IDs, warnings, and no credential material;
+- API token status, token verification success/failure, protected endpoint
+  valid/invalid token behavior, and redacted config/raw payloads;
+- local provider readiness classifications for `uninitialized`,
+  `not_verified`, `ready_locally`, and `failed` states.

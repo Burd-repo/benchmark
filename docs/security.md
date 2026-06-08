@@ -26,6 +26,10 @@ Implemented now:
   the raw API response.
 - Raw data includes `redacted: true` and `redacted_fields`.
 - Actions and logs record important local operations.
+- Contract tests verify that signed reports, challenge responses, registration
+  payloads, benchmark history, config, and raw data do not expose private key
+  material, API token values, or API token hashes. These tests run against
+  isolated temporary agent homes instead of the real `~/.burd` directory.
 
 Not implemented yet:
 

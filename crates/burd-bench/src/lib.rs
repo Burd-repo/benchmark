@@ -15,6 +15,9 @@ pub mod score;
 pub mod stability;
 pub mod verification;
 
+#[cfg(test)]
+mod contract_tests;
+
 pub use actions::{
     ActionStatus, Task, TaskLogs, load_actions, load_logs, load_logs_for_task, logs_summary,
     record_action,

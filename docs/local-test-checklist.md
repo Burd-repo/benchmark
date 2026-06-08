@@ -13,6 +13,11 @@ cargo build
 .\target\debug\burd-agent.exe --help
 ```
 
+`cargo test` includes local contract tests for signed reports, mock challenges,
+registration payloads, benchmark history, API token status, redaction, and
+provider readiness. Those tests set temporary `BURD_AGENT_HOME` and
+`BURD_AGENT_CONFIG` values and must not touch the real `~/.burd` state.
+
 ## Fast Local Commands
 
 These commands do not start the local API server and do not run an infinite
@@ -73,4 +78,3 @@ Use the API script to start the local server, test endpoints, and stop it by PID
 ```powershell
 .\scripts\test-api.ps1
 ```
-

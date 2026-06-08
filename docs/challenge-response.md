@@ -67,6 +67,11 @@ Local validation:
 - challenge response signature must verify;
 - agent and benchmark versions must meet the challenge minimums.
 
+Contract tests cover the local mock challenge flow without starting the API
+server: a passing lightweight challenge, expired challenge rejection, required
+test failures, wrong nonce rejection, response shape, signed report binding, and
+absence of private key/API token material in the response.
+
 Backend future:
 
 - production challenges;
