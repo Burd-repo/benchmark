@@ -92,6 +92,9 @@ after the June 2026 reliability pass.
   signed reports, uptime, actions, logs, verification, pricing, and earnings.
 - Provider Console includes Overview, Hardware, Benchmarks, History, Uptime,
   Security, Registration, Logs, and Raw Data.
+- Local API contract tests cover health, lightweight public endpoints,
+  protected endpoint 401 behavior when token auth is enabled, and config/raw
+  redaction expectations without starting `serve`.
 
 ## Still Mocked Or Future
 

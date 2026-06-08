@@ -475,3 +475,265 @@ fn system_and_score(agent_version: &str) -> (burd_hardware::SystemReport, burd_b
     let score = calculate_score(&system, Some(&fit), None, None, None, None);
     (system, score)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Method, Request};
+    use serde_json::Value;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::Mutex;
+    use tower::ServiceExt;
+
+    const TEST_AGENT_VERSION: &str = "test-agent";
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn test_state() -> Arc<AppState> {
+        Arc::new(AppState {
+            agent_version: TEST_AGENT_VERSION.to_string(),
+            host_uri: "http://127.0.0.1:8787".to_string(),
+            host: "127.0.0.1".to_string(),
+            auth_warning: Some(
+                "dev mode: local API token is not configured on loopback".to_string(),
+            ),
+            benchmark_status: RwLock::new(BenchmarkStatus {
+                status: "idle".to_string(),
+                last_report: None,
+            }),
+        })
+    }
+
+    async fn env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await
+    }
+
+    async fn request_json(method: Method, path: &str) -> (StatusCode, Value) {
+        let response = router(test_state())
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 10 * 1024 * 1024)
+            .await
+            .unwrap();
+        let value = serde_json::from_slice(&bytes).unwrap();
+        (status, value)
+    }
+
+    async fn get_json(path: &str) -> (StatusCode, Value) {
+        request_json(Method::GET, path).await
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn health_endpoint_contract_is_stable() {
+        let (status, value) = get_json("/health").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["agent_version"], TEST_AGENT_VERSION);
+        assert!(value.get("api_auth_warning").is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn lightweight_public_endpoints_keep_contracts() {
+        let _lock = env_lock().await;
+        let _env = TestEnv::new(false);
+        let cases = [
+            (
+                "/api/v1/uptime",
+                vec!["uptime_1d", "uptime_7d", "uptime_30d", "checks_total"],
+            ),
+            ("/api/v1/history", vec!["entries_total", "entries"]),
+            ("/api/v1/actions", vec![]),
+            ("/api/v1/logs", vec![]),
+            (
+                "/api/v1/challenge/mock",
+                vec!["challenge_id", "nonce", "policy"],
+            ),
+            ("/api/v1/benchmark/status", vec!["status", "last_report"]),
+        ];
+
+        for (path, keys) in cases {
+            let (status, value) = get_json(path).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            for key in keys {
+                assert!(value.get(key).is_some(), "{path} missing {key}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn protected_endpoints_return_token_contract_when_auth_enabled() {
+        let _lock = env_lock().await;
+        let env = TestEnv::new(true);
+        env.write_auth_config();
+        let cases = [
+            (Method::GET, "/api/v1/report"),
+            (Method::POST, "/api/v1/report/signed"),
+            (Method::GET, "/api/v1/raw"),
+            (Method::GET, "/api/v1/config"),
+        ];
+
+        for (method, path) in cases {
+            let (status, value) = request_json(method, path).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
+            assert_eq!(value["status"], "unauthorized");
+            assert_eq!(value["error"], "missing or invalid API token");
+            assert_eq!(value["hint"], "send Authorization: Bearer <token>");
+            assert_eq!(value["host"], "127.0.0.1");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn redacted_config_does_not_expose_secret_values() {
+        let _lock = env_lock().await;
+        let env = TestEnv::new(true);
+        env.write_auth_config();
+        let value = redacted_config_value().unwrap();
+        let serialized = serde_json::to_string(&value).unwrap();
+
+        assert_eq!(value["private_key_path"], "[redacted]");
+        assert_eq!(value["api_token_hash"], "[redacted]");
+        assert!(!serialized.contains(env.private_key_path.to_str().unwrap()));
+        assert!(!serialized.contains(env.api_token_hash.as_str()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn raw_data_fixture_keeps_redaction_contract() {
+        let raw = serde_json::json!({
+            "redacted": true,
+            "redacted_fields": [
+                "private_key",
+                "secret_key_base64",
+                "private_key_path",
+                "api_token",
+                "api_token_hash",
+                "credentials"
+            ],
+            "config_redacted": {
+                "provider_id": "provider",
+                "private_key_path": "[redacted]",
+                "api_token_hash": "[redacted]"
+            },
+            "latest_signed_report_summary": {
+                "report_hash": "hash",
+                "signature_valid_locally": true
+            }
+        });
+        let serialized = serde_json::to_string(&raw).unwrap();
+
+        assert_eq!(raw["redacted"], true);
+        assert!(!serialized.contains("super-secret-token"));
+        assert!(!serialized.contains("secret-key-material"));
+    }
+
+    struct TestEnv {
+        previous_home: Option<OsString>,
+        previous_config: Option<OsString>,
+        state_dir: PathBuf,
+        config_path: PathBuf,
+        private_key_path: PathBuf,
+        api_token_hash: String,
+    }
+
+    impl TestEnv {
+        fn new(api_auth_enabled: bool) -> Self {
+            let state_dir = unique_temp_dir(api_auth_enabled);
+            fs::create_dir_all(&state_dir).unwrap();
+            let config_path = state_dir.join("agent.json");
+            let private_key_path = state_dir.join("agent.key");
+            let previous_home = std::env::var_os("BURD_AGENT_HOME");
+            let previous_config = std::env::var_os("BURD_AGENT_CONFIG");
+
+            // SAFETY: these tests serialize Burd env var mutation through ENV_LOCK,
+            // and no background threads are spawned by the test body.
+            unsafe {
+                std::env::set_var("BURD_AGENT_HOME", &state_dir);
+                std::env::set_var("BURD_AGENT_CONFIG", &config_path);
+            }
+
+            Self {
+                previous_home,
+                previous_config,
+                state_dir,
+                config_path,
+                private_key_path,
+                api_token_hash: "0123456789abcdef0123456789abcdef".to_string(),
+            }
+        }
+
+        fn write_auth_config(&self) {
+            let config = serde_json::json!({
+                "provider_id": "burd-provider-test",
+                "machine_id": "burd-machine-test",
+                "api_url": "https://api.burd.cloud",
+                "preferred_provider": "ollama",
+                "benchmark_profile": "auto",
+                "telemetry_enabled": false,
+                "created_at": "2026-06-08T00:00:00Z",
+                "public_key": "public-key",
+                "key_algorithm": "ed25519",
+                "private_key_path": self.private_key_path,
+                "email": null,
+                "website": null,
+                "country": null,
+                "city": null,
+                "region": null,
+                "api_token_hash": self.api_token_hash,
+                "api_auth_enabled": true,
+                "api_bind_host": "127.0.0.1",
+                "api_port": 8787,
+                "default_network_endpoint": "https://www.cloudflare.com/cdn-cgi/trace"
+            });
+            fs::write(
+                &self.config_path,
+                serde_json::to_string_pretty(&config).unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            // SAFETY: tests that mutate these env vars are serialized through ENV_LOCK.
+            unsafe {
+                if let Some(value) = &self.previous_home {
+                    std::env::set_var("BURD_AGENT_HOME", value);
+                } else {
+                    std::env::remove_var("BURD_AGENT_HOME");
+                }
+
+                if let Some(value) = &self.previous_config {
+                    std::env::set_var("BURD_AGENT_CONFIG", value);
+                } else {
+                    std::env::remove_var("BURD_AGENT_CONFIG");
+                }
+            }
+            let _ = fs::remove_dir_all(&self.state_dir);
+        }
+    }
+
+    fn unique_temp_dir(api_auth_enabled: bool) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "burd-api-local-test-{}-{}-{nanos}",
+            std::process::id(),
+            if api_auth_enabled { "auth" } else { "empty" }
+        ))
+    }
+}
