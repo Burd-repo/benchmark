@@ -24,6 +24,26 @@ Credits and license details are documented in `NOTICE.md` and
 cargo build
 ```
 
+On Windows PowerShell, use the debug binary directly until the agent is
+installed on `PATH`:
+
+```powershell
+.\target\debug\burd-agent.exe --help
+```
+
+For a complete safe local command checklist, see
+`docs/local-test-checklist.md`.
+
+Quick local validation:
+
+```powershell
+.\scripts\test-local.ps1
+```
+
+The script runs `cargo fmt`, `cargo test`, `cargo build`, and fast read-only
+agent commands. It does not start `serve`, does not start heartbeat loops, and
+does not run heavy benchmarks.
+
 ## Commands
 
 ```sh
@@ -197,8 +217,8 @@ secrets.
 
 Run:
 
-```sh
-burd-agent serve --host 127.0.0.1 --port 8787
+```powershell
+.\target\debug\burd-agent.exe serve --host 127.0.0.1 --port 8787
 ```
 
 Endpoints:
@@ -228,6 +248,30 @@ the local API. It follows the dark technical Burd design system from `SKILL.md`
 and includes Overview, Hardware, Benchmarks, History, Uptime, Security,
 Registration, Logs, and Raw Data.
 
+Open the UI in a browser at:
+
+```txt
+http://127.0.0.1:8787/
+```
+
+Stop the foreground server with `Ctrl+C`.
+
+If a local process is stuck during development, stop it from PowerShell:
+
+```powershell
+Get-Process burd-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+To test the API without leaving the server running:
+
+```powershell
+.\scripts\test-api.ps1
+```
+
+The script starts `serve` on `127.0.0.1:8787`, calls the primary GET endpoints,
+records output under `tmp/test-output/`, and stops the server by PID in a
+`finally` block.
+
 ## Limitations
 
 - Marketplace listing, payments, billing, login, job orchestration, and remote
@@ -243,11 +287,15 @@ Registration, Logs, and Raw Data.
 - `burd-agent serve --host 0.0.0.0` is possible but should be paired with
   `burd-agent api-token create --json`; without a token it emits a strong
   warning.
+- Current `cargo build` and `cargo test` may emit inherited warnings from
+  `third_party/llmfit/llmfit-core`. They do not block the local build/test flow
+  and are left untouched to preserve the upstream llmfit integration.
 
 ## Documentation
 
 - `docs/architecture.md`
 - `docs/current-state.md`
+- `docs/local-test-checklist.md`
 - `docs/provider-console-parity.md`
 - `docs/security.md`
 - `docs/provider-identity.md`

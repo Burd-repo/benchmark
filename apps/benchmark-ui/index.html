@@ -9,143 +9,182 @@
   <body>
     <main class="shell">
       <header class="top">
-        <div>
+        <div class="top-copy">
           <div class="eyebrow"><span></span><strong>BURD PROVIDER CONSOLE</strong></div>
-          <h1>Operacao local do provider GPU.</h1>
+          <h1>Provider validation console.</h1>
           <p>
-            Identidade, benchmark, assinatura, uptime, verificacao e readiness para preparar a maquina ao marketplace Burd.
+            Local GPU readiness, signed reports, verification signals, uptime,
+            registration payload and redacted raw data for the Burd provider flow.
           </p>
         </div>
-        <div class="status-block">
-          <div class="label-row"><span>Status</span><strong id="status">Loading</strong></div>
-          <div class="score" id="score">--</div>
-          <div class="tier" id="tier">No report</div>
-          <div class="button-row">
-            <button id="runBenchmark">Executar benchmark</button>
-            <button id="signReport">Gerar relatorio assinado</button>
-            <button id="runChallenge">Rodar challenge mock</button>
+
+        <aside class="status-block">
+          <div class="label-row"><span>API</span><strong id="healthStatus">Loading</strong></div>
+          <div class="score" id="scoreHero">--</div>
+          <div class="tier-line">
+            <strong id="tierHero">No tier</strong>
+            <span id="readinessHero">Readiness pending</span>
           </div>
-        </div>
+          <div class="button-row">
+            <button id="refreshData" type="button">Refresh</button>
+            <button id="runBenchmark" type="button">Executar benchmark</button>
+            <button id="signReport" type="button">Gerar relatorio assinado</button>
+            <button id="runChallenge" type="button">Rodar challenge mock</button>
+          </div>
+          <p class="action-message" id="actionMessage">Idle</p>
+        </aside>
       </header>
 
+      <section class="notice hidden" id="apiNotice">
+        <strong>API local da Burd não está rodando. Execute:</strong>
+        <code>.\target\debug\burd-agent.exe serve --host 127.0.0.1 --port 8787</code>
+      </section>
+
       <nav class="tabs" aria-label="Provider console sections">
-        <button class="tab active" data-tab="overview">Overview</button>
-        <button class="tab" data-tab="hardware">Hardware</button>
-        <button class="tab" data-tab="benchmarks">Benchmarks</button>
-        <button class="tab" data-tab="history">History</button>
-        <button class="tab" data-tab="uptime">Uptime</button>
-        <button class="tab" data-tab="security">Security</button>
-        <button class="tab" data-tab="registration">Registration</button>
-        <button class="tab" data-tab="logs">Logs</button>
-        <button class="tab" data-tab="raw">Raw Data</button>
+        <button class="tab active" data-tab="overview" type="button">Overview</button>
+        <button class="tab" data-tab="hardware" type="button">Hardware</button>
+        <button class="tab" data-tab="benchmarks" type="button">Benchmarks</button>
+        <button class="tab" data-tab="history" type="button">History</button>
+        <button class="tab" data-tab="uptime" type="button">Uptime</button>
+        <button class="tab" data-tab="security" type="button">Security</button>
+        <button class="tab" data-tab="registration" type="button">Registration</button>
+        <button class="tab" data-tab="logs" type="button">Logs</button>
+        <button class="tab" data-tab="raw" type="button">Raw Data</button>
       </nav>
 
       <section class="metrics">
-        <article><span>Provider</span><strong id="providerId">--</strong></article>
-        <article><span>Machine</span><strong id="machineId">--</strong></article>
-        <article><span>GPU</span><strong id="gpu">--</strong></article>
-        <article><span>Pricing</span><strong id="pricing">--</strong></article>
+        <article><span>Provider</span><strong id="metricProvider">--</strong></article>
+        <article><span>Machine</span><strong id="metricMachine">--</strong></article>
+        <article><span>Status</span><strong id="metricOnline">--</strong></article>
+        <article><span>Price</span><strong id="metricPrice">--</strong></article>
+        <article><span>GPU</span><strong id="metricGpu">--</strong></article>
+        <article><span>Backend</span><strong id="metricBackend">--</strong></article>
+        <article><span>Signed</span><strong id="metricSigned">--</strong></article>
+        <article><span>Challenge</span><strong id="metricChallenge">--</strong></article>
       </section>
 
       <section class="tab-panel active" data-panel="overview">
-        <div class="section-head"><span>Overview</span><strong id="readiness">Readiness pending</strong></div>
+        <div class="section-head"><span>Overview</span><strong id="overviewStamp">Awaiting API</strong></div>
         <div class="grid four">
-          <article class="tile"><span>Audit</span><strong id="audit">--</strong></article>
-          <article class="tile"><span>Uptime 1d</span><strong id="uptime1d">--</strong></article>
-          <article class="tile"><span>Uptime 7d</span><strong id="uptime7d">--</strong></article>
-          <article class="tile"><span>Uptime 30d</span><strong id="uptime30d">--</strong></article>
-          <article class="tile"><span>Active jobs</span><strong id="activeJobs">0</strong></article>
-          <article class="tile"><span>Backend</span><strong id="backend">--</strong></article>
-          <article class="tile"><span>Signed report</span><strong id="signedStatus">--</strong></article>
-          <article class="tile"><span>Challenge</span><strong id="challengeStatus">--</strong></article>
-          <article class="tile"><span>Fraud risk</span><strong id="fraudRisk">--</strong></article>
+          <article class="tile"><span>Provider ID</span><strong id="overviewProvider">--</strong></article>
+          <article class="tile"><span>Machine ID</span><strong id="overviewMachine">--</strong></article>
+          <article class="tile"><span>Online</span><strong id="overviewOnline">--</strong></article>
+          <article class="tile"><span>Burd Score</span><strong id="overviewScore">--</strong></article>
+          <article class="tile"><span>Tier</span><strong id="overviewTier">--</strong></article>
+          <article class="tile"><span>Readiness</span><strong id="overviewReadiness">--</strong></article>
+          <article class="tile"><span>GPU</span><strong id="overviewGpu">--</strong></article>
+          <article class="tile"><span>Backend</span><strong id="overviewBackend">--</strong></article>
+          <article class="tile"><span>Suggested price</span><strong id="overviewPrice">--</strong></article>
+          <article class="tile"><span>Uptime 1d</span><strong id="overviewUptime1d">--</strong></article>
+          <article class="tile"><span>Uptime 7d</span><strong id="overviewUptime7d">--</strong></article>
+          <article class="tile"><span>Uptime 30d</span><strong id="overviewUptime30d">--</strong></article>
+          <article class="tile"><span>Signed report</span><strong id="overviewSigned">--</strong></article>
+          <article class="tile"><span>Challenge</span><strong id="overviewChallenge">--</strong></article>
+          <article class="tile"><span>Fraud risk</span><strong id="overviewFraud">--</strong></article>
+          <article class="tile"><span>Backend verification</span><strong id="overviewBackendVerification">--</strong></article>
         </div>
       </section>
 
       <section class="tab-panel" data-panel="hardware">
-        <div class="section-head"><span>Hardware</span><strong>Inventory</strong></div>
-        <div class="grid two">
-          <article class="tile wide"><span>CPU</span><strong id="cpu">--</strong></article>
-          <article class="tile"><span>RAM</span><strong id="ram">--</strong></article>
-          <article class="tile"><span>VRAM</span><strong id="vram">--</strong></article>
-          <article class="tile"><span>Driver</span><strong id="driver">--</strong></article>
-          <article class="tile"><span>CUDA</span><strong id="cuda">--</strong></article>
-          <article class="tile"><span>ROCm</span><strong id="rocm">--</strong></article>
-          <article class="tile"><span>Disk free</span><strong id="diskFree">--</strong></article>
-          <article class="tile"><span>Network</span><strong id="networkStatus">--</strong></article>
+        <div class="section-head"><span>Hardware</span><strong id="hardwareSummary">Inventory</strong></div>
+        <div class="grid four">
+          <article class="tile wide"><span>CPU</span><strong id="hardwareCpu">--</strong></article>
+          <article class="tile"><span>RAM</span><strong id="hardwareRam">--</strong></article>
+          <article class="tile wide"><span>GPU</span><strong id="hardwareGpu">--</strong></article>
+          <article class="tile"><span>VRAM</span><strong id="hardwareVram">--</strong></article>
+          <article class="tile"><span>Backend</span><strong id="hardwareBackend">--</strong></article>
+          <article class="tile"><span>Driver</span><strong id="hardwareDriver">--</strong></article>
+          <article class="tile"><span>CUDA</span><strong id="hardwareCuda">--</strong></article>
+          <article class="tile"><span>ROCm</span><strong id="hardwareRocm">--</strong></article>
+          <article class="tile"><span>Vulkan</span><strong id="hardwareVulkan">--</strong></article>
+          <article class="tile"><span>Disk free</span><strong id="hardwareDisk">--</strong></article>
+          <article class="tile"><span>Network</span><strong id="hardwareNetwork">--</strong></article>
+          <article class="tile"><span>Architecture</span><strong id="hardwareArch">--</strong></article>
         </div>
         <pre id="gpuModels">[]</pre>
       </section>
 
       <section class="tab-panel" data-panel="benchmarks">
-        <div class="section-head"><span>Benchmarks</span><strong>Latest signals</strong></div>
-        <div class="grid two">
-          <article class="tile"><span>LLM TPS</span><strong id="llmTps">--</strong></article>
-          <article class="tile"><span>TTFT</span><strong id="ttft">--</strong></article>
-          <article class="tile"><span>Stability</span><strong id="stability">--</strong></article>
-          <article class="tile"><span>Network</span><strong id="network">--</strong></article>
-          <article class="tile"><span>Disk</span><strong id="disk">--</strong></article>
-          <article class="tile"><span>Models analyzed</span><strong id="modelsAnalyzed">--</strong></article>
+        <div class="section-head"><span>Benchmarks</span><strong id="benchmarkSummary">Latest signals</strong></div>
+        <div class="grid four">
+          <article class="tile"><span>LLM benchmark</span><strong id="benchLlm">--</strong></article>
+          <article class="tile"><span>Stability</span><strong id="benchStability">--</strong></article>
+          <article class="tile"><span>Network</span><strong id="benchNetwork">--</strong></article>
+          <article class="tile"><span>Disk</span><strong id="benchDisk">--</strong></article>
+          <article class="tile"><span>Fit analysis</span><strong id="benchFit">--</strong></article>
+          <article class="tile"><span>Models analyzed</span><strong id="benchModels">--</strong></article>
+          <article class="tile"><span>Runnable models</span><strong id="benchRunnable">--</strong></article>
+          <article class="tile"><span>Benchmark status</span><strong id="benchRunStatus">--</strong></article>
         </div>
+        <div class="list" id="fitList"></div>
       </section>
 
       <section class="tab-panel" data-panel="history">
         <div class="section-head"><span>History</span><strong id="historyCount">0 entries</strong></div>
         <div class="grid four">
-          <article class="tile"><span>Latest score</span><strong id="historyScore">--</strong></article>
-          <article class="tile"><span>Latest tier</span><strong id="historyTier">--</strong></article>
+          <article class="tile"><span>Latest run</span><strong id="historyLatest">--</strong></article>
+          <article class="tile"><span>Score</span><strong id="historyScore">--</strong></article>
           <article class="tile"><span>Signed</span><strong id="historySigned">--</strong></article>
-          <article class="tile"><span>Challenge</span><strong id="historyChallenge">--</strong></article>
+          <article class="tile"><span>Challenge ID</span><strong id="historyChallenge">--</strong></article>
         </div>
         <div id="historyList" class="list"></div>
         <pre id="historyJson">[]</pre>
       </section>
 
       <section class="tab-panel" data-panel="uptime">
-        <div class="section-head"><span>Uptime</span><strong id="checks">0 checks</strong></div>
-        <div class="grid two">
-          <article class="tile"><span>Last online</span><strong id="lastOnline">--</strong></article>
-          <article class="tile"><span>Last failed</span><strong id="lastFailed">--</strong></article>
-          <article class="tile"><span>Total checks</span><strong id="checksTotal">0</strong></article>
-          <article class="tile"><span>Failed checks</span><strong id="checksFailed">0</strong></article>
+        <div class="section-head"><span>Uptime</span><strong id="uptimeStatus">No checks</strong></div>
+        <div class="grid four">
+          <article class="tile"><span>Uptime 1d</span><strong id="uptime1d">--</strong></article>
+          <article class="tile"><span>Uptime 7d</span><strong id="uptime7d">--</strong></article>
+          <article class="tile"><span>Uptime 30d</span><strong id="uptime30d">--</strong></article>
+          <article class="tile"><span>Total checks</span><strong id="uptimeChecks">0</strong></article>
+          <article class="tile"><span>Failed checks</span><strong id="uptimeFailed">0</strong></article>
+          <article class="tile"><span>Last online</span><strong id="uptimeLastOnline">--</strong></article>
+          <article class="tile"><span>Last failed</span><strong id="uptimeLastFailed">--</strong></article>
+          <article class="tile"><span>Verification</span><strong id="uptimeVerification">--</strong></article>
         </div>
       </section>
 
       <section class="tab-panel" data-panel="security">
         <div class="section-head"><span>Security</span><strong>Local trust</strong></div>
-        <div class="grid two">
-          <article class="tile"><span>Identity</span><strong id="identityStatus">--</strong></article>
-          <article class="tile"><span>Key algorithm</span><strong id="keyAlgorithm">--</strong></article>
-          <article class="tile"><span>Signature</span><strong id="signatureVerified">--</strong></article>
-          <article class="tile"><span>Challenge</span><strong id="challengeVerified">--</strong></article>
-          <article class="tile"><span>API token</span><strong id="apiTokenStatus">--</strong></article>
-          <article class="tile"><span>Raw data</span><strong id="rawRedacted">--</strong></article>
+        <div class="grid four">
+          <article class="tile"><span>Identity</span><strong id="securityIdentity">--</strong></article>
+          <article class="tile"><span>Public key</span><strong id="securityPublicKeyShort">--</strong></article>
+          <article class="tile"><span>Signature</span><strong id="securitySignature">--</strong></article>
+          <article class="tile"><span>API token</span><strong id="securityApiToken">--</strong></article>
+          <article class="tile"><span>Challenge</span><strong id="securityChallenge">--</strong></article>
+          <article class="tile"><span>Fraud risk</span><strong id="securityFraud">--</strong></article>
+          <article class="tile"><span>Raw redaction</span><strong id="securityRedaction">--</strong></article>
+          <article class="tile"><span>Audit</span><strong id="securityAudit">--</strong></article>
         </div>
         <pre id="publicKey">public_key: --</pre>
+        <div class="list" id="securityWarnings"></div>
       </section>
 
       <section class="tab-panel" data-panel="registration">
         <div class="section-head"><span>Registration</span><strong>Future backend payload</strong></div>
-        <div class="grid three">
-          <article class="tile"><span>Latest report hash</span><strong id="registrationHash">--</strong></article>
-          <article class="tile"><span>Latest score</span><strong id="registrationScore">--</strong></article>
+        <div class="grid four">
+          <article class="tile"><span>Report hash</span><strong id="registrationHash">--</strong></article>
+          <article class="tile"><span>Score</span><strong id="registrationScore">--</strong></article>
+          <article class="tile"><span>Tier</span><strong id="registrationTier">--</strong></article>
           <article class="tile"><span>Secrets included</span><strong id="registrationSecrets">--</strong></article>
         </div>
         <div class="button-strip">
-          <button id="copyRegistration">Copy registration payload</button>
-          <button disabled>Send to Burd backend</button>
+          <button id="copyRegistration" type="button">Copy payload</button>
+          <button disabled type="button">Send to Burd backend</button>
         </div>
         <pre id="registrationJson">{}</pre>
       </section>
 
       <section class="tab-panel" data-panel="logs">
-        <div class="section-head"><span>Logs</span><strong id="actionCount">0 actions</strong></div>
+        <div class="section-head"><span>Logs</span><strong id="logsCount">0 records</strong></div>
         <div id="actionsList" class="list"></div>
         <pre id="logsJson">[]</pre>
       </section>
 
       <section class="tab-panel" data-panel="raw">
-        <div class="section-head"><span>Raw Data</span><strong>Redacted</strong></div>
+        <div class="section-head"><span>Raw Data</span><strong id="rawStatus">Redacted</strong></div>
+        <p class="warning">Secrets are redacted before display. Private keys, API tokens and credential fields must remain hidden.</p>
         <pre id="rawJson">{}</pre>
       </section>
     </main>
@@ -155,163 +194,335 @@
       const state = {};
 
       const endpoints = {
-        provider: "/api/v1/provider",
+        health: "/health",
         system: "/api/v1/system",
         fit: "/api/v1/fit",
+        score: "/api/v1/score",
         report: "/api/v1/report",
+        provider: "/api/v1/provider",
         verification: "/api/v1/verification",
         uptime: "/api/v1/uptime",
         history: "/api/v1/history",
-        config: "/api/v1/config",
         registration: "/api/v1/registration-payload",
         pricing: "/api/v1/pricing",
         earnings: "/api/v1/earnings",
         actions: "/api/v1/actions",
         logs: "/api/v1/logs",
-        raw: "/api/v1/raw"
+        raw: "/api/v1/raw",
+        config: "/api/v1/config",
+        benchmarkStatus: "/api/v1/benchmark/status"
       };
 
-      async function fetchJson(path, options) {
-        const response = await fetch(path, options);
-        if (!response.ok) throw new Error(`${path}: ${response.status}`);
-        return response.json();
+      function isError(value) {
+        return value && value.__error === true;
+      }
+
+      async function fetchJson(path) {
+        const response = await fetch(path);
+        const text = await response.text();
+        let body = null;
+        try {
+          body = text ? JSON.parse(text) : null;
+        } catch {
+          body = text;
+        }
+
+        if (!response.ok) {
+          return {
+            __error: true,
+            status: response.status,
+            message: typeof body === "object" && body ? body.error || body.status : text,
+            body
+          };
+        }
+
+        return body;
       }
 
       async function safeFetch(key, path) {
         try {
           state[key] = await fetchJson(path);
         } catch (error) {
-          state[key] = { error: error.message };
+          state[key] = { __error: true, status: 0, message: error.message };
         }
-      }
-
-      function short(value) {
-        if (!value) return "--";
-        const text = String(value);
-        return text.length > 22 ? `${text.slice(0, 12)}...${text.slice(-6)}` : text;
-      }
-
-      function pct(value) {
-        return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "--";
-      }
-
-      function money(value) {
-        return typeof value === "number" ? `R$ ${value.toFixed(2)}` : "--";
-      }
-
-      function pass(value) {
-        if (!value || value.status === "skipped") return "Skipped";
-        return value.passed ? "Approved" : "Warning";
       }
 
       function write(id, value) {
         $(id).textContent = value ?? "--";
       }
 
-      function render() {
-        const provider = state.provider || {};
-        const system = state.system || {};
-        const report = state.report || {};
-        const score = provider.score || report.score || {};
-        const verification = state.verification || provider.verification || {};
-        const uptime = state.uptime || provider.uptime || {};
-        const history = state.history || {};
-        const config = state.config || {};
-        const registration = state.registration || {};
-        const pricing = state.pricing || provider.pricing || {};
-        const earnings = state.earnings || provider.estimated_earnings || {};
-        const llm = report.llm_benchmark || {};
-        const latestHistory = (history.entries || []).slice(-1)[0] || {};
-
-        write("status", provider.is_online ? "Online" : "Offline");
-        write("score", score.burd_compute_score ?? "--");
-        write("tier", score.tier || provider.tier || "--");
-        write("providerId", short(provider.provider_id));
-        write("machineId", short(provider.machine_id));
-        write("gpu", system.primary_gpu_name || "CPU fallback");
-        write("pricing", money(pricing.final_suggested_price_brl_hour));
-        write("readiness", provider.is_verified ? "Marketplace ready locally" : "Needs verification");
-        write("audit", provider.audit_status || verification.audit_status || "--");
-        write("uptime1d", pct(provider.uptime_1d ?? uptime.uptime_1d));
-        write("uptime7d", pct(provider.uptime_7d ?? uptime.uptime_7d));
-        write("uptime30d", pct(provider.uptime_30d ?? uptime.uptime_30d));
-        write("activeJobs", provider.active_jobs_future ?? 0);
-        write("backend", system.backend_detected || provider.hardware?.backend);
-        write("signedStatus", verification.signature_verified ? "Valid" : "Missing");
-        write("challengeStatus", verification.challenge_verified ? "Verified" : latestHistory.challenge_id ? "Local response" : "Pending");
-        write("fraudRisk", verification.fraud_risk_level || "--");
-
-        write("cpu", system.cpu);
-        write("ram", system.ram_total_gb ? `${system.ram_total_gb} GB` : "--");
-        write("vram", system.vram_total_gb || system.vram_per_gpu_gb ? `${system.vram_total_gb || system.vram_per_gpu_gb} GB` : "--");
-        write("driver", system.nvidia_driver || system.amd_driver || "--");
-        write("cuda", system.cuda_available ? "yes" : "no");
-        write("rocm", system.rocm_available ? "yes" : "no");
-        write("diskFree", provider.hardware?.disk_free_gb ? `${provider.hardware.disk_free_gb} GB` : "--");
-        write("networkStatus", "unknown");
-        $("gpuModels").textContent = JSON.stringify(provider.gpu_models || system.gpus || [], null, 2);
-
-        write("llmTps", llm.avg_tps ? `${llm.avg_tps} tok/s` : "--");
-        write("ttft", llm.avg_ttft_ms ? `${llm.avg_ttft_ms} ms` : "--");
-        write("stability", pass(report.stability));
-        write("network", pass(report.network));
-        write("disk", pass(report.disk));
-        write("modelsAnalyzed", state.fit?.total_models_analyzed ?? "--");
-
-        write("historyCount", `${history.entries_total || 0} entries`);
-        write("historyScore", latestHistory.score ?? "--");
-        write("historyTier", latestHistory.tier || "--");
-        write("historySigned", latestHistory.signed === true ? "Signed" : latestHistory.signed === false ? "Unsigned" : "--");
-        write("historyChallenge", short(latestHistory.challenge_id));
-        renderHistory(history.entries || []);
-
-        write("checks", `${uptime.checks_total || 0} checks`);
-        write("lastOnline", uptime.last_online_at || "--");
-        write("lastFailed", uptime.last_failed_check_at || "--");
-        write("checksTotal", uptime.checks_total || 0);
-        write("checksFailed", uptime.checks_failed || 0);
-
-        write("identityStatus", provider.provider_id && provider.provider_id !== "uninitialized" ? "Ready" : "Missing");
-        write("keyAlgorithm", provider.raw_report?.identity?.key_algorithm || provider.raw_report?.identity?.keyAlgorithm || "ed25519");
-        write("signatureVerified", verification.signature_verified ? "Valid" : "Missing");
-        write("challengeVerified", verification.challenge_verified ? "Valid" : "Pending");
-        write("apiTokenStatus", config.api_auth_enabled ? "Enabled" : config.error ? "Unavailable" : "Dev mode");
-        write("rawRedacted", state.raw?.redacted ? "Redacted" : "Pending");
-        $("publicKey").textContent = `public_key: ${provider.public_key || "--"}`;
-
-        write("registrationHash", short(registration.latest_signed_report_hash));
-        write("registrationScore", registration.latest_score ?? "--");
-        write("registrationSecrets", registration.secrets_included === false ? "No" : "--");
-        $("registrationJson").textContent = JSON.stringify(registration || {}, null, 2);
-
-        renderActions(state.actions || []);
-        $("logsJson").textContent = JSON.stringify(state.logs || [], null, 2);
-        $("rawJson").textContent = JSON.stringify(state.raw || {}, null, 2);
-        $("historyJson").textContent = JSON.stringify(history.entries || [], null, 2);
+      function escapeHtml(value) {
+        return String(value ?? "--")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
       }
 
-      function renderActions(actions) {
-        write("actionCount", `${actions.length || 0} actions`);
-        $("actionsList").innerHTML = (actions || []).slice(-12).reverse().map((action) => `
+      function short(value, size = 24) {
+        if (!value) return "--";
+        const text = String(value);
+        return text.length > size ? `${text.slice(0, Math.max(8, size - 10))}...${text.slice(-6)}` : text;
+      }
+
+      function first(...values) {
+        return values.find((value) => value !== undefined && value !== null && value !== "");
+      }
+
+      function pct(value) {
+        return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "--";
+      }
+
+      function gb(value) {
+        return typeof value === "number" ? `${value.toFixed(value >= 10 ? 1 : 2)} GB` : "--";
+      }
+
+      function money(value) {
+        return typeof value === "number" ? `R$ ${value.toFixed(2)}/h` : "--";
+      }
+
+      function yesNo(value) {
+        return value === true ? "Yes" : value === false ? "No" : "--";
+      }
+
+      function statusLabel(value) {
+        if (isError(value)) {
+          return value.status === 401 ? "Token required" : "Unavailable";
+        }
+        if (!value) return "--";
+        if (typeof value.status === "string") return capitalize(value.status);
+        if (typeof value.passed === "boolean") return value.passed ? "Passed" : "Failed";
+        return "--";
+      }
+
+      function capitalize(value) {
+        const text = String(value || "");
+        return text ? `${text.slice(0, 1).toUpperCase()}${text.slice(1)}` : "--";
+      }
+
+      function sanitizeSecrets(value) {
+        if (Array.isArray(value)) {
+          return value.map(sanitizeSecrets);
+        }
+        if (value && typeof value === "object") {
+          return Object.fromEntries(
+            Object.entries(value).map(([key, entry]) => {
+              if (/^(private_key|private_key_path|secret_key|secret_key_base64|api_token|api_token_hash|credentials)$/i.test(key)) {
+                return [key, "[redacted]"];
+              }
+              return [key, sanitizeSecrets(entry)];
+            })
+          );
+        }
+        return value;
+      }
+
+      function currentData() {
+        const raw = isError(state.raw) ? {} : state.raw || {};
+        const provider = isError(state.provider) ? raw.provider_details || {} : state.provider || raw.provider_details || {};
+        const report = isError(state.report) ? provider.raw_report || raw.latest_report || {} : state.report || provider.raw_report || raw.latest_report || {};
+        const system = isError(state.system) ? report.system || {} : state.system || report.system || {};
+        const score = isError(state.score) ? provider.score || report.score || raw.score || {} : state.score || provider.score || report.score || raw.score || {};
+        const verification = isError(state.verification) ? provider.verification || raw.verification || {} : state.verification || provider.verification || raw.verification || {};
+        const uptime = isError(state.uptime) ? provider.uptime || raw.uptime || {} : state.uptime || provider.uptime || raw.uptime || {};
+        const pricing = isError(state.pricing) ? provider.pricing || raw.pricing || {} : state.pricing || provider.pricing || raw.pricing || {};
+        const earnings = isError(state.earnings) ? provider.estimated_earnings || raw.earnings_mock || {} : state.earnings || provider.estimated_earnings || raw.earnings_mock || {};
+        const history = isError(state.history) ? { entries: [] } : state.history || { entries: [] };
+        const registration = isError(state.registration) ? {} : state.registration || {};
+        const config = isError(state.config) ? state.config : state.config || raw.config_redacted || {};
+        const fit = isError(state.fit) ? report.fit || {} : state.fit || report.fit || {};
+        const benchmarkStatus = isError(state.benchmarkStatus) ? state.benchmarkStatus : state.benchmarkStatus || {};
+        const actions = Array.isArray(state.actions) ? state.actions : raw.actions?.items || [];
+        const logs = Array.isArray(state.logs) ? state.logs : raw.actions?.logs || [];
+
+        return { raw, provider, report, system, score, verification, uptime, pricing, earnings, history, registration, config, fit, benchmarkStatus, actions, logs };
+      }
+
+      function render() {
+        const data = currentData();
+        const apiOffline = isError(state.health) && state.health.status === 0;
+        $("apiNotice").classList.toggle("hidden", !apiOffline);
+
+        const gpuName = first(data.system.primary_gpu_name, data.provider.gpu_models?.[0]?.model, data.system.gpus?.[0]?.name, "CPU fallback");
+        const backend = first(data.system.backend_detected, data.provider.hardware?.backend, data.system.gpus?.[0]?.backend);
+        const driver = first(data.system.nvidia_driver, data.system.amd_driver);
+        const price = first(data.pricing.final_suggested_price_brl_hour, data.score.suggested_price_brl_hour);
+        const score = data.score.burd_compute_score;
+        const tier = first(data.score.tier, data.provider.tier);
+        const providerId = data.provider.provider_id;
+        const machineId = data.provider.machine_id;
+        const latestHistory = (data.history.entries || []).slice(-1)[0] || data.raw.history_summary?.latest || {};
+        const signed = data.verification.signature_verified ? "Valid" : latestHistory.signed ? "Signed" : "Missing";
+        const challenge = data.verification.challenge_verified ? "Verified" : latestHistory.challenge_id ? "Local response" : "Pending";
+        const readiness = data.provider.is_verified || data.score.eligible ? "Ready locally" : "Needs verification";
+        const online = first(data.provider.is_online, state.health && !isError(state.health) ? true : null);
+
+        write("healthStatus", apiOffline ? "Offline" : isError(state.health) ? "Degraded" : "Online");
+        write("scoreHero", score ?? "--");
+        write("tierHero", tier || "--");
+        write("readinessHero", readiness);
+        write("metricProvider", short(providerId));
+        write("metricMachine", short(machineId));
+        write("metricOnline", online === true ? "Online" : online === false ? "Offline" : "--");
+        write("metricPrice", money(price));
+        write("metricGpu", short(gpuName, 34));
+        write("metricBackend", backend || "--");
+        write("metricSigned", signed);
+        write("metricChallenge", challenge);
+
+        write("overviewStamp", first(data.report.timestamp, data.provider.last_check_date, state.health?.agent_version ? `agent ${state.health.agent_version}` : null));
+        write("overviewProvider", short(providerId, 34));
+        write("overviewMachine", short(machineId, 34));
+        write("overviewOnline", online === true ? "Online" : online === false ? "Offline" : "--");
+        write("overviewScore", score ?? "--");
+        write("overviewTier", tier || "--");
+        write("overviewReadiness", readiness);
+        write("overviewGpu", short(gpuName, 38));
+        write("overviewBackend", backend || "--");
+        write("overviewPrice", money(price));
+        write("overviewUptime1d", pct(first(data.provider.uptime_1d, data.uptime.uptime_1d)));
+        write("overviewUptime7d", pct(first(data.provider.uptime_7d, data.uptime.uptime_7d)));
+        write("overviewUptime30d", pct(first(data.provider.uptime_30d, data.uptime.uptime_30d)));
+        write("overviewSigned", signed);
+        write("overviewChallenge", challenge);
+        write("overviewFraud", data.verification.fraud_risk_level || "--");
+        write("overviewBackendVerification", data.provider.backend_verification_status_future || "--");
+
+        write("hardwareSummary", `${first(data.system.gpu_count, data.provider.hardware?.gpu_count, 0)} GPU / ${backend || "--"}`);
+        write("hardwareCpu", data.system.cpu || data.provider.hardware?.cpu || "--");
+        write("hardwareRam", gb(first(data.system.ram_total_gb, data.provider.hardware?.memory_gb)));
+        write("hardwareGpu", gpuName);
+        write("hardwareVram", gb(first(data.system.vram_total_gb, data.system.vram_per_gpu_gb, data.provider.hardware?.vram_gb)));
+        write("hardwareBackend", backend || "--");
+        write("hardwareDriver", driver || "--");
+        write("hardwareCuda", yesNo(data.system.cuda_available));
+        write("hardwareRocm", yesNo(data.system.rocm_available));
+        write("hardwareVulkan", backend === "Vulkan" ? "Yes" : "--");
+        write("hardwareDisk", gb(first(data.provider.hardware?.disk_free_gb, data.provider.stats?.storage?.total?.available)));
+        write("hardwareNetwork", statusLabel(data.report.network));
+        write("hardwareArch", first(data.system.architecture, data.provider.hardware?.architecture));
+        $("gpuModels").textContent = JSON.stringify(sanitizeSecrets(first(data.provider.gpu_models, data.system.gpus, [])), null, 2);
+
+        write("benchmarkSummary", statusLabel(data.benchmarkStatus) === "--" ? "Latest signals" : statusLabel(data.benchmarkStatus));
+        write("benchLlm", data.report.llm_benchmark?.avg_tps ? `${data.report.llm_benchmark.avg_tps} tok/s` : statusLabel(data.report.llm_benchmark));
+        write("benchStability", statusLabel(data.report.stability));
+        write("benchNetwork", statusLabel(data.report.network));
+        write("benchDisk", statusLabel(data.report.disk));
+        write("benchFit", data.fit.source || "--");
+        write("benchModels", data.fit.total_models_analyzed ?? "--");
+        write("benchRunnable", data.fit.runnable_models ?? "--");
+        write("benchRunStatus", data.benchmarkStatus.status || "--");
+        renderFitList(data.fit.models || []);
+
+        write("historyCount", `${data.history.entries_total || (data.history.entries || []).length || 0} entries`);
+        write("historyLatest", latestHistory.timestamp || "--");
+        write("historyScore", latestHistory.score ?? "--");
+        write("historySigned", latestHistory.signed === true ? "Signed" : latestHistory.signed === false ? "Unsigned" : "--");
+        write("historyChallenge", short(latestHistory.challenge_id));
+        renderHistory(data.history.entries || []);
+        $("historyJson").textContent = JSON.stringify(sanitizeSecrets(data.history.entries || []), null, 2);
+
+        write("uptimeStatus", data.uptime.current_status || "--");
+        write("uptime1d", pct(data.uptime.uptime_1d));
+        write("uptime7d", pct(data.uptime.uptime_7d));
+        write("uptime30d", pct(data.uptime.uptime_30d));
+        write("uptimeChecks", data.uptime.checks_total ?? 0);
+        write("uptimeFailed", data.uptime.checks_failed ?? 0);
+        write("uptimeLastOnline", data.uptime.last_online_at || "--");
+        write("uptimeLastFailed", data.uptime.last_failed_check_at || "--");
+        write("uptimeVerification", data.verification.uptime_verified ? "Verified" : "Pending");
+
+        write("securityIdentity", providerId && providerId !== "uninitialized" ? "Ready" : "Missing");
+        write("securityPublicKeyShort", short(data.provider.public_key, 34));
+        write("securitySignature", signed);
+        write("securityApiToken", isError(data.config) && data.config.status === 401 ? "Token required" : data.config.api_auth_enabled ? "Enabled" : "Dev mode");
+        write("securityChallenge", challenge);
+        write("securityFraud", data.verification.fraud_risk_level || "--");
+        write("securityRedaction", data.raw.redacted ? "Active" : isError(state.raw) && state.raw.status === 401 ? "Token required" : "Pending");
+        write("securityAudit", data.verification.audit_status || data.provider.audit_status || "--");
+        $("publicKey").textContent = `public_key: ${data.provider.public_key || "--"}`;
+        renderWarnings(data.verification.warnings || []);
+
+        write("registrationHash", short(data.registration?.latest_signed_report_hash));
+        write("registrationScore", data.registration?.latest_score ?? "--");
+        write("registrationTier", data.registration?.latest_tier || "--");
+        write("registrationSecrets", data.registration?.secrets_included === false ? "No" : "--");
+        $("registrationJson").textContent = JSON.stringify(sanitizeSecrets(data.registration || {}), null, 2);
+
+        renderActions(data.actions);
+        $("logsJson").textContent = JSON.stringify(sanitizeSecrets(data.logs || []), null, 2);
+
+        if (isError(state.raw)) {
+          write("rawStatus", state.raw.status === 401 ? "Token required" : "Unavailable");
+          $("rawJson").textContent = JSON.stringify(sanitizeSecrets(state.raw), null, 2);
+        } else {
+          write("rawStatus", data.raw.redacted ? "Redacted" : "Loaded");
+          $("rawJson").textContent = JSON.stringify(sanitizeSecrets(data.raw || {}), null, 2);
+        }
+      }
+
+      function renderFitList(models) {
+        $("fitList").innerHTML = (models || []).slice(0, 6).map((model) => `
           <article class="list-row">
-            <span>${action.name}</span>
-            <strong>${action.status}</strong>
+            <span>${escapeHtml(model.name)} | ${escapeHtml(model.fit_level)} | ${escapeHtml(model.runtime)}</span>
+            <strong>${escapeHtml(model.estimated_tps ?? "--")} TPS</strong>
           </article>
-        `).join("");
+        `).join("") || `<article class="list-row"><span>No fit rows loaded</span><strong>--</strong></article>`;
       }
 
       function renderHistory(entries) {
         $("historyList").innerHTML = (entries || []).slice(-8).reverse().map((entry) => `
           <article class="list-row">
-            <span>${entry.timestamp || "--"} | ${entry.tier || "--"} | ${entry.signed ? "signed" : "unsigned"}</span>
-            <strong>${entry.score ?? "--"}</strong>
+            <span>${escapeHtml(entry.timestamp || "--")} | ${escapeHtml(entry.tier || "--")} | ${entry.signed ? "signed" : "unsigned"} | ${escapeHtml(short(entry.challenge_id))}</span>
+            <strong>${escapeHtml(entry.score ?? "--")}</strong>
           </article>
-        `).join("");
+        `).join("") || `<article class="list-row"><span>No benchmark history persisted</span><strong>--</strong></article>`;
+      }
+
+      function renderWarnings(warnings) {
+        $("securityWarnings").innerHTML = (warnings || []).slice(0, 6).map((warning) => `
+          <article class="list-row">
+            <span>${escapeHtml(warning)}</span>
+            <strong>Warning</strong>
+          </article>
+        `).join("") || `<article class="list-row"><span>No verification warnings</span><strong>OK</strong></article>`;
+      }
+
+      function renderActions(actions) {
+        write("logsCount", `${actions.length || 0} actions`);
+        $("actionsList").innerHTML = (actions || []).slice(-12).reverse().map((action) => `
+          <article class="list-row">
+            <span>${escapeHtml(action.name || action.title || "--")} | ${escapeHtml(action.created_at || action.updated_at || "--")}</span>
+            <strong>${escapeHtml(action.status || "--")}</strong>
+          </article>
+        `).join("") || `<article class="list-row"><span>No local actions recorded</span><strong>--</strong></article>`;
       }
 
       async function refresh() {
+        write("actionMessage", "Refreshing");
         await Promise.all(Object.entries(endpoints).map(([key, path]) => safeFetch(key, path)));
         render();
+        write("actionMessage", "Idle");
+      }
+
+      async function postJson(path, body) {
+        const response = await fetch(path, {
+          method: "POST",
+          headers: body ? { "Content-Type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined
+        });
+        const text = await response.text();
+        let payload = null;
+        try {
+          payload = text ? JSON.parse(text) : null;
+        } catch {
+          payload = text;
+        }
+        if (!response.ok) {
+          return { __error: true, status: response.status, body: payload };
+        }
+        return payload;
       }
 
       document.querySelectorAll(".tab").forEach((tab) => {
@@ -323,46 +534,41 @@
         });
       });
 
+      $("refreshData").addEventListener("click", refresh);
+
       $("runBenchmark").addEventListener("click", async () => {
-        write("status", "Benchmarking");
-        const result = await fetchJson("/api/v1/benchmark/run", { method: "POST" });
-        state.raw = result;
+        write("actionMessage", "Benchmark running");
+        state.raw = await postJson("/api/v1/benchmark/run");
         await refresh();
       });
 
       $("signReport").addEventListener("click", async () => {
-        const result = await fetchJson("/api/v1/report/signed", { method: "POST" });
-        state.raw = result;
-        $("rawJson").textContent = JSON.stringify(result, null, 2);
+        write("actionMessage", "Signing report");
+        state.raw = await postJson("/api/v1/report/signed");
         await refresh();
       });
 
       $("runChallenge").addEventListener("click", async () => {
+        write("actionMessage", "Running challenge");
         const challenge = await fetchJson("/api/v1/challenge/mock");
-        const result = await fetchJson("/api/v1/challenge/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(challenge)
-        });
-        state.raw = result;
-        $("rawJson").textContent = JSON.stringify(result, null, 2);
+        state.raw = isError(challenge) ? challenge : await postJson("/api/v1/challenge/run", challenge);
         await refresh();
       });
 
       $("copyRegistration").addEventListener("click", async () => {
-        const payload = JSON.stringify(state.registration || {}, null, 2);
+        const payload = JSON.stringify(sanitizeSecrets(currentData().registration || {}), null, 2);
         try {
           await navigator.clipboard.writeText(payload);
           $("copyRegistration").textContent = "Copied";
-          setTimeout(() => $("copyRegistration").textContent = "Copy registration payload", 1200);
+          setTimeout(() => $("copyRegistration").textContent = "Copy payload", 1200);
         } catch (error) {
-          $("registrationJson").textContent = JSON.stringify({ error: error.message, payload: state.registration || {} }, null, 2);
+          $("registrationJson").textContent = JSON.stringify({ error: error.message, payload: JSON.parse(payload) }, null, 2);
         }
       });
 
       refresh().catch((error) => {
-        write("status", "Failed");
-        $("rawJson").textContent = JSON.stringify({ error: error.message }, null, 2);
+        state.health = { __error: true, status: 0, message: error.message };
+        render();
       });
     </script>
   </body>

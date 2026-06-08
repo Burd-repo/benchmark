@@ -3,12 +3,14 @@
   --page: #0a0a0a;
   --section: #080808;
   --panel: #111111;
+  --panel-alt: #141414;
   --panel-deep: #090909;
   --badge: #1a1a1a;
   --muted-bg: #202020;
   --border: #262626;
   --border-panel: #2a2a2a;
   --border-muted: #2f2f2f;
+  --border-soft: #3a3a3a;
   --text: #f5f5f5;
   --muted: #9ca3af;
   --low: #626262;
@@ -18,6 +20,10 @@
 
 * {
   box-sizing: border-box;
+}
+
+html {
+  background: var(--page);
 }
 
 body {
@@ -36,7 +42,9 @@ button {
   padding: 0 12px;
   font: inherit;
   font-size: 13px;
+  line-height: 1;
   cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
 }
 
 button:hover,
@@ -63,7 +71,8 @@ button:disabled {
   border-bottom: 1px solid var(--border);
 }
 
-.top > div {
+.top-copy,
+.status-block {
   padding: 48px 32px;
 }
 
@@ -91,7 +100,7 @@ button:disabled {
 }
 
 h1 {
-  max-width: 620px;
+  max-width: 680px;
   margin: 40px 0 0;
   font-size: 32px;
   line-height: 1.15;
@@ -99,7 +108,7 @@ h1 {
 }
 
 p {
-  max-width: 620px;
+  max-width: 660px;
   margin: 24px 0 0;
   color: var(--muted);
   font-family: "JetBrains Mono", monospace;
@@ -127,6 +136,7 @@ p {
   color: var(--muted);
   font-family: "JetBrains Mono", monospace;
   font-size: 12px;
+  line-height: 1.35;
   text-transform: uppercase;
 }
 
@@ -137,25 +147,60 @@ p {
   line-height: 1;
 }
 
-.tier {
+.tier-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
   margin: 12px 0 28px;
   color: var(--muted);
   font-family: "JetBrains Mono", monospace;
+  font-size: 13px;
 }
 
-.button-row {
+.tier-line strong {
+  color: var(--text);
+}
+
+.button-row,
+.button-strip {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
 }
 
 .button-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
   border-top: 1px solid var(--border);
   padding: 24px 32px;
   background: var(--section);
+}
+
+.action-message {
+  max-width: none;
+  margin-top: 18px;
+  color: var(--low);
+  font-size: 12px;
+}
+
+.notice {
+  display: grid;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  padding: 24px 32px;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.notice code {
+  width: 100%;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border-panel);
+  background: var(--panel-deep);
+  padding: 12px;
+  color: var(--muted);
+}
+
+.hidden {
+  display: none;
 }
 
 .tabs {
@@ -191,7 +236,7 @@ p {
 
 .metrics article,
 .tile {
-  min-height: 126px;
+  min-height: 118px;
   border-bottom: 1px solid var(--border);
   padding: 28px 32px;
   background: var(--page);
@@ -205,6 +250,7 @@ p {
   overflow-wrap: anywhere;
   font-size: 20px;
   font-weight: 500;
+  line-height: 1.2;
 }
 
 .tab-panel {
@@ -221,21 +267,17 @@ p {
   background: var(--section);
 }
 
-.wide {
-  min-height: 148px;
+.wide strong {
+  font-size: 17px;
 }
 
-.note,
 .warning {
   max-width: none;
   margin: 0;
   border-top: 1px solid var(--border);
-  padding: 24px 32px;
-}
-
-.warning {
-  color: #f5f5f5;
-  background: #111111;
+  padding: 18px 32px;
+  background: var(--panel);
+  color: var(--muted);
 }
 
 pre {
@@ -256,8 +298,14 @@ pre {
 }
 
 .list-row {
-  min-height: 54px;
+  min-height: 58px;
   padding: 16px 32px;
+  background: var(--page);
+}
+
+.list-row span {
+  overflow-wrap: anywhere;
+  text-transform: none;
 }
 
 .list-row strong {
@@ -266,6 +314,7 @@ pre {
   font-family: "JetBrains Mono", monospace;
   font-size: 12px;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 @media (min-width: 768px) {
@@ -291,10 +340,11 @@ pre {
   }
 
   .top {
-    grid-template-columns: 1fr 520px;
+    grid-template-columns: 1fr 560px;
   }
 
-  .top > div {
+  .top-copy,
+  .status-block {
     padding: 58px 38px;
   }
 
@@ -323,7 +373,7 @@ pre {
     border-bottom: 1px solid var(--border);
   }
 
-  .metrics article:last-child,
+  .metrics article:nth-child(4n),
   .grid.four .tile:nth-child(4n),
   .grid.three .tile:nth-child(3n) {
     border-right: 0;
@@ -336,9 +386,9 @@ pre {
 
   .tile,
   .metrics article,
-  .note,
   .warning,
   .button-strip,
+  .notice,
   pre,
   .list-row {
     padding-right: 38px;

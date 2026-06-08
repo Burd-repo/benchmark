@@ -103,6 +103,14 @@ after the June 2026 reliability pass.
 - Reputation and provider marketplace ranking.
 - Hardware attestation through TPM/HSM/OS keychain.
 
+## Known Build Warnings
+
+- `cargo build` and `cargo test` can emit inherited warnings from
+  `third_party/llmfit/llmfit-core`, currently around unused llmfit internals.
+- These warnings do not block the Burd local build/test flow.
+- They are intentionally left in `third_party/llmfit` unless a safe upstream
+  compatibility-preserving fix is needed.
+
 ## Persisted Local Data
 
 - `~/.burd/agent.json`: public identity and local config, API token hash only.

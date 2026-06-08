@@ -1,20 +1,95 @@
 # Provider Console UI
 
-The UI in `apps/benchmark-ui` is a static provider console served by
+The Provider Console UI lives in `apps/benchmark-ui` and is embedded into the
+local API binary through `include_str!`. It is served at `/` by
 `burd-agent serve`.
 
-It follows `SKILL.md`:
+This is a local provider operations console. It is not the Burd institutional
+landing page and must keep following the dark technical design system in
+`SKILL.md`.
 
-- dark technical Burd design;
-- `#0A0A0A`, `#080808`, `#111111` surfaces;
-- `#262626` and `#2A2A2A` grid/borders;
-- sans headings;
-- mono labels and data;
-- rectangular buttons;
-- modular grid;
-- no Akash branding, images, text, or proprietary UI.
+## Build
 
-Tabs:
+From Windows PowerShell at the repository root:
+
+```powershell
+cargo build
+```
+
+## Start The Local API
+
+```powershell
+.\target\debug\burd-agent.exe serve --host 127.0.0.1 --port 8787
+```
+
+Open:
+
+```txt
+http://127.0.0.1:8787/
+```
+
+Stop the foreground server with `Ctrl+C`.
+
+If a development process is stuck, stop it explicitly:
+
+```powershell
+Get-Process burd-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+## Test Without Hanging
+
+Use the API smoke script:
+
+```powershell
+.\scripts\test-api.ps1
+```
+
+The script:
+
+- starts `.\target\debug\burd-agent.exe serve --host 127.0.0.1 --port 8787`;
+- waits up to 5 seconds for `/health`;
+- calls the main GET endpoints;
+- writes output to `tmp/test-output/`;
+- stops the server by PID in a `finally` block.
+
+Use the local CLI smoke script:
+
+```powershell
+.\scripts\test-local.ps1
+```
+
+It runs formatting, tests, build, and fast local commands. It does not start
+`serve`, does not run `heartbeat --interval`, and does not run heavy benchmarks.
+
+## API Data Used By The UI
+
+The UI consumes these local endpoints when opened through `serve`:
+
+- `GET /health`
+- `GET /api/v1/system`
+- `GET /api/v1/fit`
+- `GET /api/v1/score`
+- `GET /api/v1/report`
+- `GET /api/v1/provider`
+- `GET /api/v1/verification`
+- `GET /api/v1/uptime`
+- `GET /api/v1/history`
+- `GET /api/v1/registration-payload`
+- `GET /api/v1/pricing`
+- `GET /api/v1/earnings`
+- `GET /api/v1/actions`
+- `GET /api/v1/logs`
+- `GET /api/v1/raw`
+- `GET /api/v1/config`
+- `GET /api/v1/benchmark/status`
+
+If local API auth is enabled, protected endpoints can return `401` until the
+request sends `Authorization: Bearer <token>`. The UI keeps the failure visible
+instead of hiding it.
+
+## Console Sections
+
+The UI includes:
 
 1. Overview
 2. Hardware
@@ -26,33 +101,44 @@ Tabs:
 8. Logs
 9. Raw Data
 
-Operational buttons:
+Overview shows provider and machine identity, online status, Burd Compute Score,
+tier, local marketplace readiness, GPU, backend, suggested demonstrative price,
+uptime, signed report status, and challenge status.
 
-- `Executar benchmark`: calls `POST /api/v1/benchmark/run`.
-- `Gerar relatorio assinado`: calls `POST /api/v1/report/signed`.
-- `Rodar challenge mock`: calls `GET /api/v1/challenge/mock`, then
-  `POST /api/v1/challenge/run`.
+Hardware shows CPU, RAM, GPU, VRAM, backend, driver/runtime signals, disk, and
+network summary.
 
-Future UI work:
+Benchmarks shows LLM, stability, network, disk, fit analysis, and skipped,
+passed, or failed status.
 
-- authenticated remote provider access beyond bearer token MVP;
-- marketplace jobs/leases;
-- pricing edits;
-- alerts/notifications;
-- backend verification history;
-- benchmark history charts.
+History shows the latest benchmark and prior persisted benchmark summaries when
+they exist, including score, tier, signed state, and challenge ID.
 
-Security tab:
+Security shows public key summary, signature status, API token status, challenge
+verification, fraud risk, and raw-data redaction status.
 
-- public key;
-- signature verification status;
-- API token status;
-- challenge status;
-- fraud risk through provider verification;
-- raw data redaction status.
+Registration shows the local registration payload for future backend use, a copy
+button, and a disabled future backend send action.
 
-Registration tab:
+Logs shows local actions and task logs.
 
-- provider registration payload JSON;
-- copy action for local use;
-- disabled future action for sending to the Burd backend.
+Raw Data shows formatted redacted JSON. Private keys, API tokens, token hashes,
+and credential fields must never be displayed.
+
+## Offline API Message
+
+If the UI cannot reach the local API, it shows:
+
+```txt
+API local da Burd nao esta rodando. Execute:
+.\target\debug\burd-agent.exe serve --host 127.0.0.1 --port 8787
+```
+
+This replaces unhelpful browser errors such as `Failed to fetch`.
+
+## Still Local Or Mocked
+
+The console intentionally does not implement a production backend, Pix, billing,
+payouts, real marketplace listings, real jobs, leases, orchestration, reputation
+ranking, TPM/HSM attestation, remote storage, or remote telemetry.
+
