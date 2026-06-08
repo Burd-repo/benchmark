@@ -1,22 +1,53 @@
 {
-  "provider_id": null,
-  "machine_id": "burd-example-machine",
-  "challenge_id": "challenge-example",
-  "nonce": "nonce-example",
+  "provider_id": "burd-provider-example",
+  "machine_id": "burd-machine-example",
   "report": {
+    "identity": {
+      "provider_id": "burd-provider-example",
+      "machine_id": "burd-machine-example",
+      "api_url": "https://api.burd.cloud",
+      "preferred_provider": "ollama",
+      "benchmark_profile": "auto",
+      "telemetry_enabled": false,
+      "created_at": "2026-06-08T00:00:00Z",
+      "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+      "key_algorithm": "ed25519",
+      "email": null,
+      "website": null,
+      "country": "BR",
+      "city": null,
+      "region": null
+    },
     "system": {
       "primary_gpu_name": "NVIDIA GeForce RTX 4090",
       "backend_detected": "CUDA"
     },
+    "fit": null,
+    "llm_benchmark": null,
+    "stability": null,
+    "network": null,
+    "disk": null,
     "score": {
       "burd_compute_score": 86.7,
       "tier": "Burd Pro",
       "eligible": true
     },
     "timestamp": "2026-06-08T00:00:00Z",
-    "benchmark_profile": "profile_24gb"
+    "agent_version": "0.1.0",
+    "benchmark_version": "2026.06-mvp",
+    "benchmark_profile": "profile_24gb",
+    "challenge": null,
+    "signature": {
+      "algorithm": "ed25519",
+      "value": "signature-in-envelope",
+      "status": "signed"
+    }
   },
-  "signature": "placeholder-signature:burd-example-machine:challenge-example",
-  "public_key": "burd-public-key-placeholder-example",
-  "generated_at": "2026-06-08T00:00:00Z"
+  "report_hash": "example-static-hash",
+  "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+  "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "key_algorithm": "ed25519",
+  "signed_at": "2026-06-08T00:00:00Z",
+  "signature_valid_locally": false
 }
+

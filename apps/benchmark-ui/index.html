@@ -3,81 +3,161 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Burd Benchmark</title>
+    <title>Burd Provider Console</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="shell">
-      <section class="hero">
-        <div class="hero-copy">
-          <div class="eyebrow"><span></span><strong>BURD BENCHMARK</strong></div>
-          <h1>Validação local de GPU para workloads de IA.</h1>
+      <header class="top">
+        <div>
+          <div class="eyebrow"><span></span><strong>BURD PROVIDER CONSOLE</strong></div>
+          <h1>Operacao local do provider GPU.</h1>
           <p>
-            Score técnico, fit de modelos, estabilidade e sinais de infraestrutura para preparar uma máquina ao marketplace Burd.
+            Identidade, benchmark, assinatura, uptime, verificacao e readiness para preparar a maquina ao marketplace Burd.
           </p>
         </div>
-        <div class="status-panel">
-          <div class="status-row">
-            <span>Status</span>
-            <strong id="status">Carregando</strong>
-          </div>
+        <div class="status-block">
+          <div class="label-row"><span>Status</span><strong id="status">Loading</strong></div>
           <div class="score" id="score">--</div>
-          <div class="tier" id="tier">Aguardando relatório</div>
-          <button id="run">Executar benchmark</button>
+          <div class="tier" id="tier">No report</div>
+          <div class="button-row">
+            <button id="runBenchmark">Executar benchmark</button>
+            <button id="signReport">Gerar relatorio assinado</button>
+            <button id="runChallenge">Rodar challenge mock</button>
+          </div>
         </div>
-      </section>
+      </header>
+
+      <nav class="tabs" aria-label="Provider console sections">
+        <button class="tab active" data-tab="overview">Overview</button>
+        <button class="tab" data-tab="hardware">Hardware</button>
+        <button class="tab" data-tab="benchmarks">Benchmarks</button>
+        <button class="tab" data-tab="jobs">Jobs/Leases future</button>
+        <button class="tab" data-tab="earnings">Earnings</button>
+        <button class="tab" data-tab="uptime">Uptime</button>
+        <button class="tab" data-tab="security">Security</button>
+        <button class="tab" data-tab="logs">Logs</button>
+        <button class="tab" data-tab="raw">Raw Data</button>
+      </nav>
 
       <section class="metrics">
-        <article>
-          <span>GPU</span>
-          <strong id="gpu">--</strong>
-        </article>
-        <article>
-          <span>VRAM</span>
-          <strong id="vram">--</strong>
-        </article>
-        <article>
-          <span>Backend</span>
-          <strong id="backend">--</strong>
-        </article>
-        <article>
-          <span>Driver</span>
-          <strong id="driver">--</strong>
-        </article>
+        <article><span>Provider</span><strong id="providerId">--</strong></article>
+        <article><span>Machine</span><strong id="machineId">--</strong></article>
+        <article><span>GPU</span><strong id="gpu">--</strong></article>
+        <article><span>Pricing</span><strong id="pricing">--</strong></article>
       </section>
 
-      <section class="grid">
-        <article class="panel">
-          <div class="panel-head">
-            <span>Workloads recomendados</span>
-          </div>
-          <ul id="workloads"></ul>
-        </article>
-
-        <article class="panel">
-          <div class="panel-head">
-            <span>Sinais do benchmark</span>
-          </div>
-          <div class="signal"><span>TPS médio</span><strong id="tps">--</strong></div>
-          <div class="signal"><span>TTFT</span><strong id="ttft">--</strong></div>
-          <div class="signal"><span>Estabilidade</span><strong id="stability">--</strong></div>
-          <div class="signal"><span>Rede</span><strong id="network">--</strong></div>
-          <div class="signal"><span>Disco</span><strong id="disk">--</strong></div>
-          <div class="signal"><span>Preço sugerido</span><strong id="price">--</strong></div>
-        </article>
-      </section>
-
-      <section class="report-section">
-        <div class="panel-head">
-          <span>Relatório JSON</span>
-          <button id="send">Enviar para Burd</button>
+      <section class="tab-panel active" data-panel="overview">
+        <div class="section-head"><span>Overview</span><strong id="readiness">Readiness pending</strong></div>
+        <div class="grid four">
+          <article class="tile"><span>Audit</span><strong id="audit">--</strong></article>
+          <article class="tile"><span>Uptime 1d</span><strong id="uptime1d">--</strong></article>
+          <article class="tile"><span>Uptime 7d</span><strong id="uptime7d">--</strong></article>
+          <article class="tile"><span>Uptime 30d</span><strong id="uptime30d">--</strong></article>
+          <article class="tile"><span>Active jobs</span><strong id="activeJobs">0</strong></article>
+          <article class="tile"><span>Backend</span><strong id="backend">--</strong></article>
+          <article class="tile"><span>Signed report</span><strong id="signedStatus">--</strong></article>
+          <article class="tile"><span>Fraud risk</span><strong id="fraudRisk">--</strong></article>
         </div>
-        <pre id="json">{}</pre>
+      </section>
+
+      <section class="tab-panel" data-panel="hardware">
+        <div class="section-head"><span>Hardware</span><strong>Inventory</strong></div>
+        <div class="grid two">
+          <article class="tile wide"><span>CPU</span><strong id="cpu">--</strong></article>
+          <article class="tile"><span>RAM</span><strong id="ram">--</strong></article>
+          <article class="tile"><span>VRAM</span><strong id="vram">--</strong></article>
+          <article class="tile"><span>Driver</span><strong id="driver">--</strong></article>
+          <article class="tile"><span>CUDA</span><strong id="cuda">--</strong></article>
+          <article class="tile"><span>ROCm</span><strong id="rocm">--</strong></article>
+          <article class="tile"><span>Disk free</span><strong id="diskFree">--</strong></article>
+          <article class="tile"><span>Network</span><strong id="networkStatus">--</strong></article>
+        </div>
+        <pre id="gpuModels">[]</pre>
+      </section>
+
+      <section class="tab-panel" data-panel="benchmarks">
+        <div class="section-head"><span>Benchmarks</span><strong>Latest signals</strong></div>
+        <div class="grid two">
+          <article class="tile"><span>LLM TPS</span><strong id="llmTps">--</strong></article>
+          <article class="tile"><span>TTFT</span><strong id="ttft">--</strong></article>
+          <article class="tile"><span>Stability</span><strong id="stability">--</strong></article>
+          <article class="tile"><span>Network</span><strong id="network">--</strong></article>
+          <article class="tile"><span>Disk</span><strong id="disk">--</strong></article>
+          <article class="tile"><span>Models analyzed</span><strong id="modelsAnalyzed">--</strong></article>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-panel="jobs">
+        <div class="section-head"><span>Jobs / leases future</span><strong>Marketplace phase</strong></div>
+        <div class="grid three">
+          <article class="tile"><span>Active jobs</span><strong>0</strong></article>
+          <article class="tile"><span>Pending jobs</span><strong>0</strong></article>
+          <article class="tile"><span>Completed jobs</span><strong>0</strong></article>
+        </div>
+        <p class="note">Job execution, leases and orchestration will be implemented in the marketplace phase.</p>
+      </section>
+
+      <section class="tab-panel" data-panel="earnings">
+        <div class="section-head"><span>Earnings</span><strong>Demonstrative only</strong></div>
+        <div class="grid three">
+          <article class="tile"><span>Hourly suggested</span><strong id="hourly">--</strong></article>
+          <article class="tile"><span>Daily estimate</span><strong id="daily">--</strong></article>
+          <article class="tile"><span>Monthly estimate</span><strong id="monthly">--</strong></article>
+        </div>
+        <p class="warning" id="earningsWarning">Ganhos sao estimativas demonstrativas.</p>
+      </section>
+
+      <section class="tab-panel" data-panel="uptime">
+        <div class="section-head"><span>Uptime</span><strong id="checks">0 checks</strong></div>
+        <div class="grid two">
+          <article class="tile"><span>Last online</span><strong id="lastOnline">--</strong></article>
+          <article class="tile"><span>Last failed</span><strong id="lastFailed">--</strong></article>
+          <article class="tile"><span>Total checks</span><strong id="checksTotal">0</strong></article>
+          <article class="tile"><span>Failed checks</span><strong id="checksFailed">0</strong></article>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-panel="security">
+        <div class="section-head"><span>Security</span><strong>Local trust</strong></div>
+        <div class="grid two">
+          <article class="tile"><span>Identity</span><strong id="identityStatus">--</strong></article>
+          <article class="tile"><span>Key algorithm</span><strong id="keyAlgorithm">--</strong></article>
+          <article class="tile"><span>Signature</span><strong id="signatureVerified">--</strong></article>
+          <article class="tile"><span>Challenge</span><strong id="challengeVerified">--</strong></article>
+        </div>
+        <pre id="publicKey">public_key: --</pre>
+      </section>
+
+      <section class="tab-panel" data-panel="logs">
+        <div class="section-head"><span>Logs</span><strong id="actionCount">0 actions</strong></div>
+        <div id="actionsList" class="list"></div>
+        <pre id="logsJson">[]</pre>
+      </section>
+
+      <section class="tab-panel" data-panel="raw">
+        <div class="section-head"><span>Raw Data</span><strong>Redacted</strong></div>
+        <pre id="rawJson">{}</pre>
       </section>
     </main>
 
     <script>
       const $ = (id) => document.getElementById(id);
+      const state = {};
+
+      const endpoints = {
+        provider: "/api/v1/provider",
+        system: "/api/v1/system",
+        fit: "/api/v1/fit",
+        report: "/api/v1/report",
+        verification: "/api/v1/verification",
+        uptime: "/api/v1/uptime",
+        pricing: "/api/v1/pricing",
+        earnings: "/api/v1/earnings",
+        actions: "/api/v1/actions",
+        logs: "/api/v1/logs",
+        raw: "/api/v1/raw"
+      };
 
       async function fetchJson(path, options) {
         const response = await fetch(path, options);
@@ -85,53 +165,159 @@
         return response.json();
       }
 
-      function list(items) {
-        return (items || []).map((item) => `<li>${item}</li>`).join("");
+      async function safeFetch(key, path) {
+        try {
+          state[key] = await fetchJson(path);
+        } catch (error) {
+          state[key] = { error: error.message };
+        }
       }
 
-      function passedLabel(value) {
+      function short(value) {
+        if (!value) return "--";
+        const text = String(value);
+        return text.length > 22 ? `${text.slice(0, 12)}...${text.slice(-6)}` : text;
+      }
+
+      function pct(value) {
+        return typeof value === "number" ? `${(value * 100).toFixed(1)}%` : "--";
+      }
+
+      function money(value) {
+        return typeof value === "number" ? `R$ ${value.toFixed(2)}` : "--";
+      }
+
+      function pass(value) {
         if (!value || value.status === "skipped") return "Skipped";
         return value.passed ? "Approved" : "Warning";
       }
 
-      async function refresh() {
-        const report = await fetchJson("/api/v1/report");
-        const system = report.system || {};
-        const score = report.score || {};
-        const llm = report.llm_benchmark || {};
-
-        $("status").textContent = score.eligible ? "Approved" : "Warning";
-        $("score").textContent = score.burd_compute_score ?? "--";
-        $("tier").textContent = score.tier || "--";
-        $("gpu").textContent = system.primary_gpu_name || "CPU fallback";
-        $("vram").textContent = system.vram_total_gb ? `${system.vram_total_gb} GB` : "--";
-        $("backend").textContent = system.backend_detected || "--";
-        $("driver").textContent = system.nvidia_driver || system.amd_driver || "--";
-        $("workloads").innerHTML = list(score.recommended_workloads);
-        $("tps").textContent = llm.avg_tps ? `${llm.avg_tps} tok/s` : "--";
-        $("ttft").textContent = llm.avg_ttft_ms ? `${llm.avg_ttft_ms} ms` : "--";
-        $("stability").textContent = passedLabel(report.stability);
-        $("network").textContent = passedLabel(report.network);
-        $("disk").textContent = passedLabel(report.disk);
-        $("price").textContent = score.suggested_price_brl_hour ? `R$ ${score.suggested_price_brl_hour}/h` : "--";
-        $("json").textContent = JSON.stringify(report, null, 2);
+      function write(id, value) {
+        $(id).textContent = value ?? "--";
       }
 
-      $("run").addEventListener("click", async () => {
-        $("status").textContent = "Running";
+      function render() {
+        const provider = state.provider || {};
+        const system = state.system || {};
+        const report = state.report || {};
+        const score = provider.score || report.score || {};
+        const verification = state.verification || provider.verification || {};
+        const uptime = state.uptime || provider.uptime || {};
+        const pricing = state.pricing || provider.pricing || {};
+        const earnings = state.earnings || provider.estimated_earnings || {};
+        const llm = report.llm_benchmark || {};
+
+        write("status", provider.is_online ? "Online" : "Offline");
+        write("score", score.burd_compute_score ?? "--");
+        write("tier", score.tier || provider.tier || "--");
+        write("providerId", short(provider.provider_id));
+        write("machineId", short(provider.machine_id));
+        write("gpu", system.primary_gpu_name || "CPU fallback");
+        write("pricing", money(pricing.final_suggested_price_brl_hour));
+        write("readiness", provider.is_verified ? "Marketplace ready locally" : "Needs verification");
+        write("audit", provider.audit_status || verification.audit_status || "--");
+        write("uptime1d", pct(provider.uptime_1d ?? uptime.uptime_1d));
+        write("uptime7d", pct(provider.uptime_7d ?? uptime.uptime_7d));
+        write("uptime30d", pct(provider.uptime_30d ?? uptime.uptime_30d));
+        write("activeJobs", provider.active_jobs_future ?? 0);
+        write("backend", system.backend_detected || provider.hardware?.backend);
+        write("signedStatus", verification.signature_verified ? "Valid" : "Missing");
+        write("fraudRisk", verification.fraud_risk_level || "--");
+
+        write("cpu", system.cpu);
+        write("ram", system.ram_total_gb ? `${system.ram_total_gb} GB` : "--");
+        write("vram", system.vram_total_gb || system.vram_per_gpu_gb ? `${system.vram_total_gb || system.vram_per_gpu_gb} GB` : "--");
+        write("driver", system.nvidia_driver || system.amd_driver || "--");
+        write("cuda", system.cuda_available ? "yes" : "no");
+        write("rocm", system.rocm_available ? "yes" : "no");
+        write("diskFree", provider.hardware?.disk_free_gb ? `${provider.hardware.disk_free_gb} GB` : "--");
+        write("networkStatus", "unknown");
+        $("gpuModels").textContent = JSON.stringify(provider.gpu_models || system.gpus || [], null, 2);
+
+        write("llmTps", llm.avg_tps ? `${llm.avg_tps} tok/s` : "--");
+        write("ttft", llm.avg_ttft_ms ? `${llm.avg_ttft_ms} ms` : "--");
+        write("stability", pass(report.stability));
+        write("network", pass(report.network));
+        write("disk", pass(report.disk));
+        write("modelsAnalyzed", state.fit?.total_models_analyzed ?? "--");
+
+        write("hourly", money(pricing.final_suggested_price_brl_hour));
+        write("daily", money(earnings.daily_estimated_brl));
+        write("monthly", money(earnings.monthly_estimated_brl));
+        write("earningsWarning", earnings.warning || "Ganhos sao estimativas demonstrativas.");
+
+        write("checks", `${uptime.checks_total || 0} checks`);
+        write("lastOnline", uptime.last_online_at || "--");
+        write("lastFailed", uptime.last_failed_check_at || "--");
+        write("checksTotal", uptime.checks_total || 0);
+        write("checksFailed", uptime.checks_failed || 0);
+
+        write("identityStatus", provider.provider_id && provider.provider_id !== "uninitialized" ? "Ready" : "Missing");
+        write("keyAlgorithm", provider.raw_report?.identity?.key_algorithm || provider.raw_report?.identity?.keyAlgorithm || "ed25519");
+        write("signatureVerified", verification.signature_verified ? "Valid" : "Missing");
+        write("challengeVerified", verification.challenge_verified ? "Valid" : "Pending");
+        $("publicKey").textContent = `public_key: ${provider.public_key || "--"}`;
+
+        renderActions(state.actions || []);
+        $("logsJson").textContent = JSON.stringify(state.logs || [], null, 2);
+        $("rawJson").textContent = JSON.stringify(state.raw || {}, null, 2);
+      }
+
+      function renderActions(actions) {
+        write("actionCount", `${actions.length || 0} actions`);
+        $("actionsList").innerHTML = (actions || []).slice(-12).reverse().map((action) => `
+          <article class="list-row">
+            <span>${action.name}</span>
+            <strong>${action.status}</strong>
+          </article>
+        `).join("");
+      }
+
+      async function refresh() {
+        await Promise.all(Object.entries(endpoints).map(([key, path]) => safeFetch(key, path)));
+        render();
+      }
+
+      document.querySelectorAll(".tab").forEach((tab) => {
+        tab.addEventListener("click", () => {
+          document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
+          document.querySelectorAll(".tab-panel").forEach((item) => item.classList.remove("active"));
+          tab.classList.add("active");
+          document.querySelector(`[data-panel="${tab.dataset.tab}"]`).classList.add("active");
+        });
+      });
+
+      $("runBenchmark").addEventListener("click", async () => {
+        write("status", "Benchmarking");
         const result = await fetchJson("/api/v1/benchmark/run", { method: "POST" });
-        $("json").textContent = JSON.stringify(result.report, null, 2);
+        state.raw = result;
         await refresh();
       });
 
-      $("send").addEventListener("click", () => {
-        $("send").textContent = "Placeholder";
+      $("signReport").addEventListener("click", async () => {
+        const result = await fetchJson("/api/v1/report/signed", { method: "POST" });
+        state.raw = result;
+        $("rawJson").textContent = JSON.stringify(result, null, 2);
+        await refresh();
+      });
+
+      $("runChallenge").addEventListener("click", async () => {
+        const challenge = await fetchJson("/api/v1/challenge/mock");
+        const result = await fetchJson("/api/v1/challenge/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(challenge)
+        });
+        state.raw = result;
+        $("rawJson").textContent = JSON.stringify(result, null, 2);
+        await refresh();
       });
 
       refresh().catch((error) => {
-        $("status").textContent = "Failed";
-        $("json").textContent = JSON.stringify({ error: error.message }, null, 2);
+        write("status", "Failed");
+        $("rawJson").textContent = JSON.stringify({ error: error.message }, null, 2);
       });
     </script>
   </body>
 </html>
+

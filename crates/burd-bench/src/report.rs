@@ -6,8 +6,14 @@ use crate::score::calculate_score;
 use crate::stability::{StabilityBenchmarkReport, run_stability_benchmark};
 use burd_hardware::{BENCHMARK_VERSION, detect_specs, detect_system_report};
 use burd_llmfit::build_fit_report;
-use burd_protocol::{FullReport, load_identity, placeholder_signature};
+use burd_protocol::{
+    Challenge, FullReport, KEY_ALGORITHM, ReportSignature, SignedReport, VerifyReportResult,
+    default_state_dir, hash_canonical, load_identity, load_private_key, placeholder_signature,
+    sign_message, verify_message,
+};
 use chrono::Utc;
+use std::fs;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct ReportRunOptions {
@@ -16,6 +22,7 @@ pub struct ReportRunOptions {
     pub llm_provider: String,
     pub llm_url: Option<String>,
     pub llm_model: Option<String>,
+    pub challenge: Option<Challenge>,
 }
 
 impl ReportRunOptions {
@@ -26,6 +33,7 @@ impl ReportRunOptions {
             llm_provider: "ollama".to_string(),
             llm_url: None,
             llm_model: None,
+            challenge: None,
         }
     }
 }
@@ -72,6 +80,10 @@ pub fn generate_full_report(options: ReportRunOptions) -> FullReport {
     );
 
     let machine_id = identity.as_ref().map(|value| value.machine_id.clone());
+    let challenge_id = options
+        .challenge
+        .as_ref()
+        .map(|value| value.challenge_id.clone());
     FullReport {
         identity,
         system: serde_json::to_value(&system).expect("system report serializes"),
@@ -101,9 +113,113 @@ pub fn generate_full_report(options: ReportRunOptions) -> FullReport {
         agent_version: options.agent_version,
         benchmark_version: BENCHMARK_VERSION.to_string(),
         benchmark_profile: profile.id,
-        challenge: None,
-        signature: placeholder_signature(machine_id.as_deref(), None),
+        challenge: options.challenge,
+        signature: placeholder_signature(machine_id.as_deref(), challenge_id.as_deref()),
     }
+}
+
+pub fn generate_signed_report(options: ReportRunOptions) -> Result<SignedReport, String> {
+    let config = load_identity()?;
+    let private_key = load_private_key(&config)?;
+    let mut report = generate_full_report(options);
+    report.signature = ReportSignature {
+        algorithm: KEY_ALGORITHM.to_string(),
+        value: "signature-in-envelope".to_string(),
+        status: "signed".to_string(),
+    };
+    let report_hash = hash_canonical(&report)?;
+    let signature = sign_message(&private_key.secret_key_base64, report_hash.as_bytes())?;
+    let signature_valid_locally =
+        verify_message(&config.public_key, report_hash.as_bytes(), &signature).unwrap_or(false);
+    let signed = SignedReport {
+        provider_id: config.provider_id,
+        machine_id: config.machine_id,
+        report,
+        report_hash,
+        signature,
+        public_key: config.public_key,
+        key_algorithm: config.key_algorithm,
+        signed_at: Utc::now().to_rfc3339(),
+        signature_valid_locally,
+    };
+    let _ = save_latest_signed_report(&signed);
+    Ok(signed)
+}
+
+pub fn verify_signed_report(report: &SignedReport) -> VerifyReportResult {
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    if report.key_algorithm != KEY_ALGORITHM {
+        errors.push(format!(
+            "unsupported key algorithm '{}'",
+            report.key_algorithm
+        ));
+    }
+
+    let computed_hash = hash_canonical(&report.report).ok();
+    if computed_hash.as_deref() != Some(report.report_hash.as_str()) {
+        errors.push("report_hash does not match canonical report".to_string());
+    }
+
+    let signature_valid = verify_message(
+        &report.public_key,
+        report.report_hash.as_bytes(),
+        &report.signature,
+    )
+    .unwrap_or_else(|error| {
+        errors.push(error);
+        false
+    });
+    if !signature_valid {
+        errors.push("signature invalid".to_string());
+    }
+    if report.report.identity.is_none() {
+        warnings.push("report does not include provider identity".to_string());
+    }
+
+    VerifyReportResult {
+        report_hash: computed_hash,
+        signature_valid,
+        key_algorithm: Some(report.key_algorithm.clone()),
+        provider_id: Some(report.provider_id.clone()),
+        machine_id: Some(report.machine_id.clone()),
+        checked_at: Utc::now().to_rfc3339(),
+        warnings,
+        errors,
+    }
+}
+
+pub fn save_latest_report(report: &FullReport) -> Result<(), String> {
+    let path = default_state_dir().join("latest-report.json");
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)
+            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
+    }
+    let json = serde_json::to_string_pretty(report)
+        .map_err(|error| format!("failed to serialize latest report: {error}"))?;
+    fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+}
+
+pub fn save_latest_signed_report(report: &SignedReport) -> Result<(), String> {
+    let path = default_state_dir().join("latest-signed-report.json");
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)
+            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
+    }
+    let json = serde_json::to_string_pretty(report)
+        .map_err(|error| format!("failed to serialize latest signed report: {error}"))?;
+    fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+}
+
+pub fn load_latest_signed_report() -> Result<SignedReport, String> {
+    let path = default_state_dir().join("latest-signed-report.json");
+    load_signed_report_file(&path)
+}
+
+pub fn load_signed_report_file(path: &Path) -> Result<SignedReport, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|error| format!("invalid signed report JSON: {error}"))
 }
 
 fn skipped(reason: &str) -> serde_json::Value {
@@ -121,5 +237,42 @@ mod tests {
     fn skipped_report_shape_is_stable() {
         let value = skipped("reason");
         assert_eq!(value["status"], "skipped");
+    }
+
+    #[test]
+    fn signed_report_verification_detects_tamper() {
+        let report = SignedReport {
+            provider_id: "provider".to_string(),
+            machine_id: "machine".to_string(),
+            report: FullReport {
+                identity: None,
+                system: serde_json::json!({"os": "linux"}),
+                fit: None,
+                llm_benchmark: None,
+                stability: None,
+                network: None,
+                disk: None,
+                score: serde_json::json!({"burd_compute_score": 0}),
+                timestamp: "2026-06-08T00:00:00Z".to_string(),
+                agent_version: "0.1.0".to_string(),
+                benchmark_version: "test".to_string(),
+                benchmark_profile: "profile_8gb".to_string(),
+                challenge: None,
+                signature: ReportSignature {
+                    algorithm: KEY_ALGORITHM.to_string(),
+                    value: "signature-in-envelope".to_string(),
+                    status: "signed".to_string(),
+                },
+            },
+            report_hash: "wrong".to_string(),
+            signature: "bad".to_string(),
+            public_key: "bad".to_string(),
+            key_algorithm: KEY_ALGORITHM.to_string(),
+            signed_at: "2026-06-08T00:00:00Z".to_string(),
+            signature_valid_locally: false,
+        };
+        let result = verify_signed_report(&report);
+        assert!(!result.signature_valid);
+        assert!(!result.errors.is_empty());
     }
 }

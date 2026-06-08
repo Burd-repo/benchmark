@@ -29,14 +29,27 @@ pub struct FullReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedReport {
-    pub provider_id: Option<String>,
+    pub provider_id: String,
     pub machine_id: String,
-    pub challenge_id: String,
-    pub nonce: String,
     pub report: FullReport,
+    pub report_hash: String,
     pub signature: String,
     pub public_key: String,
-    pub generated_at: String,
+    pub key_algorithm: String,
+    pub signed_at: String,
+    pub signature_valid_locally: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyReportResult {
+    pub report_hash: Option<String>,
+    pub signature_valid: bool,
+    pub key_algorithm: Option<String>,
+    pub provider_id: Option<String>,
+    pub machine_id: Option<String>,
+    pub checked_at: String,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
 }
 
 #[cfg(test)]
@@ -66,14 +79,15 @@ mod tests {
             },
         };
         let signed = SignedReport {
-            provider_id: None,
+            provider_id: "provider".to_string(),
             machine_id: "machine".to_string(),
-            challenge_id: "challenge".to_string(),
-            nonce: "nonce".to_string(),
             report,
+            report_hash: "hash".to_string(),
             signature: "sig".to_string(),
             public_key: "pub".to_string(),
-            generated_at: "2026-06-08T00:00:00Z".to_string(),
+            key_algorithm: "ed25519".to_string(),
+            signed_at: "2026-06-08T00:00:00Z".to_string(),
+            signature_valid_locally: true,
         };
         let json = serde_json::to_string(&signed).unwrap();
         assert!(json.contains("machine"));

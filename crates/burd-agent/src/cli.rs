@@ -40,6 +40,8 @@ pub enum Commands {
         json: bool,
         #[arg(long)]
         run_all: bool,
+        #[arg(long)]
+        signed: bool,
         #[arg(long, default_value = "ollama")]
         provider: String,
         #[arg(long)]
@@ -47,10 +49,75 @@ pub enum Commands {
         #[arg(long)]
         model: Option<String>,
     },
+    /// Verify a signed report file.
+    VerifyReport {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage local agent identity.
     Identity {
         #[command(subcommand)]
         command: IdentityCommands,
+    },
+    /// Create, run or verify benchmark challenges.
+    Challenge {
+        #[command(subcommand)]
+        command: ChallengeCommands,
+    },
+    /// Show local provider health.
+    Health {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Record provider heartbeat checks.
+    Heartbeat {
+        #[arg(long)]
+        once: bool,
+        #[arg(long)]
+        interval: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Aggregate local provider console details.
+    Provider {
+        #[arg(long)]
+        json: bool,
+        #[arg(long, default_value = "http://127.0.0.1:8787")]
+        host_uri: String,
+    },
+    /// Show provider verification status.
+    VerifyProvider {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show demonstrative pricing.
+    Pricing {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show demonstrative earnings estimate.
+    Earnings {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show local actions.
+    Actions {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show local logs.
+    Logs {
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show redacted raw provider console data.
+    Raw {
+        #[arg(long)]
+        json: bool,
     },
     /// Serve local API and benchmark UI.
     Serve {
@@ -111,6 +178,41 @@ pub enum BenchCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum IdentityCommands {
-    /// Create ~/.burd/agent.json and a local private-key placeholder.
+    /// Create ~/.burd/agent.json and a local Ed25519 private key.
     Init,
+    /// Show public identity status.
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rotate the local signing key.
+    RotateKey {
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ChallengeCommands {
+    /// Create a mock backend challenge.
+    CreateMock {
+        #[arg(long, default_value = "profile_8gb")]
+        profile: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run a local challenge file and sign the response.
+    Run {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify a signed challenge response file.
+    Verify {
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
 }
