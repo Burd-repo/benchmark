@@ -80,6 +80,13 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show or clear persisted uptime history.
+    Uptime {
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<UptimeCommands>,
+    },
     /// Aggregate local provider console details.
     Provider {
         #[arg(long)]
@@ -112,7 +119,28 @@ pub enum Commands {
         #[arg(long)]
         task: Option<String>,
         #[arg(long)]
+        tail: Option<usize>,
+        #[arg(long)]
         json: bool,
+    },
+    /// Show, export or clear benchmark history.
+    History {
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<HistoryCommands>,
+    },
+    /// Manage local API bearer token.
+    ApiToken {
+        #[command(subcommand)]
+        command: ApiTokenCommands,
+    },
+    /// Build provider registration payload for future Burd backend registration.
+    RegistrationPayload {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     /// Show redacted raw provider console data.
     Raw {
@@ -160,8 +188,8 @@ pub enum BenchCommands {
     },
     /// Measure endpoint latency and failures.
     Network {
-        #[arg(long, default_value = "https://www.cloudflare.com/cdn-cgi/trace")]
-        endpoint: String,
+        #[arg(long)]
+        endpoint: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -214,5 +242,52 @@ pub enum ChallengeCommands {
         file: PathBuf,
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HistoryCommands {
+    /// Show the latest benchmark history entry.
+    Latest {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clear benchmark history.
+    Clear {
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Export benchmark history to a JSON file.
+    Export {
+        #[arg(long)]
+        output: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ApiTokenCommands {
+    /// Create an API token and print it once.
+    Create {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rotate the API token and print it once.
+    Rotate {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show API token status without printing the token.
+    Show {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UptimeCommands {
+    /// Clear persisted uptime history.
+    Clear {
+        #[arg(long)]
+        confirm: bool,
     },
 }

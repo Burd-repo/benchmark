@@ -141,6 +141,7 @@ pub fn generate_signed_report(options: ReportRunOptions) -> Result<SignedReport,
         key_algorithm: config.key_algorithm,
         signed_at: Utc::now().to_rfc3339(),
         signature_valid_locally,
+        canonicalization_version: "burd-json-c14n-v1".to_string(),
     };
     let _ = save_latest_signed_report(&signed);
     Ok(signed)
@@ -270,6 +271,7 @@ mod tests {
             key_algorithm: KEY_ALGORITHM.to_string(),
             signed_at: "2026-06-08T00:00:00Z".to_string(),
             signature_valid_locally: false,
+            canonicalization_version: "burd-json-c14n-v1".to_string(),
         };
         let result = verify_signed_report(&report);
         assert!(!result.signature_valid);

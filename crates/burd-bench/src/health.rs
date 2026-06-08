@@ -45,6 +45,7 @@ pub struct UptimeSummary {
     pub last_failed_check_at: Option<String>,
     pub checks_total: usize,
     pub checks_failed: usize,
+    pub current_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,7 +103,15 @@ pub fn heartbeat_once(agent_version: &str) -> Result<HeartbeatReport, String> {
 }
 
 pub fn load_uptime_summary() -> Result<UptimeSummary, String> {
-    Ok(summarize_checks(&load_uptime_history()?.checks))
+    load_uptime_history()
+        .map(|history| summarize_checks(&history.checks))
+        .or_else(|error| {
+            if error.contains("not found") {
+                Ok(summarize_checks(&[]))
+            } else {
+                Err(error)
+            }
+        })
 }
 
 pub fn load_uptime_history() -> Result<UptimeHistory, String> {
@@ -123,6 +132,14 @@ pub fn save_uptime_history(history: &UptimeHistory) -> Result<(), String> {
     fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
 }
 
+pub fn clear_uptime_history(confirm: bool) -> Result<UptimeSummary, String> {
+    if !confirm {
+        return Err("uptime clear requires --confirm".to_string());
+    }
+    save_uptime_history(&UptimeHistory { checks: Vec::new() })?;
+    Ok(summarize_checks(&[]))
+}
+
 pub fn summarize_checks(checks: &[UptimeCheck]) -> UptimeSummary {
     let now = Utc::now();
     let failed = checks.iter().filter(|check| !check.online).count();
@@ -136,6 +153,16 @@ pub fn summarize_checks(checks: &[UptimeCheck]) -> UptimeSummary {
         .rev()
         .find(|check| !check.online)
         .map(|check| check.checked_at.clone());
+    let current_status = checks
+        .last()
+        .map(|check| {
+            if check.online {
+                check.status.clone()
+            } else {
+                "offline".to_string()
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string());
 
     UptimeSummary {
         uptime_1d: ratio_for_window(checks, now - Duration::days(1)),
@@ -145,6 +172,7 @@ pub fn summarize_checks(checks: &[UptimeCheck]) -> UptimeSummary {
         last_failed_check_at: last_failed,
         checks_total: checks.len(),
         checks_failed: failed,
+        current_status,
     }
 }
 

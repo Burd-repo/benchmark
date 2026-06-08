@@ -1,4 +1,5 @@
-use crate::signature::{canonical_json, verify_message};
+use crate::report::SignedReport;
+use crate::signature::{KEY_ALGORITHM, canonical_json, hash_canonical, verify_message};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -11,9 +12,12 @@ pub struct Challenge {
     pub required_tests: Vec<RequiredTest>,
     pub issued_at: String,
     pub expires_at: String,
-    pub backend_url: String,
+    #[serde(default)]
+    pub backend_url: Option<String>,
     pub min_agent_version: String,
     pub min_benchmark_version: String,
+    #[serde(default)]
+    pub policy: ChallengePolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,16 +27,43 @@ pub struct RequiredTest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChallengePolicy {
+    pub require_signed_report: bool,
+    pub require_llm_benchmark: bool,
+    pub require_stability: bool,
+    pub require_network: bool,
+    pub require_disk: bool,
+}
+
+impl Default for ChallengePolicy {
+    fn default() -> Self {
+        Self {
+            require_signed_report: true,
+            require_llm_benchmark: true,
+            require_stability: true,
+            require_network: true,
+            require_disk: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChallengeResponse {
     pub challenge_id: String,
     pub nonce: String,
     pub provider_id: String,
     pub machine_id: String,
     pub report_hash: String,
+    #[serde(default)]
+    pub signed_report: Option<SignedReport>,
     pub signature: String,
     pub public_key: String,
     pub completed_at: String,
     pub status: String,
+    #[serde(default)]
+    pub failed_requirements: Vec<String>,
+    #[serde(default)]
+    pub verification_result: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,9 +120,10 @@ pub fn mock_challenge(profile: &str) -> Challenge {
         ],
         issued_at: issued.to_rfc3339(),
         expires_at: (issued + Duration::minutes(30)).to_rfc3339(),
-        backend_url: "https://api.burd.cloud".to_string(),
+        backend_url: Some("https://api.burd.cloud".to_string()),
         min_agent_version: "0.1.0".to_string(),
         min_benchmark_version: "2026.06-mvp".to_string(),
+        policy: ChallengePolicy::default(),
     }
 }
 
@@ -133,7 +165,10 @@ pub fn verify_challenge_response(
         errors.push("challenge expired".to_string());
     }
 
-    if response.status != "completed" {
+    if !matches!(
+        response.status.as_str(),
+        "completed" | "passed" | "failed" | "expired" | "partial"
+    ) {
         warnings.push(format!("challenge response status is {}", response.status));
     }
 
@@ -159,6 +194,9 @@ pub fn verify_challenge_response(
         errors.push("challenge response signature invalid".to_string());
     }
 
+    let mut failed_requirements = validate_required_tests(challenge, response, &mut warnings);
+    errors.append(&mut failed_requirements);
+
     ChallengeVerification {
         challenge_id: challenge.challenge_id.clone(),
         valid: errors.is_empty(),
@@ -168,6 +206,131 @@ pub fn verify_challenge_response(
         warnings,
         errors,
     }
+}
+
+fn validate_required_tests(
+    challenge: &Challenge,
+    response: &ChallengeResponse,
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(signed_report) = response.signed_report.as_ref() else {
+        if challenge.policy.require_signed_report {
+            errors.push("signed report required by challenge policy".to_string());
+        }
+        return errors;
+    };
+
+    if signed_report.report_hash != response.report_hash {
+        errors.push("response report_hash does not match signed_report report_hash".to_string());
+    }
+    if signed_report.provider_id != response.provider_id {
+        errors.push("response provider_id does not match signed report".to_string());
+    }
+    if signed_report.machine_id != response.machine_id {
+        errors.push("response machine_id does not match signed report".to_string());
+    }
+    if signed_report.key_algorithm != KEY_ALGORITHM {
+        errors.push(format!(
+            "unsupported signed report key algorithm '{}'",
+            signed_report.key_algorithm
+        ));
+    }
+
+    match hash_canonical(&signed_report.report) {
+        Ok(hash) if hash == signed_report.report_hash => {}
+        Ok(_) => errors.push("signed report hash does not match canonical report".to_string()),
+        Err(error) => errors.push(error),
+    }
+    match verify_message(
+        &signed_report.public_key,
+        signed_report.report_hash.as_bytes(),
+        &signed_report.signature,
+    ) {
+        Ok(true) => {}
+        Ok(false) => errors.push("signed report signature invalid".to_string()),
+        Err(error) => errors.push(error),
+    }
+
+    if signed_report.report.agent_version.as_str() < challenge.min_agent_version.as_str() {
+        errors.push(format!(
+            "agent version {} is below challenge minimum {}",
+            signed_report.report.agent_version, challenge.min_agent_version
+        ));
+    }
+    if signed_report.report.benchmark_version.as_str() < challenge.min_benchmark_version.as_str() {
+        errors.push(format!(
+            "benchmark version {} is below challenge minimum {}",
+            signed_report.report.benchmark_version, challenge.min_benchmark_version
+        ));
+    }
+
+    let required_names: Vec<&str> = challenge
+        .required_tests
+        .iter()
+        .filter(|test| test.required)
+        .map(|test| test.name.as_str())
+        .collect();
+    for name in required_names {
+        if !report_has_test(signed_report, name) {
+            errors.push(format!("required test missing from signed report: {name}"));
+        }
+    }
+
+    if challenge.policy.require_llm_benchmark && !report_has_test(signed_report, "llm_benchmark") {
+        errors.push("policy requires llm_benchmark".to_string());
+    }
+    if challenge.policy.require_stability && !report_has_test(signed_report, "stability") {
+        errors.push("policy requires stability".to_string());
+    }
+    if challenge.policy.require_network && !report_has_test(signed_report, "network") {
+        errors.push("policy requires network".to_string());
+    }
+    if challenge.policy.require_disk && !report_has_test(signed_report, "disk") {
+        errors.push("policy requires disk".to_string());
+    }
+
+    for item in &response.failed_requirements {
+        warnings.push(format!("response declared failed requirement: {item}"));
+    }
+
+    errors
+}
+
+fn report_has_test(signed_report: &SignedReport, name: &str) -> bool {
+    match name {
+        "system" => !signed_report.report.system.is_null(),
+        "fit" => signed_report.report.fit.as_ref().is_some_and(not_skipped),
+        "llm_benchmark" => signed_report
+            .report
+            .llm_benchmark
+            .as_ref()
+            .is_some_and(not_skipped),
+        "stability" => signed_report
+            .report
+            .stability
+            .as_ref()
+            .is_some_and(not_skipped),
+        "network" => signed_report
+            .report
+            .network
+            .as_ref()
+            .is_some_and(not_skipped),
+        "disk" => signed_report.report.disk.as_ref().is_some_and(not_skipped),
+        other => signed_report
+            .report
+            .score
+            .get(other)
+            .is_some_and(|value| !value.is_null()),
+    }
+}
+
+fn not_skipped(value: &serde_json::Value) -> bool {
+    value
+        .get("status")
+        .and_then(|status| status.as_str())
+        .map(|status| status != "skipped")
+        .unwrap_or(true)
 }
 
 pub fn challenge_expired(challenge: &Challenge) -> Result<bool, String> {
@@ -180,6 +343,8 @@ pub fn challenge_expired(challenge: &Challenge) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::report::{FullReport, ReportSignature};
+    use crate::signature::{generate_keypair, hash_canonical, sign_message};
 
     #[test]
     fn challenge_serializes() {
@@ -195,5 +360,90 @@ mod tests {
         let mut challenge = mock_challenge("profile_8gb");
         challenge.expires_at = (Utc::now() - Duration::seconds(1)).to_rfc3339();
         assert!(challenge_expired(&challenge).unwrap());
+    }
+
+    #[test]
+    fn required_tests_missing_from_signed_report_fail_validation() {
+        let keys = generate_keypair().unwrap();
+        let challenge = Challenge {
+            required_tests: vec![RequiredTest {
+                name: "llm_benchmark".to_string(),
+                required: true,
+            }],
+            policy: ChallengePolicy {
+                require_llm_benchmark: false,
+                require_stability: false,
+                require_network: false,
+                require_disk: false,
+                ..ChallengePolicy::default()
+            },
+            ..mock_challenge("profile_8gb")
+        };
+        let mut report = FullReport {
+            identity: None,
+            system: serde_json::json!({"os": "linux"}),
+            fit: Some(serde_json::json!({"status": "ok"})),
+            llm_benchmark: Some(serde_json::json!({"status": "skipped"})),
+            stability: None,
+            network: None,
+            disk: None,
+            score: serde_json::json!({"burd_compute_score": 0, "tier": "Not Eligible"}),
+            timestamp: Utc::now().to_rfc3339(),
+            agent_version: "0.1.0".to_string(),
+            benchmark_version: "2026.06-mvp".to_string(),
+            benchmark_profile: "profile_8gb".to_string(),
+            challenge: Some(challenge.clone()),
+            signature: ReportSignature {
+                algorithm: KEY_ALGORITHM.to_string(),
+                value: "signature-in-envelope".to_string(),
+                status: "signed".to_string(),
+            },
+        };
+        let report_hash = hash_canonical(&report).unwrap();
+        report.signature.value = "signature-in-envelope".to_string();
+        let signature = sign_message(&keys.secret_key_base64, report_hash.as_bytes()).unwrap();
+        let signed_report = SignedReport {
+            provider_id: "provider".to_string(),
+            machine_id: "machine".to_string(),
+            report,
+            report_hash: report_hash.clone(),
+            signature,
+            public_key: keys.public_key_base64.clone(),
+            key_algorithm: KEY_ALGORITHM.to_string(),
+            signed_at: Utc::now().to_rfc3339(),
+            signature_valid_locally: true,
+            canonicalization_version: "burd-json-c14n-v1".to_string(),
+        };
+        let message = challenge_response_message(
+            &challenge.challenge_id,
+            &challenge.nonce,
+            "provider",
+            "machine",
+            &report_hash,
+        )
+        .unwrap();
+        let response = ChallengeResponse {
+            challenge_id: challenge.challenge_id.clone(),
+            nonce: challenge.nonce.clone(),
+            provider_id: "provider".to_string(),
+            machine_id: "machine".to_string(),
+            report_hash,
+            signed_report: Some(signed_report),
+            signature: sign_message(&keys.secret_key_base64, message.as_bytes()).unwrap(),
+            public_key: keys.public_key_base64,
+            completed_at: Utc::now().to_rfc3339(),
+            status: "partial".to_string(),
+            failed_requirements: Vec::new(),
+            verification_result: None,
+        };
+
+        let result = verify_challenge_response(&challenge, &response);
+        assert!(!result.valid);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.contains("required test missing"))
+        );
     }
 }

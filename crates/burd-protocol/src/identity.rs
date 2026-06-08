@@ -1,4 +1,4 @@
-use crate::signature::{KEY_ALGORITHM, generate_keypair};
+use crate::signature::{KEY_ALGORITHM, encode_base64, generate_keypair, sha256_hex};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,6 +23,16 @@ pub struct AgentConfig {
     pub country: Option<String>,
     pub city: Option<String>,
     pub region: Option<String>,
+    #[serde(default)]
+    pub api_token_hash: Option<String>,
+    #[serde(default)]
+    pub api_auth_enabled: bool,
+    #[serde(default = "default_api_bind_host")]
+    pub api_bind_host: String,
+    #[serde(default = "default_api_port")]
+    pub api_port: u16,
+    #[serde(default = "default_network_endpoint")]
+    pub default_network_endpoint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +77,17 @@ pub struct PrivateKeyFile {
     pub key_algorithm: String,
     pub secret_key_base64: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiTokenStatus {
+    pub config_path: String,
+    pub api_auth_enabled: bool,
+    pub token_configured: bool,
+    pub token_hash_preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    pub warning: Option<String>,
 }
 
 impl AgentConfig {
@@ -180,6 +201,11 @@ pub fn init_identity() -> Result<IdentityInitResult, String> {
         country: None,
         city: None,
         region: None,
+        api_token_hash: None,
+        api_auth_enabled: false,
+        api_bind_host: default_api_bind_host(),
+        api_port: default_api_port(),
+        default_network_endpoint: default_network_endpoint(),
     };
 
     write_config(&path, &config)?;
@@ -219,6 +245,30 @@ pub fn rotate_identity_key(confirm: bool) -> Result<IdentityStatus, String> {
     Ok(identity_status(&config, &path))
 }
 
+pub fn create_api_token() -> Result<ApiTokenStatus, String> {
+    update_api_token(true)
+}
+
+pub fn rotate_api_token() -> Result<ApiTokenStatus, String> {
+    update_api_token(true)
+}
+
+pub fn show_api_token_status() -> Result<ApiTokenStatus, String> {
+    let config = load_identity()?;
+    Ok(api_token_status(&config, None))
+}
+
+pub fn verify_api_token(token: &str) -> Result<bool, String> {
+    let config = load_identity()?;
+    if !config.api_auth_enabled {
+        return Ok(true);
+    }
+    let Some(expected_hash) = config.api_token_hash else {
+        return Ok(false);
+    };
+    Ok(sha256_hex(token.as_bytes()) == expected_hash)
+}
+
 pub fn redacted_config_value() -> Result<Value, String> {
     let config = load_identity()?;
     Ok(serde_json::json!({
@@ -237,7 +287,53 @@ pub fn redacted_config_value() -> Result<Value, String> {
         "country": config.country,
         "city": config.city,
         "region": config.region,
+        "api_token_hash": config.api_token_hash.as_ref().map(|_| "[redacted]"),
+        "api_auth_enabled": config.api_auth_enabled,
+        "api_bind_host": config.api_bind_host,
+        "api_port": config.api_port,
+        "default_network_endpoint": config.default_network_endpoint,
     }))
+}
+
+fn update_api_token(include_token: bool) -> Result<ApiTokenStatus, String> {
+    if !default_config_path().exists() {
+        let _ = init_identity()?;
+    }
+    let path = default_config_path();
+    let mut config = load_identity()?;
+    let token = generate_api_token()?;
+    config.api_token_hash = Some(sha256_hex(token.as_bytes()));
+    config.api_auth_enabled = true;
+    write_config(&path, &config)?;
+    Ok(api_token_status(
+        &config,
+        if include_token { Some(token) } else { None },
+    ))
+}
+
+fn api_token_status(config: &AgentConfig, token: Option<String>) -> ApiTokenStatus {
+    ApiTokenStatus {
+        config_path: default_config_path().display().to_string(),
+        api_auth_enabled: config.api_auth_enabled,
+        token_configured: config.api_token_hash.is_some(),
+        token_hash_preview: config
+            .api_token_hash
+            .as_ref()
+            .map(|hash| format!("{}...", &hash[..hash.len().min(12)])),
+        token,
+        warning: if config.api_auth_enabled {
+            None
+        } else {
+            Some("local API authentication is disabled".to_string())
+        },
+    }
+}
+
+fn generate_api_token() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| format!("failed to generate API token: {error}"))?;
+    Ok(encode_base64(&bytes))
 }
 
 fn identity_status(config: &AgentConfig, config_path: &std::path::Path) -> IdentityStatus {
@@ -271,6 +367,18 @@ fn write_private_key(path: &std::path::Path, key: &PrivateKeyFile) -> Result<(),
         .map_err(|error| format!("failed to write private key at {}: {error}", path.display()))
 }
 
+fn default_api_bind_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_api_port() -> u16 {
+    8787
+}
+
+fn default_network_endpoint() -> String {
+    "https://www.cloudflare.com/cdn-cgi/trace".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +401,11 @@ mod tests {
             country: None,
             city: None,
             region: None,
+            api_token_hash: None,
+            api_auth_enabled: false,
+            api_bind_host: default_api_bind_host(),
+            api_port: default_api_port(),
+            default_network_endpoint: default_network_endpoint(),
         };
 
         let json = serde_json::to_string(&config.public_identity()).unwrap();
@@ -318,10 +431,22 @@ mod tests {
             country: Some("BR".to_string()),
             city: Some("SAO".to_string()),
             region: Some("br-southeast".to_string()),
+            api_token_hash: Some("hash".to_string()),
+            api_auth_enabled: true,
+            api_bind_host: "127.0.0.1".to_string(),
+            api_port: 8787,
+            default_network_endpoint: default_network_endpoint(),
         };
         let json = serde_json::to_string(&config).unwrap();
         let parsed: AgentConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.provider_id, "provider");
         assert_eq!(parsed.machine_id, "machine");
+    }
+
+    #[test]
+    fn generated_api_token_is_not_empty() {
+        let token = generate_api_token().unwrap();
+        assert!(token.len() > 32);
+        assert_ne!(sha256_hex(token.as_bytes()), token);
     }
 }

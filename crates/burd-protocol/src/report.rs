@@ -38,6 +38,12 @@ pub struct SignedReport {
     pub key_algorithm: String,
     pub signed_at: String,
     pub signature_valid_locally: bool,
+    #[serde(default = "default_canonicalization_version")]
+    pub canonicalization_version: String,
+}
+
+fn default_canonicalization_version() -> String {
+    "burd-json-c14n-v1".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +94,7 @@ mod tests {
             key_algorithm: "ed25519".to_string(),
             signed_at: "2026-06-08T00:00:00Z".to_string(),
             signature_valid_locally: true,
+            canonicalization_version: "burd-json-c14n-v1".to_string(),
         };
         let json = serde_json::to_string(&signed).unwrap();
         assert!(json.contains("machine"));

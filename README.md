@@ -42,17 +42,29 @@ burd-agent verify-report --file docs/examples/signed-report.json --json
 burd-agent identity init
 burd-agent identity show --json
 burd-agent identity rotate-key --confirm
+burd-agent api-token create --json
+burd-agent api-token rotate --json
+burd-agent api-token show --json
 burd-agent challenge create-mock --json
 burd-agent challenge run --file docs/examples/challenge.json --json
 burd-agent challenge verify --file signed-response.json --json
 burd-agent health --json
 burd-agent heartbeat --once --json
+burd-agent uptime --json
+burd-agent uptime clear --confirm
 burd-agent provider --json
 burd-agent verify-provider --json
 burd-agent pricing --json
 burd-agent earnings --json
 burd-agent actions --json
 burd-agent logs --json
+burd-agent logs --tail 50 --json
+burd-agent history --json
+burd-agent history latest --json
+burd-agent history export --output history.json
+burd-agent history clear --confirm
+burd-agent registration-payload --json
+burd-agent registration-payload --output registration.json
 burd-agent raw --json
 burd-agent serve --host 127.0.0.1 --port 8787
 ```
@@ -114,6 +126,28 @@ The signed output includes:
 - key algorithm;
 - signing timestamp;
 - local signature verification result.
+- canonicalization version.
+
+`report --run-all` and `report --run-all --signed` append local benchmark
+history to `~/.burd/benchmark-history.json`.
+
+## Local API Token
+
+Run:
+
+```sh
+burd-agent api-token create --json
+```
+
+The token is printed once. The config stores only a token hash. Use
+`api-token rotate --json` to rotate it and `api-token show --json` to check
+status without printing the token.
+
+When local API auth is enabled, protected endpoints expect:
+
+```txt
+Authorization: Bearer <token>
+```
 
 ## Challenge Response
 
@@ -127,6 +161,37 @@ burd-agent challenge run --file docs/examples/challenge.json --json
 The MVP challenge flow is local and mock-backed. It prepares the future backend
 flow where Burd issues a nonce-bound challenge, receives a signed response, and
 validates report hash, signature, expiry, and provider identity.
+
+Local verification now checks expiry, nonce, required tests, minimum agent and
+benchmark versions, signed report hash, signed report signature, and challenge
+response signature.
+
+## Benchmark History
+
+Run:
+
+```sh
+burd-agent history --json
+burd-agent history latest --json
+burd-agent history export --output history.json
+```
+
+History stores benchmark summaries only. It must not include private keys, API
+tokens, or raw credentials.
+
+## Provider Registration Payload
+
+Run:
+
+```sh
+burd-agent registration-payload --json
+burd-agent registration-payload --output registration.json
+```
+
+This builds the future backend registration payload locally. It includes public
+identity, latest signed report hash, score, tier, capabilities, pricing, and
+verification summary. It does not submit anything to Burd and does not include
+secrets.
 
 ## Provider Console API and UI
 
@@ -146,19 +211,22 @@ Endpoints:
 - `GET /api/v1/provider`
 - `GET /api/v1/verification`
 - `GET /api/v1/uptime`
+- `GET /api/v1/history`
+- `GET /api/v1/registration-payload`
 - `GET /api/v1/pricing`
 - `GET /api/v1/earnings`
 - `GET /api/v1/actions`
 - `GET /api/v1/logs`
 - `GET /api/v1/raw`
+- `GET /api/v1/config`
 - `POST /api/v1/benchmark/run`
 - `POST /api/v1/challenge/run`
 - `GET /api/v1/benchmark/status`
 
 The local Provider Console UI is in `apps/benchmark-ui` and is served at `/` by
 the local API. It follows the dark technical Burd design system from `SKILL.md`
-and includes Overview, Hardware, Benchmarks, Jobs/Leases future, Earnings,
-Uptime, Security, Logs, and Raw Data.
+and includes Overview, Hardware, Benchmarks, History, Uptime, Security,
+Registration, Logs, and Raw Data.
 
 ## Limitations
 
@@ -172,17 +240,21 @@ Uptime, Security, Logs, and Raw Data.
   endpoint.
 - Network benchmark defaults to a public endpoint unless `--endpoint` is
   supplied; no Burd backend is required for this MVP.
-- `burd-agent serve --host 0.0.0.0` is possible but emits a warning because API
-  token support is future work.
+- `burd-agent serve --host 0.0.0.0` is possible but should be paired with
+  `burd-agent api-token create --json`; without a token it emits a strong
+  warning.
 
 ## Documentation
 
 - `docs/architecture.md`
+- `docs/current-state.md`
 - `docs/provider-console-parity.md`
 - `docs/security.md`
 - `docs/provider-identity.md`
 - `docs/challenge-response.md`
+- `docs/benchmark-history.md`
 - `docs/local-api.md`
+- `docs/provider-registration.md`
 - `docs/provider-console-ui.md`
 - `docs/llmfit-adaptation.md`
 - `docs/benchmark-profiles.md`

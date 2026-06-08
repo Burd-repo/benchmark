@@ -32,10 +32,10 @@
         <button class="tab active" data-tab="overview">Overview</button>
         <button class="tab" data-tab="hardware">Hardware</button>
         <button class="tab" data-tab="benchmarks">Benchmarks</button>
-        <button class="tab" data-tab="jobs">Jobs/Leases future</button>
-        <button class="tab" data-tab="earnings">Earnings</button>
+        <button class="tab" data-tab="history">History</button>
         <button class="tab" data-tab="uptime">Uptime</button>
         <button class="tab" data-tab="security">Security</button>
+        <button class="tab" data-tab="registration">Registration</button>
         <button class="tab" data-tab="logs">Logs</button>
         <button class="tab" data-tab="raw">Raw Data</button>
       </nav>
@@ -57,6 +57,7 @@
           <article class="tile"><span>Active jobs</span><strong id="activeJobs">0</strong></article>
           <article class="tile"><span>Backend</span><strong id="backend">--</strong></article>
           <article class="tile"><span>Signed report</span><strong id="signedStatus">--</strong></article>
+          <article class="tile"><span>Challenge</span><strong id="challengeStatus">--</strong></article>
           <article class="tile"><span>Fraud risk</span><strong id="fraudRisk">--</strong></article>
         </div>
       </section>
@@ -88,24 +89,16 @@
         </div>
       </section>
 
-      <section class="tab-panel" data-panel="jobs">
-        <div class="section-head"><span>Jobs / leases future</span><strong>Marketplace phase</strong></div>
-        <div class="grid three">
-          <article class="tile"><span>Active jobs</span><strong>0</strong></article>
-          <article class="tile"><span>Pending jobs</span><strong>0</strong></article>
-          <article class="tile"><span>Completed jobs</span><strong>0</strong></article>
+      <section class="tab-panel" data-panel="history">
+        <div class="section-head"><span>History</span><strong id="historyCount">0 entries</strong></div>
+        <div class="grid four">
+          <article class="tile"><span>Latest score</span><strong id="historyScore">--</strong></article>
+          <article class="tile"><span>Latest tier</span><strong id="historyTier">--</strong></article>
+          <article class="tile"><span>Signed</span><strong id="historySigned">--</strong></article>
+          <article class="tile"><span>Challenge</span><strong id="historyChallenge">--</strong></article>
         </div>
-        <p class="note">Job execution, leases and orchestration will be implemented in the marketplace phase.</p>
-      </section>
-
-      <section class="tab-panel" data-panel="earnings">
-        <div class="section-head"><span>Earnings</span><strong>Demonstrative only</strong></div>
-        <div class="grid three">
-          <article class="tile"><span>Hourly suggested</span><strong id="hourly">--</strong></article>
-          <article class="tile"><span>Daily estimate</span><strong id="daily">--</strong></article>
-          <article class="tile"><span>Monthly estimate</span><strong id="monthly">--</strong></article>
-        </div>
-        <p class="warning" id="earningsWarning">Ganhos sao estimativas demonstrativas.</p>
+        <div id="historyList" class="list"></div>
+        <pre id="historyJson">[]</pre>
       </section>
 
       <section class="tab-panel" data-panel="uptime">
@@ -125,8 +118,24 @@
           <article class="tile"><span>Key algorithm</span><strong id="keyAlgorithm">--</strong></article>
           <article class="tile"><span>Signature</span><strong id="signatureVerified">--</strong></article>
           <article class="tile"><span>Challenge</span><strong id="challengeVerified">--</strong></article>
+          <article class="tile"><span>API token</span><strong id="apiTokenStatus">--</strong></article>
+          <article class="tile"><span>Raw data</span><strong id="rawRedacted">--</strong></article>
         </div>
         <pre id="publicKey">public_key: --</pre>
+      </section>
+
+      <section class="tab-panel" data-panel="registration">
+        <div class="section-head"><span>Registration</span><strong>Future backend payload</strong></div>
+        <div class="grid three">
+          <article class="tile"><span>Latest report hash</span><strong id="registrationHash">--</strong></article>
+          <article class="tile"><span>Latest score</span><strong id="registrationScore">--</strong></article>
+          <article class="tile"><span>Secrets included</span><strong id="registrationSecrets">--</strong></article>
+        </div>
+        <div class="button-strip">
+          <button id="copyRegistration">Copy registration payload</button>
+          <button disabled>Send to Burd backend</button>
+        </div>
+        <pre id="registrationJson">{}</pre>
       </section>
 
       <section class="tab-panel" data-panel="logs">
@@ -152,6 +161,9 @@
         report: "/api/v1/report",
         verification: "/api/v1/verification",
         uptime: "/api/v1/uptime",
+        history: "/api/v1/history",
+        config: "/api/v1/config",
+        registration: "/api/v1/registration-payload",
         pricing: "/api/v1/pricing",
         earnings: "/api/v1/earnings",
         actions: "/api/v1/actions",
@@ -203,9 +215,13 @@
         const score = provider.score || report.score || {};
         const verification = state.verification || provider.verification || {};
         const uptime = state.uptime || provider.uptime || {};
+        const history = state.history || {};
+        const config = state.config || {};
+        const registration = state.registration || {};
         const pricing = state.pricing || provider.pricing || {};
         const earnings = state.earnings || provider.estimated_earnings || {};
         const llm = report.llm_benchmark || {};
+        const latestHistory = (history.entries || []).slice(-1)[0] || {};
 
         write("status", provider.is_online ? "Online" : "Offline");
         write("score", score.burd_compute_score ?? "--");
@@ -222,6 +238,7 @@
         write("activeJobs", provider.active_jobs_future ?? 0);
         write("backend", system.backend_detected || provider.hardware?.backend);
         write("signedStatus", verification.signature_verified ? "Valid" : "Missing");
+        write("challengeStatus", verification.challenge_verified ? "Verified" : latestHistory.challenge_id ? "Local response" : "Pending");
         write("fraudRisk", verification.fraud_risk_level || "--");
 
         write("cpu", system.cpu);
@@ -241,10 +258,12 @@
         write("disk", pass(report.disk));
         write("modelsAnalyzed", state.fit?.total_models_analyzed ?? "--");
 
-        write("hourly", money(pricing.final_suggested_price_brl_hour));
-        write("daily", money(earnings.daily_estimated_brl));
-        write("monthly", money(earnings.monthly_estimated_brl));
-        write("earningsWarning", earnings.warning || "Ganhos sao estimativas demonstrativas.");
+        write("historyCount", `${history.entries_total || 0} entries`);
+        write("historyScore", latestHistory.score ?? "--");
+        write("historyTier", latestHistory.tier || "--");
+        write("historySigned", latestHistory.signed === true ? "Signed" : latestHistory.signed === false ? "Unsigned" : "--");
+        write("historyChallenge", short(latestHistory.challenge_id));
+        renderHistory(history.entries || []);
 
         write("checks", `${uptime.checks_total || 0} checks`);
         write("lastOnline", uptime.last_online_at || "--");
@@ -256,11 +275,19 @@
         write("keyAlgorithm", provider.raw_report?.identity?.key_algorithm || provider.raw_report?.identity?.keyAlgorithm || "ed25519");
         write("signatureVerified", verification.signature_verified ? "Valid" : "Missing");
         write("challengeVerified", verification.challenge_verified ? "Valid" : "Pending");
+        write("apiTokenStatus", config.api_auth_enabled ? "Enabled" : config.error ? "Unavailable" : "Dev mode");
+        write("rawRedacted", state.raw?.redacted ? "Redacted" : "Pending");
         $("publicKey").textContent = `public_key: ${provider.public_key || "--"}`;
+
+        write("registrationHash", short(registration.latest_signed_report_hash));
+        write("registrationScore", registration.latest_score ?? "--");
+        write("registrationSecrets", registration.secrets_included === false ? "No" : "--");
+        $("registrationJson").textContent = JSON.stringify(registration || {}, null, 2);
 
         renderActions(state.actions || []);
         $("logsJson").textContent = JSON.stringify(state.logs || [], null, 2);
         $("rawJson").textContent = JSON.stringify(state.raw || {}, null, 2);
+        $("historyJson").textContent = JSON.stringify(history.entries || [], null, 2);
       }
 
       function renderActions(actions) {
@@ -269,6 +296,15 @@
           <article class="list-row">
             <span>${action.name}</span>
             <strong>${action.status}</strong>
+          </article>
+        `).join("");
+      }
+
+      function renderHistory(entries) {
+        $("historyList").innerHTML = (entries || []).slice(-8).reverse().map((entry) => `
+          <article class="list-row">
+            <span>${entry.timestamp || "--"} | ${entry.tier || "--"} | ${entry.signed ? "signed" : "unsigned"}</span>
+            <strong>${entry.score ?? "--"}</strong>
           </article>
         `).join("");
       }
@@ -313,6 +349,17 @@
         await refresh();
       });
 
+      $("copyRegistration").addEventListener("click", async () => {
+        const payload = JSON.stringify(state.registration || {}, null, 2);
+        try {
+          await navigator.clipboard.writeText(payload);
+          $("copyRegistration").textContent = "Copied";
+          setTimeout(() => $("copyRegistration").textContent = "Copy registration payload", 1200);
+        } catch (error) {
+          $("registrationJson").textContent = JSON.stringify({ error: error.message, payload: state.registration || {} }, null, 2);
+        }
+      });
+
       refresh().catch((error) => {
         write("status", "Failed");
         $("rawJson").textContent = JSON.stringify({ error: error.message }, null, 2);
@@ -320,4 +367,3 @@
     </script>
   </body>
 </html>
-

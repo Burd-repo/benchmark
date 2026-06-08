@@ -19,10 +19,10 @@ Tabs:
 1. Overview
 2. Hardware
 3. Benchmarks
-4. Jobs/Leases future
-5. Earnings
-6. Uptime
-7. Security
+4. History
+5. Uptime
+6. Security
+7. Registration
 8. Logs
 9. Raw Data
 
@@ -35,10 +35,24 @@ Operational buttons:
 
 Future UI work:
 
-- authenticated remote provider access;
+- authenticated remote provider access beyond bearer token MVP;
 - marketplace jobs/leases;
 - pricing edits;
 - alerts/notifications;
 - backend verification history;
 - benchmark history charts.
 
+Security tab:
+
+- public key;
+- signature verification status;
+- API token status;
+- challenge status;
+- fraud risk through provider verification;
+- raw data redaction status.
+
+Registration tab:
+
+- provider registration payload JSON;
+- copy action for local use;
+- disabled future action for sending to the Burd backend.

@@ -3,21 +3,27 @@ mod cli;
 use anyhow::Result;
 use burd_bench::{
     DiskBenchmarkOptions, LlmBenchmarkOptions, NetworkBenchmarkOptions, ReportRunOptions,
-    build_provider_details, build_raw_data, calculate_pricing, calculate_score, detect_health,
-    estimate_earnings, generate_full_report, generate_signed_report, heartbeat_once, load_actions,
-    load_logs, load_logs_for_task, load_signed_report_file, profile_for_vram, record_action,
+    append_report_history, append_signed_report_history, build_provider_details, build_raw_data,
+    build_registration_payload, calculate_pricing, calculate_score, clear_history,
+    clear_uptime_history, detect_health, estimate_earnings, export_history,
+    export_registration_payload, generate_full_report, generate_signed_report, heartbeat_once,
+    load_actions, load_history_list, load_latest_history, load_logs, load_logs_for_task,
+    load_signed_report_file, load_uptime_summary, profile_for_vram, record_action,
     run_disk_benchmark, run_llm_benchmark, run_network_benchmark, run_stability_benchmark,
     save_latest_report, verify_provider, verify_signed_report,
 };
 use burd_hardware::{detect_specs, detect_system_report};
 use burd_llmfit::build_fit_report;
 use burd_protocol::{
-    Challenge, ChallengeResponse, challenge_response_message, init_identity, load_identity,
-    load_private_key, mock_challenge, rotate_identity_key, show_identity, sign_message,
-    verify_challenge_response,
+    Challenge, ChallengeResponse, challenge_response_message, create_api_token, init_identity,
+    load_identity, load_private_key, mock_challenge, rotate_api_token, rotate_identity_key,
+    show_api_token_status, show_identity, sign_message, verify_challenge_response,
 };
 use clap::Parser;
-use cli::{BenchCommands, ChallengeCommands, Cli, Commands, IdentityCommands};
+use cli::{
+    ApiTokenCommands, BenchCommands, ChallengeCommands, Cli, Commands, HistoryCommands,
+    IdentityCommands, UptimeCommands,
+};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
@@ -122,6 +128,13 @@ fn run() -> Result<()> {
                 print_json(&report)?;
             }
             BenchCommands::Network { endpoint, json: _ } => {
+                let endpoint = endpoint
+                    .or_else(|| {
+                        load_identity()
+                            .ok()
+                            .map(|config| config.default_network_endpoint)
+                    })
+                    .unwrap_or_else(|| "https://www.cloudflare.com/cdn-cgi/trace".to_string());
                 let report = run_network_benchmark(NetworkBenchmarkOptions {
                     endpoint,
                     attempts: 5,
@@ -183,6 +196,10 @@ fn run() -> Result<()> {
             options.llm_model = model;
             if signed {
                 let signed = generate_signed_report(options).map_err(anyhow::Error::msg)?;
+                let _ = save_latest_report(&signed.report);
+                if run_all {
+                    let _ = append_signed_report_history(&signed);
+                }
                 let _ = record_action(
                     "signed report generation",
                     if signed.signature_valid_locally {
@@ -198,6 +215,9 @@ fn run() -> Result<()> {
             } else {
                 let report = generate_full_report(options);
                 let _ = save_latest_report(&report);
+                if run_all {
+                    let _ = append_report_history(&report);
+                }
                 let _ = record_action(
                     "report generation",
                     "completed",
@@ -262,6 +282,8 @@ fn run() -> Result<()> {
                 options.run_all = true;
                 options.challenge = Some(challenge.clone());
                 let signed_report = generate_signed_report(options).map_err(anyhow::Error::msg)?;
+                let _ = save_latest_report(&signed_report.report);
+                let _ = append_signed_report_history(&signed_report);
                 let config = load_identity().map_err(anyhow::Error::msg)?;
                 let private_key = load_private_key(&config).map_err(anyhow::Error::msg)?;
                 let message = challenge_response_message(
@@ -274,18 +296,37 @@ fn run() -> Result<()> {
                 .map_err(anyhow::Error::msg)?;
                 let signature = sign_message(&private_key.secret_key_base64, message.as_bytes())
                     .map_err(anyhow::Error::msg)?;
-                let response = ChallengeResponse {
+                let mut response = ChallengeResponse {
                     challenge_id: challenge.challenge_id.clone(),
                     nonce: challenge.nonce.clone(),
                     provider_id: config.provider_id,
                     machine_id: config.machine_id,
                     report_hash: signed_report.report_hash.clone(),
+                    signed_report: Some(signed_report.clone()),
                     signature,
                     public_key: signed_report.public_key.clone(),
                     completed_at: chrono::Utc::now().to_rfc3339(),
-                    status: "completed".to_string(),
+                    status: "partial".to_string(),
+                    failed_requirements: Vec::new(),
+                    verification_result: None,
                 };
                 let verification = verify_challenge_response(&challenge, &response);
+                response.status = if verification.expired {
+                    "expired".to_string()
+                } else if verification.valid {
+                    "passed".to_string()
+                } else {
+                    "failed".to_string()
+                };
+                response.failed_requirements = verification.errors.clone();
+                response.verification_result = Some(serde_json::json!({
+                    "valid": verification.valid,
+                    "signature_valid": verification.signature_valid,
+                    "expired": verification.expired,
+                    "checked_at": verification.checked_at.clone(),
+                    "warnings": verification.warnings.clone(),
+                    "errors": verification.errors.clone(),
+                }));
                 let output = ChallengeRunOutput {
                     challenge,
                     signed_report,
@@ -325,6 +366,22 @@ fn run() -> Result<()> {
                 run_heartbeat_loop(seconds)?;
             }
         }
+        Commands::Uptime { json: _, command } => match command {
+            Some(UptimeCommands::Clear { confirm }) => {
+                let result = clear_uptime_history(confirm).map_err(anyhow::Error::msg)?;
+                let _ = record_action(
+                    "uptime clear",
+                    "completed",
+                    "Clear uptime history",
+                    "Cleared local uptime history.",
+                    vec!["uptime history cleared".to_string()],
+                );
+                print_json(&result)?;
+            }
+            None => {
+                print_json(&load_uptime_summary().map_err(anyhow::Error::msg)?)?;
+            }
+        },
         Commands::Provider { json: _, host_uri } => {
             print_json(&build_provider_details(AGENT_VERSION, &host_uri))?;
         }
@@ -343,11 +400,104 @@ fn run() -> Result<()> {
         Commands::Actions { json: _ } => {
             print_json(&load_actions().map_err(anyhow::Error::msg)?)?;
         }
-        Commands::Logs { task, json: _ } => {
+        Commands::Logs {
+            task,
+            tail,
+            json: _,
+        } => {
             if let Some(task_id) = task {
-                print_json(&load_logs_for_task(&task_id).map_err(anyhow::Error::msg)?)?;
+                let mut logs = load_logs_for_task(&task_id).map_err(anyhow::Error::msg)?;
+                if let Some(limit) = tail {
+                    logs = tail_items(logs, limit);
+                }
+                print_json(&logs)?;
             } else {
-                print_json(&load_logs().map_err(anyhow::Error::msg)?)?;
+                let mut logs = load_logs().map_err(anyhow::Error::msg)?;
+                if let Some(limit) = tail {
+                    logs = tail_items(logs, limit);
+                }
+                print_json(&logs)?;
+            }
+        }
+        Commands::History { json: _, command } => match command {
+            Some(HistoryCommands::Latest { json: _ }) => {
+                print_json(&load_latest_history().map_err(anyhow::Error::msg)?)?;
+            }
+            Some(HistoryCommands::Clear { confirm }) => {
+                let result = clear_history(confirm).map_err(anyhow::Error::msg)?;
+                let _ = record_action(
+                    "benchmark history clear",
+                    "completed",
+                    "Clear benchmark history",
+                    "Cleared local benchmark history.",
+                    vec![format!("entries_removed: {}", result.entries_removed)],
+                );
+                print_json(&result)?;
+            }
+            Some(HistoryCommands::Export { output }) => {
+                let result = export_history(&output).map_err(anyhow::Error::msg)?;
+                let _ = record_action(
+                    "benchmark history export",
+                    "completed",
+                    "Export benchmark history",
+                    "Exported local benchmark history to a JSON file.",
+                    vec![format!("output: {}", result.output)],
+                );
+                print_json(&result)?;
+            }
+            None => {
+                print_json(&load_history_list().map_err(anyhow::Error::msg)?)?;
+            }
+        },
+        Commands::ApiToken { command } => match command {
+            ApiTokenCommands::Create { json: _ } => {
+                let result = create_api_token().map_err(anyhow::Error::msg)?;
+                let _ = record_action(
+                    "api token create",
+                    "completed",
+                    "Create API token",
+                    "Created local API bearer token hash.",
+                    vec!["token shown once".to_string()],
+                );
+                print_json(&result)?;
+            }
+            ApiTokenCommands::Rotate { json: _ } => {
+                let result = rotate_api_token().map_err(anyhow::Error::msg)?;
+                let _ = record_action(
+                    "api token rotate",
+                    "completed",
+                    "Rotate API token",
+                    "Rotated local API bearer token hash.",
+                    vec!["token shown once".to_string()],
+                );
+                print_json(&result)?;
+            }
+            ApiTokenCommands::Show { json: _ } => {
+                print_json(&show_api_token_status().map_err(anyhow::Error::msg)?)?;
+            }
+        },
+        Commands::RegistrationPayload { json: _, output } => {
+            if let Some(path) = output {
+                let result = export_registration_payload(AGENT_VERSION, &path)
+                    .map_err(anyhow::Error::msg)?;
+                let _ = record_action(
+                    "registration payload",
+                    "completed",
+                    "Export registration payload",
+                    "Generated provider registration payload for future Burd backend.",
+                    vec![format!("output: {}", result.output)],
+                );
+                print_json(&result.payload)?;
+            } else {
+                let payload = build_registration_payload(AGENT_VERSION);
+                let _ = record_action(
+                    "registration payload",
+                    "completed",
+                    "Build registration payload",
+                    "Generated provider registration payload for future Burd backend.",
+                    vec!["output: stdout".to_string()],
+                );
+                print_json(&payload)?;
             }
         }
         Commands::Raw { json: _ } => {
@@ -356,7 +506,7 @@ fn run() -> Result<()> {
         Commands::Serve { host, port } => {
             if host == "0.0.0.0" {
                 eprintln!(
-                    "Warning: serving on 0.0.0.0 exposes the local API beyond loopback; API token support is future work."
+                    "Warning: serving on 0.0.0.0 exposes the local API beyond loopback; create an API token with `burd-agent api-token create --json` and send Authorization: Bearer <token>."
                 );
             }
             burd_api_local::run_server(&host, port, AGENT_VERSION).map_err(anyhow::Error::msg)?;
@@ -381,6 +531,14 @@ fn system_and_score() -> (burd_hardware::SystemReport, burd_bench::ScoreReport) 
 fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let raw = std::fs::read_to_string(path)?;
     Ok(serde_json::from_str(&raw)?)
+}
+
+fn tail_items<T>(mut items: Vec<T>, limit: usize) -> Vec<T> {
+    if items.len() <= limit {
+        return items;
+    }
+    items.drain(0..items.len() - limit);
+    items
 }
 
 fn run_heartbeat_loop(seconds: u64) -> Result<()> {

@@ -45,6 +45,12 @@ button:hover,
   border-color: #333333;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  color: var(--low);
+  background: var(--panel-deep);
+}
+
 .shell {
   min-height: 100vh;
   border-right: 1px solid var(--border);
@@ -141,6 +147,15 @@ p {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.button-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding: 24px 32px;
+  background: var(--section);
 }
 
 .tabs {
@@ -323,10 +338,10 @@ pre {
   .metrics article,
   .note,
   .warning,
+  .button-strip,
   pre,
   .list-row {
     padding-right: 38px;
     padding-left: 38px;
   }
 }
-
