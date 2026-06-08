@@ -1,0 +1,21 @@
+[package]
+name = "burd-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "burd-agent"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+burd-api-local = { path = "../burd-api-local" }
+burd-bench = { path = "../burd-bench" }
+burd-hardware = { path = "../burd-hardware" }
+burd-llmfit = { path = "../burd-llmfit" }
+burd-protocol = { path = "../burd-protocol" }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,13 @@
+{
+  "endpoint": "https://www.cloudflare.com/cdn-cgi/trace",
+  "attempts": 5,
+  "avg_latency_ms": 22.4,
+  "min_latency_ms": 19.8,
+  "max_latency_ms": 27.1,
+  "jitter_ms": 2.6,
+  "failures": 0,
+  "loss_pct": 0.0,
+  "passed": true,
+  "warnings": [],
+  "errors": []
+}

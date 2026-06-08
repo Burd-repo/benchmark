@@ -1,0 +1,19 @@
+{
+  "duration_seconds": 600,
+  "total_runs": 24,
+  "failed_runs": 0,
+  "initial_tps": 88.4,
+  "final_tps": 84.0,
+  "avg_tps": 86.2,
+  "performance_drop_pct": 5.0,
+  "timeouts": 0,
+  "oom_detected": false,
+  "crashes_detected": false,
+  "runtime_errors": [],
+  "passed": true,
+  "warnings": [],
+  "notes": [
+    "MVP stability benchmark reuses LLM benchmark loop.",
+    "Critical thermal and power telemetry can be added in a later backend-connected phase."
+  ]
+}

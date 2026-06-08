@@ -1,0 +1,23 @@
+{
+  "burd_compute_score": 86.7,
+  "tier": "Burd Pro",
+  "eligible": true,
+  "recommended_workloads": ["SDXL", "ComfyUI", "LLM medio quantizado", "agentes", "batch inference pequeno"],
+  "not_recommended_workloads": ["fine-tuning pesado", "modelos enterprise grandes"],
+  "suggested_price_brl_hour": 6.11,
+  "price_basis": "demonstrative base from GPU/VRAM adjusted by score (86.7) and benchmark signal",
+  "prices_are_demonstrative": true,
+  "components": {
+    "llm_benchmark": 73.7,
+    "vram_capacity": 82.0,
+    "stability": 90.0,
+    "network": 94.0,
+    "disk": 100.0,
+    "verification": 100.0
+  },
+  "warnings": [],
+  "notes": [
+    "Score weights: 40% LLM, 20% VRAM, 15% stability, 10% network, 10% disk, 5% verification.",
+    "Prices are demonstrative until Burd backend policy and marketplace demand are connected."
+  ]
+}

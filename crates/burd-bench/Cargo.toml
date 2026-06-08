@@ -1,0 +1,17 @@
+[package]
+name = "burd-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+burd-hardware = { path = "../burd-hardware" }
+burd-llmfit = { path = "../burd-llmfit" }
+burd-protocol = { path = "../burd-protocol" }
+chrono.workspace = true
+llmfit-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+ureq.workspace = true

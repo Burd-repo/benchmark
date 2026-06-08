@@ -1,0 +1,15 @@
+[package]
+name = "burd-api-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+axum.workspace = true
+burd-bench = { path = "../burd-bench" }
+burd-hardware = { path = "../burd-hardware" }
+burd-llmfit = { path = "../burd-llmfit" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

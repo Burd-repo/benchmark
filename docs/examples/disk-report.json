@@ -1,0 +1,10 @@
+{
+  "directory": "/tmp",
+  "free_space_gb": 420.5,
+  "sequential_read_mb_s": 3200.0,
+  "sequential_write_mb_s": 1500.0,
+  "temp_file_size_mb": 32,
+  "passed": true,
+  "warnings": [],
+  "errors": []
+}

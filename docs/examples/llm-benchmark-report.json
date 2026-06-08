@@ -1,0 +1,28 @@
+{
+  "provider": "ollama",
+  "model": "llama3.2:3b",
+  "runtime": "ollama",
+  "runs": 3,
+  "avg_tps": 88.4,
+  "min_tps": 84.2,
+  "max_tps": 92.1,
+  "stddev_tps": 3.2,
+  "avg_ttft_ms": 184.0,
+  "avg_latency_ms": 1820.5,
+  "prompt_tokens_avg": 42.0,
+  "output_tokens_avg": 160.0,
+  "total_tokens_avg": 202.0,
+  "total_duration_ms": 5461.5,
+  "passed": true,
+  "warnings": [],
+  "errors": [],
+  "run_details": [
+    {
+      "ttft_ms": 181.0,
+      "tps": 84.2,
+      "latency_ms": 1900.0,
+      "prompt_tokens": 40,
+      "output_tokens": 160
+    }
+  ]
+}

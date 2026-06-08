@@ -1,0 +1,28 @@
+{
+  "models": [
+    {
+      "name": "Qwen/Qwen2.5-14B-Instruct",
+      "provider": "Qwen",
+      "parameter_count": "14B",
+      "fit_level": "Good",
+      "run_mode": "GPU",
+      "best_quantization": "Q4_K_M",
+      "memory_estimated_gb": 10.5,
+      "memory_available_gb": 24.0,
+      "memory_usage_pct": 43.8,
+      "estimated_tps": 42.0,
+      "effective_context": 8192,
+      "category": "Chat",
+      "workloads": ["chatbots", "support agents"],
+      "runtime": "llama.cpp/Ollama",
+      "score": 83.4,
+      "notes": ["GPU: model loaded into VRAM"]
+    }
+  ],
+  "recommended_workloads": ["SDXL", "ComfyUI", "LLM medio quantizado", "agentes", "batch inference pequeno"],
+  "not_recommended_workloads": ["fine-tuning pesado", "modelos enterprise grandes"],
+  "provider_capability_summary": "NVIDIA GeForce RTX 4090 via CUDA com 24.0 GB VRAM; top fit: Qwen/Qwen2.5-14B-Instruct (Good).",
+  "total_models_analyzed": 4320,
+  "runnable_models": 3210,
+  "source": "llmfit-core adapter"
+}

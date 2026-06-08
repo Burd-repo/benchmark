@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Burd Benchmark</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow"><span></span><strong>BURD BENCHMARK</strong></div>
+          <h1>Validação local de GPU para workloads de IA.</h1>
+          <p>
+            Score técnico, fit de modelos, estabilidade e sinais de infraestrutura para preparar uma máquina ao marketplace Burd.
+          </p>
+        </div>
+        <div class="status-panel">
+          <div class="status-row">
+            <span>Status</span>
+            <strong id="status">Carregando</strong>
+          </div>
+          <div class="score" id="score">--</div>
+          <div class="tier" id="tier">Aguardando relatório</div>
+          <button id="run">Executar benchmark</button>
+        </div>
+      </section>
+
+      <section class="metrics">
+        <article>
+          <span>GPU</span>
+          <strong id="gpu">--</strong>
+        </article>
+        <article>
+          <span>VRAM</span>
+          <strong id="vram">--</strong>
+        </article>
+        <article>
+          <span>Backend</span>
+          <strong id="backend">--</strong>
+        </article>
+        <article>
+          <span>Driver</span>
+          <strong id="driver">--</strong>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-head">
+            <span>Workloads recomendados</span>
+          </div>
+          <ul id="workloads"></ul>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <span>Sinais do benchmark</span>
+          </div>
+          <div class="signal"><span>TPS médio</span><strong id="tps">--</strong></div>
+          <div class="signal"><span>TTFT</span><strong id="ttft">--</strong></div>
+          <div class="signal"><span>Estabilidade</span><strong id="stability">--</strong></div>
+          <div class="signal"><span>Rede</span><strong id="network">--</strong></div>
+          <div class="signal"><span>Disco</span><strong id="disk">--</strong></div>
+          <div class="signal"><span>Preço sugerido</span><strong id="price">--</strong></div>
+        </article>
+      </section>
+
+      <section class="report-section">
+        <div class="panel-head">
+          <span>Relatório JSON</span>
+          <button id="send">Enviar para Burd</button>
+        </div>
+        <pre id="json">{}</pre>
+      </section>
+    </main>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      async function fetchJson(path, options) {
+        const response = await fetch(path, options);
+        if (!response.ok) throw new Error(`${path}: ${response.status}`);
+        return response.json();
+      }
+
+      function list(items) {
+        return (items || []).map((item) => `<li>${item}</li>`).join("");
+      }
+
+      function passedLabel(value) {
+        if (!value || value.status === "skipped") return "Skipped";
+        return value.passed ? "Approved" : "Warning";
+      }
+
+      async function refresh() {
+        const report = await fetchJson("/api/v1/report");
+        const system = report.system || {};
+        const score = report.score || {};
+        const llm = report.llm_benchmark || {};
+
+        $("status").textContent = score.eligible ? "Approved" : "Warning";
+        $("score").textContent = score.burd_compute_score ?? "--";
+        $("tier").textContent = score.tier || "--";
+        $("gpu").textContent = system.primary_gpu_name || "CPU fallback";
+        $("vram").textContent = system.vram_total_gb ? `${system.vram_total_gb} GB` : "--";
+        $("backend").textContent = system.backend_detected || "--";
+        $("driver").textContent = system.nvidia_driver || system.amd_driver || "--";
+        $("workloads").innerHTML = list(score.recommended_workloads);
+        $("tps").textContent = llm.avg_tps ? `${llm.avg_tps} tok/s` : "--";
+        $("ttft").textContent = llm.avg_ttft_ms ? `${llm.avg_ttft_ms} ms` : "--";
+        $("stability").textContent = passedLabel(report.stability);
+        $("network").textContent = passedLabel(report.network);
+        $("disk").textContent = passedLabel(report.disk);
+        $("price").textContent = score.suggested_price_brl_hour ? `R$ ${score.suggested_price_brl_hour}/h` : "--";
+        $("json").textContent = JSON.stringify(report, null, 2);
+      }
+
+      $("run").addEventListener("click", async () => {
+        $("status").textContent = "Running";
+        const result = await fetchJson("/api/v1/benchmark/run", { method: "POST" });
+        $("json").textContent = JSON.stringify(result.report, null, 2);
+        await refresh();
+      });
+
+      $("send").addEventListener("click", () => {
+        $("send").textContent = "Placeholder";
+      });
+
+      refresh().catch((error) => {
+        $("status").textContent = "Failed";
+        $("json").textContent = JSON.stringify({ error: error.message }, null, 2);
+      });
+    </script>
+  </body>
+</html>
