@@ -27,6 +27,14 @@ pub struct RawData {
 
 pub fn build_raw_data(agent_version: &str, host_uri: &str) -> RawData {
     let provider = build_provider_details(agent_version, host_uri);
+    let verification = verify_provider(agent_version);
+    build_raw_data_from_provider(&provider, &verification)
+}
+
+pub(crate) fn build_raw_data_from_provider(
+    provider: &crate::provider::BurdProviderDetails,
+    verification: &crate::verification::ProviderVerification,
+) -> RawData {
     let config_redacted = redacted_config_value().ok();
     RawData {
         redacted: true,
@@ -56,14 +64,16 @@ pub fn build_raw_data(agent_version: &str, host_uri: &str) -> RawData {
                 "latest_action": null,
             })
         }),
-        verification: serde_json::to_value(verify_provider(agent_version))
+        verification: serde_json::to_value(verification)
             .unwrap_or_else(|_| serde_json::json!({"error": "verification serialization failed"})),
         pricing: serde_json::to_value(&provider.pricing)
             .unwrap_or_else(|_| serde_json::json!({"error": "pricing serialization failed"})),
         earnings_mock: serde_json::to_value(&provider.estimated_earnings)
             .unwrap_or_else(|_| serde_json::json!({"error": "earnings serialization failed"})),
-        uptime: serde_json::to_value(load_uptime_summary().unwrap_or(provider.uptime))
-            .unwrap_or_else(|_| serde_json::json!({"error": "uptime serialization failed"})),
+        uptime: serde_json::to_value(
+            load_uptime_summary().unwrap_or_else(|_| provider.uptime.clone()),
+        )
+        .unwrap_or_else(|_| serde_json::json!({"error": "uptime serialization failed"})),
     }
 }
 

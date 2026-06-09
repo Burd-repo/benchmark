@@ -7,9 +7,9 @@ use crate::stability::{StabilityBenchmarkReport, run_stability_benchmark};
 use burd_hardware::{BENCHMARK_VERSION, detect_specs, detect_system_report};
 use burd_llmfit::build_fit_report;
 use burd_protocol::{
-    Challenge, FullReport, KEY_ALGORITHM, ReportSignature, SignedReport, VerifyReportResult,
-    default_state_dir, hash_canonical, load_identity, load_private_key, placeholder_signature,
-    sign_message, verify_message,
+    AgentConfig, Challenge, FullReport, KEY_ALGORITHM, PrivateKeyFile, ReportSignature,
+    SignedReport, VerifyReportResult, default_state_dir, hash_canonical, load_identity,
+    load_private_key, placeholder_signature, sign_message, verify_message,
 };
 use chrono::Utc;
 use std::fs;
@@ -121,7 +121,29 @@ pub fn generate_full_report(options: ReportRunOptions) -> FullReport {
 pub fn generate_signed_report(options: ReportRunOptions) -> Result<SignedReport, String> {
     let config = load_identity()?;
     let private_key = load_private_key(&config)?;
-    let mut report = generate_full_report(options);
+    let report = generate_full_report(options);
+    let signed =
+        sign_full_report_with_identity_at(report, config, private_key, Utc::now().to_rfc3339())?;
+    let _ = save_latest_signed_report(&signed);
+    Ok(signed)
+}
+
+#[cfg(test)]
+pub(crate) fn sign_full_report_at(
+    report: FullReport,
+    signed_at: String,
+) -> Result<SignedReport, String> {
+    let config = load_identity()?;
+    let private_key = load_private_key(&config)?;
+    sign_full_report_with_identity_at(report, config, private_key, signed_at)
+}
+
+fn sign_full_report_with_identity_at(
+    mut report: FullReport,
+    config: AgentConfig,
+    private_key: PrivateKeyFile,
+    signed_at: String,
+) -> Result<SignedReport, String> {
     report.signature = ReportSignature {
         algorithm: KEY_ALGORITHM.to_string(),
         value: "signature-in-envelope".to_string(),
@@ -139,11 +161,10 @@ pub fn generate_signed_report(options: ReportRunOptions) -> Result<SignedReport,
         signature,
         public_key: config.public_key,
         key_algorithm: config.key_algorithm,
-        signed_at: Utc::now().to_rfc3339(),
+        signed_at,
         signature_valid_locally,
         canonicalization_version: "burd-json-c14n-v1".to_string(),
     };
-    let _ = save_latest_signed_report(&signed);
     Ok(signed)
 }
 

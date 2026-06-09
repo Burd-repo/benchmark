@@ -22,22 +22,35 @@ pub struct ProviderVerification {
 }
 
 pub fn verify_provider(agent_version: &str) -> ProviderVerification {
+    let system = detect_system_report(agent_version);
+    let specs = detect_specs();
+    let fit = build_fit_report(&specs, Some(25));
+    let score = calculate_score(&system, Some(&fit), None, None, None, None);
+    verify_provider_from_reports(
+        load_identity().map(|_| ()),
+        &system,
+        &score,
+        load_latest_signed_report(),
+    )
+}
+
+pub(crate) fn verify_provider_from_reports(
+    identity: Result<(), String>,
+    system: &burd_hardware::SystemReport,
+    score: &crate::score::ScoreReport,
+    signed_result: Result<burd_protocol::SignedReport, String>,
+) -> ProviderVerification {
     let mut warnings = Vec::new();
     let mut failed_checks = Vec::new();
 
-    let identity_ok = match load_identity() {
-        Ok(_) => true,
+    let identity_ok = match identity {
+        Ok(()) => true,
         Err(error) => {
             failed_checks.push("identity_missing".to_string());
             warnings.push(error);
             false
         }
     };
-
-    let system = detect_system_report(agent_version);
-    let specs = detect_specs();
-    let fit = build_fit_report(&specs, Some(25));
-    let score = calculate_score(&system, Some(&fit), None, None, None, None);
 
     let hardware_verified = system.cpu_cores > 0 && !system.cpu.trim().is_empty();
     if !hardware_verified {
@@ -56,7 +69,6 @@ pub fn verify_provider(agent_version: &str) -> ProviderVerification {
         failed_checks.push("score_tier_inconsistent".to_string());
     }
 
-    let signed_result = load_latest_signed_report();
     let signed = signed_result.as_ref().ok();
     let signature_verified = match signed {
         Some(report) => {

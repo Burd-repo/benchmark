@@ -13,10 +13,19 @@ cargo build
 .\target\debug\burd-agent.exe --help
 ```
 
-`cargo test` includes local contract tests for signed reports, mock challenges,
-registration payloads, benchmark history, API token status, redaction, and
-provider readiness. Those tests set temporary `BURD_AGENT_HOME` and
-`BURD_AGENT_CONFIG` values and must not touch the real `~/.burd` state.
+`cargo test` includes fast local contract tests for signed reports, mock
+challenges, registration payloads, benchmark history, API token status,
+redaction, and provider readiness. They use deterministic internal report and
+provider fixtures instead of real hardware detection. Persistent tests set
+temporary `BURD_AGENT_HOME` and `BURD_AGENT_CONFIG` values and must not touch
+the real `~/.burd` state.
+
+The single real-hardware integration test is slower and ignored by default.
+Run it explicitly only when validating detection on the current machine:
+
+```powershell
+cargo test -p burd-bench real_hardware_detection_integration_is_available -- --ignored
+```
 
 ## Fast Local Commands
 

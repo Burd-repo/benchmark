@@ -17,6 +17,8 @@ pub mod verification;
 
 #[cfg(test)]
 mod contract_tests;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 
 pub use actions::{
     ActionStatus, Task, TaskLogs, load_actions, load_logs, load_logs_for_task, logs_summary,

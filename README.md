@@ -151,11 +151,20 @@ The signed output includes:
 `report --run-all` and `report --run-all --signed` append local benchmark
 history to `~/.burd/benchmark-history.json`.
 
-The Rust test suite includes isolated temp-state contract tests for signed
-reports, local challenge responses, registration payloads, benchmark history,
-API token status, raw/config redaction, and provider readiness. These tests set
-temporary `BURD_AGENT_HOME`/`BURD_AGENT_CONFIG` values and do not use the real
-`~/.burd` directory.
+The default Rust test suite includes fast contract tests for signed reports,
+local challenge responses, registration payloads, benchmark history, API token
+status, raw/config redaction, and provider readiness. They use deterministic
+internal fixtures for `SystemReport`, `FitReport`, `ScoreReport`,
+`SignedReport`, and provider details. Persistent state is isolated with
+temporary `BURD_AGENT_HOME`/`BURD_AGENT_CONFIG` values, so tests never use the
+real `~/.burd` directory.
+
+One slower integration test exercises real local hardware detection. It is
+ignored by the default `cargo test` run and can be executed intentionally:
+
+```powershell
+cargo test -p burd-bench real_hardware_detection_integration_is_available -- --ignored
+```
 
 ## Local API Token
 

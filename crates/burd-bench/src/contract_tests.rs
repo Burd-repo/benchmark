@@ -1,13 +1,16 @@
+use crate::raw::build_raw_data_from_provider;
+use crate::registration::build_registration_payload_from;
+use crate::test_fixtures;
+use crate::verification::verify_provider_from_reports;
 use crate::{
-    ReportRunOptions, append_signed_report_history, build_raw_data, build_registration_payload,
-    export_history, generate_signed_report, load_history_list, load_latest_history,
-    load_latest_signed_report, save_latest_signed_report, verify_provider, verify_signed_report,
+    append_signed_report_history, export_history, load_history_list, load_latest_history,
+    load_latest_signed_report, save_latest_signed_report, verify_signed_report,
 };
 use burd_protocol::{
     Challenge, ChallengePolicy, ChallengeResponse, RequiredTest, SignedReport,
     challenge_response_message, create_api_token, default_config_path, default_state_dir,
-    init_identity, load_identity, load_private_key, mock_challenge, redacted_config_value,
-    sha256_hex, show_api_token_status, sign_message, verify_api_token, verify_challenge_response,
+    load_identity, load_private_key, redacted_config_value, sha256_hex, show_api_token_status,
+    sign_message, verify_api_token, verify_challenge_response,
 };
 use chrono::{Duration, Utc};
 use serde_json::Value;
@@ -26,10 +29,11 @@ fn signed_report_contract_uses_temp_identity_and_hides_secrets() {
     let _guard = env_lock();
     let env = TestEnv::new("signed-report");
     env.assert_active();
-    init_identity().unwrap();
+    env.install_identity();
     let api_token = create_api_token().unwrap().token.unwrap();
 
-    let signed = generate_signed_report(ReportRunOptions::new(TEST_AGENT_VERSION)).unwrap();
+    let signed = test_fixtures::signed_report(None).unwrap();
+    save_latest_signed_report(&signed).unwrap();
     let verification = verify_signed_report(&signed);
 
     assert!(!signed.report_hash.is_empty());
@@ -45,11 +49,40 @@ fn signed_report_contract_uses_temp_identity_and_hides_secrets() {
 }
 
 #[test]
+fn contract_report_fixtures_are_deterministic() {
+    let _guard = env_lock();
+    let env = TestEnv::new("deterministic-fixtures");
+    env.assert_active();
+    env.install_identity();
+
+    assert_eq!(
+        serde_json::to_value(test_fixtures::system_report()).unwrap(),
+        serde_json::to_value(test_fixtures::system_report()).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(test_fixtures::fit_report()).unwrap(),
+        serde_json::to_value(test_fixtures::fit_report()).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(test_fixtures::score_report()).unwrap(),
+        serde_json::to_value(test_fixtures::score_report()).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(test_fixtures::signed_report(None).unwrap()).unwrap(),
+        serde_json::to_value(test_fixtures::signed_report(None).unwrap()).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(test_fixtures::provider_details()).unwrap(),
+        serde_json::to_value(test_fixtures::provider_details()).unwrap()
+    );
+}
+
+#[test]
 fn challenge_local_contract_validates_success_expiry_required_tests_and_nonce() {
     let _guard = env_lock();
     let env = TestEnv::new("challenge");
     env.assert_active();
-    init_identity().unwrap();
+    env.install_identity();
     let api_token = create_api_token().unwrap().token.unwrap();
 
     let challenge = light_challenge();
@@ -80,7 +113,7 @@ fn challenge_local_contract_validates_success_expiry_required_tests_and_nonce() 
             .any(|error| error == "challenge expired")
     );
 
-    let strict_challenge = mock_challenge("profile_8gb");
+    let strict_challenge = strict_challenge();
     let (_response, verification) =
         response_for_signed_report(&strict_challenge, signed_report.clone());
     assert!(!verification.valid);
@@ -110,11 +143,22 @@ fn registration_payload_contract_uses_latest_signed_report_without_secrets() {
     let _guard = env_lock();
     let env = TestEnv::new("registration");
     env.assert_active();
-    init_identity().unwrap();
+    env.install_identity();
     let api_token = create_api_token().unwrap().token.unwrap();
-    let signed = generate_signed_report(ReportRunOptions::new(TEST_AGENT_VERSION)).unwrap();
+    let signed = test_fixtures::signed_report(None).unwrap();
+    save_latest_signed_report(&signed).unwrap();
 
-    let payload = build_registration_payload(TEST_AGENT_VERSION);
+    let provider = test_fixtures::provider_details();
+    let verification = test_fixtures::provider_verification();
+    let identity = load_identity().unwrap();
+    let payload = build_registration_payload_from(
+        TEST_AGENT_VERSION,
+        &provider,
+        Some(&identity),
+        Some(&signed),
+        &verification,
+        test_fixtures::FIXTURE_TIMESTAMP.to_string(),
+    );
     let value = serde_json::to_value(&payload).unwrap();
 
     assert_eq!(payload.provider_id, signed.provider_id);
@@ -146,7 +190,7 @@ fn benchmark_history_contract_stores_summaries_and_exports_without_secrets() {
     let _guard = env_lock();
     let env = TestEnv::new("history");
     env.assert_active();
-    init_identity().unwrap();
+    env.install_identity();
     let api_token = create_api_token().unwrap().token.unwrap();
 
     let initial = load_history_list().unwrap();
@@ -202,7 +246,7 @@ fn api_token_status_and_raw_redaction_hide_token_values() {
     let _guard = env_lock();
     let env = TestEnv::new("api-token-redaction");
     env.assert_active();
-    init_identity().unwrap();
+    env.install_identity();
     let created = create_api_token().unwrap();
     let token = created.token.unwrap();
     let token_hash = sha256_hex(token.as_bytes());
@@ -219,7 +263,9 @@ fn api_token_status_and_raw_redaction_hide_token_values() {
     assert_eq!(config["private_key_path"], "[redacted]");
     assert_eq!(config["api_token_hash"], "[redacted]");
 
-    let raw = build_raw_data(TEST_AGENT_VERSION, "http://127.0.0.1:8787");
+    let provider = test_fixtures::provider_details();
+    let verification = test_fixtures::provider_verification();
+    let raw = build_raw_data_from_provider(&provider, &verification);
     assert!(raw.redacted);
     assert!(raw.redacted_fields.iter().any(|field| field == "api_token"));
     assert!(
@@ -269,7 +315,7 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
             .any(|item| item == "signed report missing")
     );
 
-    init_identity().unwrap();
+    env.install_identity();
     let initialized = classify_local_readiness(TEST_AGENT_VERSION);
     assert_eq!(initialized.status, LocalReadinessStatus::NotVerified);
     assert!(
@@ -285,11 +331,22 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
             .any(|item| item == "challenge pending")
     );
 
-    let signed = generate_signed_report(ReportRunOptions::new(TEST_AGENT_VERSION)).unwrap();
+    let signed = test_fixtures::signed_report(None).unwrap();
+    save_latest_signed_report(&signed).unwrap();
     append_signed_report_history(&signed).unwrap();
-    let payload = build_registration_payload(TEST_AGENT_VERSION);
+    let provider = test_fixtures::provider_details();
+    let verification = test_fixtures::provider_verification();
+    let identity = load_identity().unwrap();
+    let payload = build_registration_payload_from(
+        TEST_AGENT_VERSION,
+        &provider,
+        Some(&identity),
+        Some(&signed),
+        &verification,
+        test_fixtures::FIXTURE_TIMESTAMP.to_string(),
+    );
     let latest = load_latest_history().unwrap();
-    let raw = build_raw_data(TEST_AGENT_VERSION, "http://127.0.0.1:8787");
+    let raw = build_raw_data_from_provider(&provider, &verification);
     let ready = classify_local_readiness(TEST_AGENT_VERSION);
     assert_eq!(ready.status, LocalReadinessStatus::ReadyLocally);
     assert!(ready.messages.iter().any(|item| item == "ready locally"));
@@ -319,12 +376,23 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
     );
 }
 
+#[test]
+#[ignore = "slow integration test: exercises real local hardware detection"]
+fn real_hardware_detection_integration_is_available() {
+    let report = burd_hardware::detect_system_report(TEST_AGENT_VERSION);
+
+    assert!(!report.os.is_empty());
+    assert!(!report.architecture.is_empty());
+    assert!(!report.cpu.trim().is_empty());
+    assert!(report.cpu_cores > 0);
+}
+
 fn env_lock() -> MutexGuard<'static, ()> {
     ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
 }
 
 fn light_challenge() -> Challenge {
-    let mut challenge = mock_challenge("profile_8gb");
+    let mut challenge = strict_challenge();
     challenge.required_tests = vec![
         RequiredTest {
             name: "system".to_string(),
@@ -345,10 +413,54 @@ fn light_challenge() -> Challenge {
     challenge
 }
 
+fn strict_challenge() -> Challenge {
+    Challenge {
+        challenge_id: "challenge-contract".to_string(),
+        nonce: "nonce-contract".to_string(),
+        benchmark_profile: "profile_8gb".to_string(),
+        required_tests: vec![
+            RequiredTest {
+                name: "system".to_string(),
+                required: true,
+            },
+            RequiredTest {
+                name: "fit".to_string(),
+                required: true,
+            },
+            RequiredTest {
+                name: "llm_benchmark".to_string(),
+                required: true,
+            },
+            RequiredTest {
+                name: "stability".to_string(),
+                required: true,
+            },
+            RequiredTest {
+                name: "network".to_string(),
+                required: false,
+            },
+            RequiredTest {
+                name: "disk".to_string(),
+                required: false,
+            },
+        ],
+        issued_at: test_fixtures::FIXTURE_TIMESTAMP.to_string(),
+        expires_at: "2099-01-01T00:00:00Z".to_string(),
+        backend_url: Some("https://api.burd.cloud".to_string()),
+        min_agent_version: "0.1.0".to_string(),
+        min_benchmark_version: burd_hardware::BENCHMARK_VERSION.to_string(),
+        policy: ChallengePolicy {
+            require_signed_report: true,
+            require_llm_benchmark: true,
+            require_stability: true,
+            require_network: true,
+            require_disk: true,
+        },
+    }
+}
+
 fn signed_report_for_challenge(challenge: &Challenge) -> SignedReport {
-    let mut options = ReportRunOptions::new(TEST_AGENT_VERSION);
-    options.challenge = Some(challenge.clone());
-    generate_signed_report(options).unwrap()
+    test_fixtures::signed_report(Some(challenge.clone())).unwrap()
 }
 
 fn response_for_signed_report(
@@ -375,7 +487,7 @@ fn response_for_signed_report(
         signed_report: Some(signed_report.clone()),
         signature,
         public_key: signed_report.public_key.clone(),
-        completed_at: Utc::now().to_rfc3339(),
+        completed_at: test_fixtures::FIXTURE_TIMESTAMP.to_string(),
         status: "partial".to_string(),
         failed_requirements: Vec::new(),
         verification_result: None,
@@ -413,10 +525,17 @@ struct LocalReadiness {
     messages: Vec<String>,
 }
 
-fn classify_local_readiness(agent_version: &str) -> LocalReadiness {
+fn classify_local_readiness(_agent_version: &str) -> LocalReadiness {
     let identity_missing = load_identity().is_err();
     let signed_missing = load_latest_signed_report().is_err();
-    let verification = verify_provider(agent_version);
+    let system = test_fixtures::system_report();
+    let score = test_fixtures::score_report();
+    let verification = verify_provider_from_reports(
+        load_identity().map(|_| ()),
+        &system,
+        &score,
+        load_latest_signed_report(),
+    );
     let mut messages = Vec::new();
 
     if identity_missing {
@@ -521,6 +640,47 @@ impl TestEnv {
 
     fn path(&self, child: &str) -> PathBuf {
         self.state_dir.join(child)
+    }
+
+    fn install_identity(&self) {
+        let private_key_path = self.state_dir.join("agent.key");
+        let config = serde_json::json!({
+            "provider_id": test_fixtures::FIXTURE_PROVIDER_ID,
+            "machine_id": test_fixtures::FIXTURE_MACHINE_ID,
+            "api_url": "https://api.burd.cloud",
+            "preferred_provider": "ollama",
+            "benchmark_profile": "auto",
+            "telemetry_enabled": false,
+            "created_at": test_fixtures::FIXTURE_TIMESTAMP,
+            "public_key": test_fixtures::FIXTURE_PUBLIC_KEY,
+            "key_algorithm": "ed25519",
+            "private_key_path": private_key_path,
+            "email": null,
+            "website": null,
+            "country": "BR",
+            "city": "Sao Paulo",
+            "region": "br-southeast",
+            "api_token_hash": null,
+            "api_auth_enabled": false,
+            "api_bind_host": "127.0.0.1",
+            "api_port": 8787,
+            "default_network_endpoint": "https://www.cloudflare.com/cdn-cgi/trace"
+        });
+        let private_key = serde_json::json!({
+            "key_algorithm": "ed25519",
+            "secret_key_base64": test_fixtures::FIXTURE_SECRET_KEY,
+            "created_at": test_fixtures::FIXTURE_TIMESTAMP,
+        });
+        fs::write(
+            &self.config_path,
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            private_key_path,
+            serde_json::to_string_pretty(&private_key).unwrap(),
+        )
+        .unwrap();
     }
 }
 

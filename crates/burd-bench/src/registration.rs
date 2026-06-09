@@ -2,7 +2,7 @@ use crate::provider::build_provider_details;
 use crate::report::load_latest_signed_report;
 use crate::verification::verify_provider;
 use burd_hardware::BENCHMARK_VERSION;
-use burd_protocol::load_identity;
+use burd_protocol::{AgentConfig, SignedReport, load_identity};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -38,13 +38,30 @@ pub fn build_registration_payload(agent_version: &str) -> ProviderRegistrationPa
     let provider = build_provider_details(agent_version, "http://127.0.0.1:8787");
     let identity = load_identity().ok();
     let latest_signed = load_latest_signed_report().ok();
+    let verification = verify_provider(agent_version);
+    build_registration_payload_from(
+        agent_version,
+        &provider,
+        identity.as_ref(),
+        latest_signed.as_ref(),
+        &verification,
+        Utc::now().to_rfc3339(),
+    )
+}
+
+pub(crate) fn build_registration_payload_from(
+    agent_version: &str,
+    provider: &crate::provider::BurdProviderDetails,
+    identity: Option<&AgentConfig>,
+    latest_signed: Option<&SignedReport>,
+    verification: &crate::verification::ProviderVerification,
+    created_at: String,
+) -> ProviderRegistrationPayload {
     let latest_score = latest_signed
-        .as_ref()
         .and_then(|report| report.report.score.get("burd_compute_score"))
         .and_then(|value| value.as_f64())
         .or(Some(provider.score.burd_compute_score));
     let latest_tier = latest_signed
-        .as_ref()
         .and_then(|report| report.report.score.get("tier"))
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
@@ -57,17 +74,15 @@ pub fn build_registration_payload(agent_version: &str) -> ProviderRegistrationPa
         agent_version: agent_version.to_string(),
         benchmark_version: BENCHMARK_VERSION.to_string(),
         provider_details: serde_json::json!({
-            "host_uri": provider.host_uri,
-            "created_at": provider.created_at,
-            "hardware": provider.hardware,
-            "gpu_models": provider.gpu_models,
-            "attributes": provider.attributes,
-            "tier": provider.tier,
+            "host_uri": provider.host_uri.clone(),
+            "created_at": provider.created_at.clone(),
+            "hardware": provider.hardware.clone(),
+            "gpu_models": provider.gpu_models.clone(),
+            "attributes": provider.attributes.clone(),
+            "tier": provider.tier.clone(),
             "score": provider.score.burd_compute_score,
         }),
-        latest_signed_report_hash: latest_signed
-            .as_ref()
-            .map(|report| report.report_hash.clone()),
+        latest_signed_report_hash: latest_signed.map(|report| report.report_hash.clone()),
         latest_score,
         latest_tier,
         location: serde_json::json!({
@@ -82,16 +97,16 @@ pub fn build_registration_payload(agent_version: &str) -> ProviderRegistrationPa
         capabilities: serde_json::json!({
             "gpu_count": provider.hardware.gpu_count,
             "vram_gb": provider.hardware.vram_gb,
-            "backend": provider.hardware.backend,
-            "recommended_workloads": provider.score.recommended_workloads,
+            "backend": provider.hardware.backend.clone(),
+            "recommended_workloads": provider.score.recommended_workloads.clone(),
             "container_orchestration_future": false,
             "marketplace_jobs_future": false,
         }),
         pricing: serde_json::to_value(&provider.pricing)
             .unwrap_or_else(|_| serde_json::json!({"error": "pricing serialization failed"})),
-        verification: serde_json::to_value(verify_provider(agent_version))
+        verification: serde_json::to_value(verification)
             .unwrap_or_else(|_| serde_json::json!({"error": "verification serialization failed"})),
-        created_at: Utc::now().to_rfc3339(),
+        created_at,
         secrets_included: false,
     }
 }
