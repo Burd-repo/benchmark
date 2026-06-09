@@ -75,7 +75,7 @@ pub fn build_system_report(specs: &SystemSpecs, agent_version: &str) -> SystemRe
         nvidia_driver: detect_nvidia_driver(),
         amd_driver: detect_amd_driver(),
         container_detected: detect_container(),
-        vm_detected: detect_vm(),
+        vm_detected: detect_vm(&specs.cpu_name),
         timestamp: Utc::now().to_rfc3339(),
         agent_version: agent_version.to_string(),
         benchmark_version: BENCHMARK_VERSION.to_string(),
@@ -131,8 +131,8 @@ fn detect_container() -> bool {
             .unwrap_or(false)
 }
 
-fn detect_vm() -> bool {
-    let cpu_hint = SystemSpecs::detect().cpu_name.to_lowercase();
+fn detect_vm(cpu_name: &str) -> bool {
+    let cpu_hint = cpu_name.to_lowercase();
     cpu_hint.contains("hyper-v")
         || cpu_hint.contains("kvm")
         || cpu_hint.contains("vmware")
@@ -175,5 +175,11 @@ mod tests {
         };
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("ram_total_gb"));
+    }
+
+    #[test]
+    fn vm_detection_uses_existing_cpu_name() {
+        assert!(detect_vm("Virtual CPU (KVM)"));
+        assert!(!detect_vm("AMD Ryzen 9 7950X"));
     }
 }

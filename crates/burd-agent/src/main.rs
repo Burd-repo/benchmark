@@ -12,7 +12,7 @@ use burd_bench::{
     run_disk_benchmark, run_llm_benchmark, run_network_benchmark, run_stability_benchmark,
     save_latest_report, verify_provider, verify_signed_report,
 };
-use burd_hardware::{detect_specs, detect_system_report};
+use burd_hardware::{build_system_report, detect_specs, detect_system_report};
 use burd_llmfit::build_fit_report;
 use burd_protocol::{
     Challenge, ChallengeResponse, challenge_response_message, create_api_token, init_identity,
@@ -169,7 +169,7 @@ fn run() -> Result<()> {
         },
         Commands::Score { json: _ } => {
             let specs = detect_specs();
-            let system = detect_system_report(AGENT_VERSION);
+            let system = build_system_report(&specs, AGENT_VERSION);
             let fit = build_fit_report(&specs, Some(25));
             let report = calculate_score(&system, Some(&fit), None, None, None, None);
             let _ = record_action(
@@ -522,7 +522,7 @@ fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
 
 fn system_and_score() -> (burd_hardware::SystemReport, burd_bench::ScoreReport) {
     let specs = detect_specs();
-    let system = detect_system_report(AGENT_VERSION);
+    let system = build_system_report(&specs, AGENT_VERSION);
     let fit = build_fit_report(&specs, Some(25));
     let score = calculate_score(&system, Some(&fit), None, None, None, None);
     (system, score)

@@ -1,0 +1,22 @@
+name: Real Hardware Integration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  real-hardware-integration:
+    runs-on: [self-hosted, burd-hardware]
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run real hardware detection integration
+        run: cargo test -p burd-bench real_hardware_detection_integration_is_available -- --ignored

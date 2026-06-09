@@ -1,6 +1,5 @@
 use crate::provider::build_provider_details;
 use crate::report::load_latest_signed_report;
-use crate::verification::verify_provider;
 use burd_hardware::BENCHMARK_VERSION;
 use burd_protocol::{AgentConfig, SignedReport, load_identity};
 use chrono::Utc;
@@ -38,13 +37,12 @@ pub fn build_registration_payload(agent_version: &str) -> ProviderRegistrationPa
     let provider = build_provider_details(agent_version, "http://127.0.0.1:8787");
     let identity = load_identity().ok();
     let latest_signed = load_latest_signed_report().ok();
-    let verification = verify_provider(agent_version);
     build_registration_payload_from(
         agent_version,
         &provider,
         identity.as_ref(),
         latest_signed.as_ref(),
-        &verification,
+        &provider.verification,
         Utc::now().to_rfc3339(),
     )
 }

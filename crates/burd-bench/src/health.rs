@@ -1,4 +1,4 @@
-use burd_hardware::{BENCHMARK_VERSION, detect_system_report};
+use burd_hardware::{BENCHMARK_VERSION, SystemReport, detect_system_report};
 use burd_protocol::default_state_dir;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,13 @@ pub struct HeartbeatReport {
 
 pub fn detect_health(agent_version: &str) -> HealthReport {
     let system = detect_system_report(agent_version);
+    detect_health_from_system(agent_version, &system)
+}
+
+pub(crate) fn detect_health_from_system(
+    agent_version: &str,
+    system: &SystemReport,
+) -> HealthReport {
     let gpu_available = system.gpu_count > 0;
     let uptime = load_uptime_summary().unwrap_or_else(|_| summarize_checks(&[]));
     HealthReport {

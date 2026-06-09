@@ -2,7 +2,6 @@ use crate::actions::{load_actions, load_logs, logs_summary};
 use crate::health::load_uptime_summary;
 use crate::history::history_summary;
 use crate::provider::build_provider_details;
-use crate::verification::verify_provider;
 use burd_protocol::{default_state_dir, redacted_config_value};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -27,8 +26,7 @@ pub struct RawData {
 
 pub fn build_raw_data(agent_version: &str, host_uri: &str) -> RawData {
     let provider = build_provider_details(agent_version, host_uri);
-    let verification = verify_provider(agent_version);
-    build_raw_data_from_provider(&provider, &verification)
+    build_raw_data_from_provider(&provider, &provider.verification)
 }
 
 pub(crate) fn build_raw_data_from_provider(

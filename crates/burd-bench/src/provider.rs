@@ -1,11 +1,13 @@
 use crate::actions::logs_summary;
 use crate::earnings::{EarningsReport, estimate_earnings};
-use crate::health::{UptimeSummary, detect_health};
+use crate::health::{UptimeSummary, detect_health_from_system};
 use crate::pricing::{PricingReport, calculate_pricing};
-use crate::report::{ReportRunOptions, generate_full_report};
+use crate::report::{
+    ReportRunOptions, generate_full_report_from_snapshot, load_latest_signed_report,
+};
 use crate::score::{ScoreReport, calculate_score};
-use crate::verification::{ProviderVerification, verify_provider};
-use burd_hardware::{SystemReport, detect_specs, detect_system_report};
+use crate::verification::{ProviderVerification, verify_provider_from_reports};
+use burd_hardware::{SystemReport, build_system_report, detect_specs};
 use burd_llmfit::build_fit_report;
 use burd_protocol::load_identity;
 use serde::{Deserialize, Serialize};
@@ -100,18 +102,26 @@ pub struct ProviderAttribute {
 }
 
 pub fn build_provider_details(agent_version: &str, host_uri: &str) -> BurdProviderDetails {
-    let identity = load_identity().ok();
-    let system = detect_system_report(agent_version);
+    let identity_result = load_identity();
+    let identity = identity_result.as_ref().ok();
     let specs = detect_specs();
+    let system = build_system_report(&specs, agent_version);
     let fit = build_fit_report(&specs, Some(25));
     let score = calculate_score(&system, Some(&fit), None, None, None, None);
     let pricing = calculate_pricing(&system, &score);
     let earnings = estimate_earnings(&pricing);
-    let health = detect_health(agent_version);
-    let verification = verify_provider(agent_version);
-    let raw_report = serde_json::to_value(generate_full_report(ReportRunOptions::new(
-        agent_version.to_string(),
-    )))
+    let health = detect_health_from_system(agent_version, &system);
+    let verification = verify_provider_from_reports(
+        identity_result.as_ref().map(|_| ()).map_err(Clone::clone),
+        &system,
+        &score,
+        load_latest_signed_report(),
+    );
+    let raw_report = serde_json::to_value(generate_full_report_from_snapshot(
+        ReportRunOptions::new(agent_version.to_string()),
+        &system,
+        &fit,
+    ))
     .unwrap_or_else(|_| serde_json::json!({"error": "report serialization failed"}));
 
     let provider_id = identity
