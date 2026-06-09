@@ -1,0 +1,92 @@
+{
+  "agent_version": "0.1.0-test",
+  "benchmark_version": "2026.06-mvp",
+  "capabilities": {
+    "backend": "CUDA",
+    "container_orchestration_future": false,
+    "gpu_count": 1,
+    "marketplace_jobs_future": false,
+    "recommended_workloads": [
+      "LLM medio quantizado",
+      "agentes"
+    ],
+    "vram_gb": 24.0
+  },
+  "contact": {
+    "email": null,
+    "website": null
+  },
+  "created_at": "<timestamp>",
+  "latest_score": 82.5,
+  "latest_signed_report_hash": "<cryptographic-value>",
+  "latest_tier": "Burd Pro",
+  "location": {
+    "city": "Sao Paulo",
+    "country": "BR",
+    "region": "br-southeast"
+  },
+  "machine_id": "burd-machine-contract",
+  "pricing": {
+    "cpu_price_brl_hour": 0.24,
+    "endpoint_price_brl_hour_future": 0.0,
+    "final_suggested_price_brl_hour": 5.92,
+    "gpu_price_brl_hour": 5.9,
+    "ip_price_brl_hour_future": 0.0,
+    "memory_price_brl_gb_hour": 0.006,
+    "prices_are_demonstrative": true,
+    "storage_price_brl_gb_hour": 0.0004,
+    "warnings": [
+      "Prices are demonstrative and depend on future Burd marketplace policy."
+    ]
+  },
+  "provider_details": {
+    "attributes": [
+      {
+        "key": "host",
+        "value": "burd"
+      },
+      {
+        "key": "backend",
+        "value": "CUDA"
+      }
+    ],
+    "created_at": "<timestamp>",
+    "gpu_models": [
+      {
+        "count": 1,
+        "model": "NVIDIA GeForce RTX 4090",
+        "vendor": "nvidia",
+        "vram_gb": 24.0
+      }
+    ],
+    "hardware": {
+      "architecture": "x86_64",
+      "backend": "CUDA",
+      "cpu": "Burd Contract CPU",
+      "disk_free_gb": 512.0,
+      "gpu_count": 1,
+      "memory_gb": 64.0,
+      "vram_gb": 24.0
+    },
+    "host_uri": "http://127.0.0.1:8787",
+    "score": 82.5,
+    "tier": "Burd Pro"
+  },
+  "provider_id": "burd-provider-contract",
+  "public_key": "<cryptographic-value>",
+  "secrets_included": false,
+  "verification": {
+    "audit_status": "self_verified",
+    "benchmark_verified": true,
+    "challenge_verified": false,
+    "disk_verified": true,
+    "failed_checks": [],
+    "fraud_risk_level": "low",
+    "hardware_verified": true,
+    "llm_runtime_verified": true,
+    "network_verified": true,
+    "signature_verified": true,
+    "uptime_verified": false,
+    "warnings": []
+  }
+}

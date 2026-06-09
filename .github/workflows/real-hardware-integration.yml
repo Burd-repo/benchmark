@@ -2,15 +2,37 @@ name: Real Hardware Integration
 
 on:
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type RUN to execute detection on the dedicated hardware runner
+        required: true
+        type: choice
+        options:
+          - CANCEL
+          - RUN
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-hardware-integration
+  cancel-in-progress: false
 
 jobs:
   real-hardware-integration:
-    runs-on: [self-hosted, burd-hardware]
+    if: inputs.confirm == 'RUN'
+    environment: real-hardware
+    runs-on: [self-hosted, Windows, X64, burd-hardware]
     timeout-minutes: 15
+    env:
+      BURD_AGENT_HOME: ${{ runner.temp }}/burd-agent-state
+      BURD_AGENT_CONFIG: ${{ runner.temp }}/burd-agent-state/agent.json
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -18,5 +40,33 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
+      - name: Prepare isolated Burd state
+        shell: pwsh
+        run: |
+          $state = $env:BURD_AGENT_HOME
+          $temp = [System.IO.Path]::GetFullPath("${{ runner.temp }}")
+          $target = [System.IO.Path]::GetFullPath($state)
+          if (-not $target.StartsWith($temp, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to prepare state outside runner temp: $target"
+          }
+          if (Test-Path -LiteralPath $target) {
+            Remove-Item -LiteralPath $target -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $target | Out-Null
+
       - name: Run real hardware detection integration
         run: cargo test -p burd-bench real_hardware_detection_integration_is_available -- --ignored
+
+      - name: Remove isolated Burd state
+        if: always()
+        shell: pwsh
+        run: |
+          $state = $env:BURD_AGENT_HOME
+          $temp = [System.IO.Path]::GetFullPath("${{ runner.temp }}")
+          $target = [System.IO.Path]::GetFullPath($state)
+          if (-not $target.StartsWith($temp, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove state outside runner temp: $target"
+          }
+          if (Test-Path -LiteralPath $target) {
+            Remove-Item -LiteralPath $target -Recurse -Force
+          }

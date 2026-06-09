@@ -173,8 +173,14 @@ precompiled `burd-bench` contract suite. Run the same performance guard locally:
 .\scripts\check-contract-test-time.ps1
 ```
 
+Sanitized JSON snapshots protect the provider, raw-data, and registration
+payload contracts. See `docs/json-contract-snapshots.md` before intentionally
+updating them.
+
 The `.github/workflows/real-hardware-integration.yml` workflow runs only through
 manual dispatch on a self-hosted runner labeled `burd-hardware`.
+Runner isolation, registration, and removal are documented in
+`docs/real-hardware-runner.md`.
 
 ## Local API Token
 
@@ -331,4 +337,6 @@ records output under `tmp/test-output/`, and stops the server by PID in a
 - `docs/provider-console-ui.md`
 - `docs/llmfit-adaptation.md`
 - `docs/benchmark-profiles.md`
+- `docs/json-contract-snapshots.md`
+- `docs/real-hardware-runner.md`
 - `docs/examples/`
