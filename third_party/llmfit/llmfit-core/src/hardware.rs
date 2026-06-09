@@ -29,14 +29,79 @@ impl GpuBackend {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VramSource {
+    NvidiaSmi,
+    NvidiaSysfs,
+    RocmSmi,
+    AmdSysfs,
+    IntelSysfs,
+    WindowsWmiAdapterRam,
+    VulkanDeviceMemory,
+    AppleUnifiedMemory,
+    AmdApuUnifiedMemory,
+    AscendSmi,
+    UserOverride,
+    LlmfitKnownGpuTable,
+}
+
+impl VramSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NvidiaSmi => "nvidia_smi",
+            Self::NvidiaSysfs => "nvidia_sysfs",
+            Self::RocmSmi => "rocm_smi",
+            Self::AmdSysfs => "amd_sysfs",
+            Self::IntelSysfs => "intel_sysfs",
+            Self::WindowsWmiAdapterRam => "windows_wmi_adapter_ram",
+            Self::VulkanDeviceMemory => "vulkan_device_memory",
+            Self::AppleUnifiedMemory => "apple_unified_memory",
+            Self::AmdApuUnifiedMemory => "amd_apu_unified_memory",
+            Self::AscendSmi => "ascend_smi",
+            Self::UserOverride => "user_override",
+            Self::LlmfitKnownGpuTable => "llmfit_known_gpu_table",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VramConfidence {
+    Estimated,
+    Provided,
+    Detected,
+}
+
+impl VramConfidence {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Estimated => "estimated",
+            Self::Provided => "provided",
+            Self::Detected => "detected",
+        }
+    }
+}
+
 /// Information about a single detected GPU.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GpuInfo {
     pub name: String,
     pub vram_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_source: Option<VramSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_confidence: Option<VramConfidence>,
     pub backend: GpuBackend,
     pub count: u32, // >1 for same-model multi-GPU (e.g. 2x RTX 4090)
     pub unified_memory: bool,
+}
+
+#[derive(Debug, Default)]
+struct VulkanDeviceInfo {
+    name: String,
+    device_type: String,
+    memory_heaps: BTreeMap<usize, (u64, bool)>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -149,15 +214,7 @@ impl SystemSpecs {
 
         // Windows WMI (catches GPUs not found by vendor-specific tools)
         for wmi_gpu in Self::detect_gpu_windows_info() {
-            // Skip if we already found a GPU with the same name from a vendor tool
-            let dominated = gpus.iter().any(|existing| {
-                let existing_lower = existing.name.to_lowercase();
-                let wmi_lower = wmi_gpu.name.to_lowercase();
-                existing_lower.contains(&wmi_lower) || wmi_lower.contains(&existing_lower)
-            });
-            if !dominated {
-                gpus.push(wmi_gpu);
-            }
+            Self::merge_gpu(&mut gpus, wmi_gpu);
         }
 
         // AMD unified memory APUs (e.g. Ryzen AI MAX series).
@@ -179,11 +236,15 @@ impl SystemSpecs {
             if let Some(idx) = amd_idx {
                 gpus[idx].unified_memory = true;
                 gpus[idx].vram_gb = Some(apu_pool_gb);
+                gpus[idx].vram_source = Some(VramSource::AmdApuUnifiedMemory);
+                gpus[idx].vram_confidence = Some(VramConfidence::Estimated);
             } else {
                 // No AMD GPU found via other methods; create one.
                 gpus.push(GpuInfo {
                     name: format!("{} (integrated)", cpu_name),
                     vram_gb: Some(apu_pool_gb),
+                    vram_source: Some(VramSource::AmdApuUnifiedMemory),
+                    vram_confidence: Some(VramConfidence::Estimated),
                     backend: GpuBackend::Vulkan,
                     count: 1,
                     unified_memory: true,
@@ -200,9 +261,13 @@ impl SystemSpecs {
         let is_nvidia_unified = gpus.iter().any(|g| is_nvidia_unified_memory_gpu(&g.name));
         if is_nvidia_unified {
             for gpu in &mut gpus {
-                if is_nvidia_unified_memory_gpu(&gpu.name) {
+                if is_nvidia_unified_memory_gpu(&gpu.name)
+                    && gpu.vram_confidence != Some(VramConfidence::Detected)
+                {
                     gpu.unified_memory = true;
                     gpu.vram_gb = Some(total_ram_gb);
+                    gpu.vram_source = Some(VramSource::LlmfitKnownGpuTable);
+                    gpu.vram_confidence = Some(VramConfidence::Estimated);
                 }
             }
         }
@@ -211,9 +276,12 @@ impl SystemSpecs {
         if let Some(vram) = Self::detect_intel_gpu() {
             let already_found = gpus.iter().any(|g| g.name.to_lowercase().contains("intel"));
             if !already_found {
+                let detected_vram = (vram > 0.0).then_some(vram);
                 gpus.push(GpuInfo {
                     name: "Intel Arc".to_string(),
-                    vram_gb: Some(vram),
+                    vram_gb: detected_vram,
+                    vram_source: detected_vram.map(|_| VramSource::IntelSysfs),
+                    vram_confidence: detected_vram.map(|_| VramConfidence::Detected),
                     backend: GpuBackend::Sycl,
                     count: 1,
                     unified_memory: false,
@@ -231,6 +299,8 @@ impl SystemSpecs {
             gpus.push(GpuInfo {
                 name,
                 vram_gb: Some(vram),
+                vram_source: Some(VramSource::AppleUnifiedMemory),
+                vram_confidence: Some(VramConfidence::Estimated),
                 backend: GpuBackend::Metal,
                 count: 1,
                 unified_memory: true,
@@ -258,12 +328,7 @@ impl SystemSpecs {
                     continue;
                 }
             }
-            let dominated = gpus
-                .iter()
-                .any(|existing| Self::is_same_gpu_name(&existing.name, &vulkan_gpu.name));
-            if !dominated {
-                gpus.push(vulkan_gpu);
-            }
+            Self::merge_gpu(&mut gpus, vulkan_gpu);
         }
 
         // When both discrete and integrated GPUs are present, drop the
@@ -338,7 +403,7 @@ impl SystemSpecs {
     /// Falls back to system RAM via /proc/meminfo as the unified memory pool.
     fn parse_nvidia_smi_extended(text: &str) -> Vec<GpuInfo> {
         // Track per-model: (count, per_card_vram_mb, is_unified)
-        let mut grouped: BTreeMap<String, (u32, f64, bool)> = BTreeMap::new();
+        let mut grouped: BTreeMap<String, (u32, f64, bool, bool)> = BTreeMap::new();
         let total_ram_gb = read_proc_meminfo_total_gb();
 
         for line in text.lines() {
@@ -372,13 +437,16 @@ impl SystemSpecs {
                 estimate_vram_from_name(&name) * 1024.0
             };
 
-            let entry = grouped.entry(name).or_insert((0, 0.0, false));
+            let entry = grouped.entry(name).or_insert((0, 0.0, false, false));
             entry.0 += 1;
             if vram_mb > entry.1 {
                 entry.1 = vram_mb;
             }
             if is_unified {
                 entry.2 = true;
+            }
+            if parsed_vram_mb > 0.0 {
+                entry.3 = true;
             }
         }
 
@@ -388,24 +456,44 @@ impl SystemSpecs {
 
         grouped
             .into_iter()
-            .map(|(name, (count, per_card_vram_mb, is_unified))| GpuInfo {
-                name,
-                vram_gb: if per_card_vram_mb > 0.0 {
-                    Some(per_card_vram_mb / 1024.0)
-                } else {
-                    None
+            .map(
+                |(name, (count, per_card_vram_mb, is_unified, vram_detected))| GpuInfo {
+                    name,
+                    vram_gb: if per_card_vram_mb > 0.0 {
+                        Some(per_card_vram_mb / 1024.0)
+                    } else {
+                        None
+                    },
+                    vram_source: if per_card_vram_mb > 0.0 {
+                        Some(if vram_detected {
+                            VramSource::NvidiaSmi
+                        } else {
+                            VramSource::LlmfitKnownGpuTable
+                        })
+                    } else {
+                        None
+                    },
+                    vram_confidence: if per_card_vram_mb > 0.0 {
+                        Some(if vram_detected {
+                            VramConfidence::Detected
+                        } else {
+                            VramConfidence::Estimated
+                        })
+                    } else {
+                        None
+                    },
+                    backend: GpuBackend::Cuda,
+                    count,
+                    unified_memory: is_unified,
                 },
-                backend: GpuBackend::Cuda,
-                count,
-                unified_memory: is_unified,
-            })
+            )
             .collect()
     }
 
     /// Parse `nvidia-smi --query-gpu=memory.total,name --format=csv,noheader,nounits`.
     /// Groups same-model cards and keeps per-card VRAM (never sums across cards).
     fn parse_nvidia_smi_list(text: &str) -> Vec<GpuInfo> {
-        let mut grouped: BTreeMap<String, (u32, f64)> = BTreeMap::new();
+        let mut grouped: BTreeMap<String, (u32, f64, bool)> = BTreeMap::new();
 
         for line in text.lines() {
             let line = line.trim();
@@ -431,10 +519,13 @@ impl SystemSpecs {
                 estimate_vram_from_name(&name) * 1024.0
             };
 
-            let entry = grouped.entry(name).or_insert((0, 0.0));
+            let entry = grouped.entry(name).or_insert((0, 0.0, false));
             entry.0 += 1;
             if vram_mb > entry.1 {
                 entry.1 = vram_mb;
+            }
+            if parsed_vram_mb > 0.0 {
+                entry.2 = true;
             }
         }
 
@@ -444,10 +535,28 @@ impl SystemSpecs {
 
         grouped
             .into_iter()
-            .map(|(name, (count, per_card_vram_mb))| GpuInfo {
+            .map(|(name, (count, per_card_vram_mb, vram_detected))| GpuInfo {
                 name,
                 vram_gb: if per_card_vram_mb > 0.0 {
                     Some(per_card_vram_mb / 1024.0)
+                } else {
+                    None
+                },
+                vram_source: if per_card_vram_mb > 0.0 {
+                    Some(if vram_detected {
+                        VramSource::NvidiaSmi
+                    } else {
+                        VramSource::LlmfitKnownGpuTable
+                    })
+                } else {
+                    None
+                },
+                vram_confidence: if per_card_vram_mb > 0.0 {
+                    Some(if vram_detected {
+                        VramConfidence::Detected
+                    } else {
+                        VramConfidence::Estimated
+                    })
                 } else {
                     None
                 },
@@ -525,6 +634,7 @@ impl SystemSpecs {
             None
         };
 
+        let vram_detected = vram_gb.is_some();
         if vram_gb.is_none() {
             let est = estimate_vram_from_name(&name);
             if est > 0.0 {
@@ -537,6 +647,20 @@ impl SystemSpecs {
         Some(GpuInfo {
             name,
             vram_gb,
+            vram_source: vram_gb.map(|_| {
+                if vram_detected {
+                    VramSource::NvidiaSysfs
+                } else {
+                    VramSource::LlmfitKnownGpuTable
+                }
+            }),
+            vram_confidence: vram_gb.map(|_| {
+                if vram_detected {
+                    VramConfidence::Detected
+                } else {
+                    VramConfidence::Estimated
+                }
+            }),
             backend,
             count: gpu_count,
             unified_memory,
@@ -647,7 +771,8 @@ impl SystemSpecs {
         grouped
             .into_iter()
             .map(|(name, (count, vram_bytes))| {
-                let vram_gb = if vram_bytes > 0 {
+                let vram_detected = vram_bytes > 0;
+                let vram_gb = if vram_detected {
                     Some(vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0))
                 } else {
                     let est = estimate_vram_from_name(&name);
@@ -656,6 +781,20 @@ impl SystemSpecs {
                 GpuInfo {
                     name,
                     vram_gb,
+                    vram_source: vram_gb.map(|_| {
+                        if vram_detected {
+                            VramSource::RocmSmi
+                        } else {
+                            VramSource::LlmfitKnownGpuTable
+                        }
+                    }),
+                    vram_confidence: vram_gb.map(|_| {
+                        if vram_detected {
+                            VramConfidence::Detected
+                        } else {
+                            VramConfidence::Estimated
+                        }
+                    }),
                     backend: GpuBackend::Rocm,
                     count,
                     unified_memory: false,
@@ -715,6 +854,7 @@ impl SystemSpecs {
             let name = gpu_name.unwrap_or_else(|| "AMD GPU".to_string());
 
             // If we still don't have VRAM, try to estimate from name
+            let vram_detected = vram_gb.is_some();
             if vram_gb.is_none() {
                 let estimated = estimate_vram_from_name(&name);
                 if estimated > 0.0 {
@@ -726,6 +866,20 @@ impl SystemSpecs {
             return Some(GpuInfo {
                 name,
                 vram_gb,
+                vram_source: vram_gb.map(|_| {
+                    if vram_detected {
+                        VramSource::AmdSysfs
+                    } else {
+                        VramSource::LlmfitKnownGpuTable
+                    }
+                }),
+                vram_confidence: vram_gb.map(|_| {
+                    if vram_detected {
+                        VramConfidence::Detected
+                    } else {
+                        VramConfidence::Estimated
+                    }
+                }),
                 backend: GpuBackend::Vulkan,
                 count: 1,
                 unified_memory: false,
@@ -921,10 +1075,13 @@ impl SystemSpecs {
                     continue;
                 }
                 let backend = Self::infer_gpu_backend(&name);
-                let vram_gb = Self::resolve_wmi_vram(raw_vram, &name);
+                let (vram_gb, vram_source, vram_confidence) =
+                    Self::resolve_wmi_vram(raw_vram, &name);
                 gpus.push(GpuInfo {
                     name,
                     vram_gb,
+                    vram_source,
+                    vram_confidence,
                     backend,
                     count: 1,
                     unified_memory: false,
@@ -959,10 +1116,12 @@ impl SystemSpecs {
             }
 
             let backend = Self::infer_gpu_backend(&name);
-            let vram_gb = Self::resolve_wmi_vram(raw_vram, &name);
+            let (vram_gb, vram_source, vram_confidence) = Self::resolve_wmi_vram(raw_vram, &name);
             gpus.push(GpuInfo {
                 name,
                 vram_gb,
+                vram_source,
+                vram_confidence,
                 backend,
                 count: 1,
                 unified_memory: false,
@@ -987,6 +1146,29 @@ impl SystemSpecs {
         } else {
             discrete
         }
+    }
+
+    fn merge_gpu(gpus: &mut Vec<GpuInfo>, candidate: GpuInfo) {
+        let Some(existing) = gpus
+            .iter_mut()
+            .find(|gpu| Self::is_same_gpu_name(&gpu.name, &candidate.name))
+        else {
+            gpus.push(candidate);
+            return;
+        };
+
+        let existing_confidence = existing.vram_confidence;
+        let candidate_confidence = candidate.vram_confidence;
+        let candidate_is_better = candidate.vram_gb.is_some()
+            && (existing.vram_gb.is_none() || candidate_confidence > existing_confidence);
+
+        if candidate_is_better {
+            existing.vram_gb = candidate.vram_gb;
+            existing.vram_source = candidate.vram_source;
+            existing.vram_confidence = candidate.vram_confidence;
+        }
+        existing.count = existing.count.max(candidate.count);
+        existing.unified_memory |= candidate.unified_memory;
     }
 
     /// Heuristic: returns true when the GPU name matches known integrated GPU
@@ -1023,15 +1205,35 @@ impl SystemSpecs {
 
     /// WMI AdapterRAM is a 32-bit field, capped at ~4 GB.
     /// If reported value is suspiciously low, estimate from GPU name.
-    fn resolve_wmi_vram(raw_bytes: u64, name: &str) -> Option<f64> {
+    fn resolve_wmi_vram(
+        raw_bytes: u64,
+        name: &str,
+    ) -> (Option<f64>, Option<VramSource>, Option<VramConfidence>) {
+        if Self::is_integrated_gpu_name(name) {
+            return (None, None, None);
+        }
+
         let mut vram_gb = raw_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        if vram_gb < 0.1 || (vram_gb <= 4.1 && estimate_vram_from_name(name) > 4.1) {
+        let mut source = VramSource::WindowsWmiAdapterRam;
+        let wmi_value_may_be_capped = (3.9..=4.1).contains(&vram_gb);
+        let mut confidence = if wmi_value_may_be_capped {
+            VramConfidence::Estimated
+        } else {
+            VramConfidence::Detected
+        };
+        if vram_gb < 0.1 || (wmi_value_may_be_capped && estimate_vram_from_name(name) > 4.1) {
             let estimated = estimate_vram_from_name(name);
             if estimated > 0.0 {
                 vram_gb = estimated;
+                source = VramSource::LlmfitKnownGpuTable;
+                confidence = VramConfidence::Estimated;
             }
         }
-        if vram_gb > 0.0 { Some(vram_gb) } else { None }
+        if vram_gb > 0.0 {
+            (Some(vram_gb), Some(source), Some(confidence))
+        } else {
+            (None, None, None)
+        }
     }
 
     /// Infer the most likely inference backend from a GPU name string.
@@ -1179,37 +1381,161 @@ impl SystemSpecs {
             return Vec::new();
         }
 
-        let output = match std::process::Command::new("vulkaninfo")
-            .arg("--summary")
-            .output()
-        {
+        let output = match std::process::Command::new("vulkaninfo").output() {
             Ok(o) if o.status.success() => o,
-            _ => match std::process::Command::new("vulkaninfo").output() {
-                Ok(o) if o.status.success() => o,
-                _ => return Vec::new(),
-            },
+            _ => return Vec::new(),
         };
 
         let text = String::from_utf8_lossy(&output.stdout);
-        let mut grouped: BTreeMap<String, u32> = BTreeMap::new();
+        Self::parse_vulkan_gpu_info(&text)
+    }
 
-        for name in Self::parse_vulkan_device_names(&text) {
-            if Self::is_software_vulkan_device(&name) {
-                continue;
-            }
-            *grouped.entry(name).or_insert(0) += 1;
+    fn estimate_discrete_vram_from_name(name: &str) -> Option<f64> {
+        if Self::is_integrated_gpu_name(name) {
+            return None;
         }
 
-        grouped
-            .into_iter()
-            .map(|(name, count)| GpuInfo {
-                backend: GpuBackend::Vulkan,
-                count,
-                name,
-                unified_memory: false,
-                vram_gb: None,
-            })
-            .collect()
+        let estimated = estimate_vram_from_name(name);
+        if estimated > 0.0 {
+            Some(estimated)
+        } else {
+            None
+        }
+    }
+
+    fn parse_vulkan_gpu_info(text: &str) -> Vec<GpuInfo> {
+        let mut parsed_devices = Vec::new();
+        let mut current: Option<VulkanDeviceInfo> = None;
+        let mut in_memory_heaps = false;
+        let mut current_heap: Option<usize> = None;
+
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if Self::is_vulkan_device_header(trimmed) {
+                if let Some(device) = current.take() {
+                    parsed_devices.push(device);
+                }
+                current = Some(VulkanDeviceInfo::default());
+                in_memory_heaps = false;
+                current_heap = None;
+                continue;
+            }
+
+            let Some(device) = current.as_mut() else {
+                continue;
+            };
+
+            if let Some((key, value)) = trimmed.split_once('=') {
+                match key.trim() {
+                    "deviceName" => device.name = value.trim().to_string(),
+                    "deviceType" => device.device_type = value.trim().to_string(),
+                    "size" if in_memory_heaps => {
+                        if let Some(heap) = current_heap
+                            && let Some(bytes) = value
+                                .split_whitespace()
+                                .next()
+                                .and_then(|item| item.parse::<u64>().ok())
+                        {
+                            device.memory_heaps.entry(heap).or_default().0 = bytes;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if trimmed.starts_with("memoryHeaps:") {
+                in_memory_heaps = true;
+                current_heap = None;
+            } else if trimmed.starts_with("memoryTypes:") {
+                in_memory_heaps = false;
+                current_heap = None;
+            } else if in_memory_heaps
+                && trimmed.starts_with("memoryHeaps[")
+                && trimmed.ends_with("]:")
+            {
+                current_heap = trimmed
+                    .strip_prefix("memoryHeaps[")
+                    .and_then(|value| value.strip_suffix("]:"))
+                    .and_then(|value| value.parse::<usize>().ok());
+            } else if in_memory_heaps
+                && trimmed == "MEMORY_HEAP_DEVICE_LOCAL_BIT"
+                && let Some(heap) = current_heap
+            {
+                device.memory_heaps.entry(heap).or_default().1 = true;
+            }
+        }
+
+        if let Some(device) = current {
+            parsed_devices.push(device);
+        }
+
+        let mut gpus: Vec<GpuInfo> = Vec::new();
+        for device in parsed_devices {
+            if device.name.is_empty() || Self::is_software_vulkan_device(&device.name) {
+                continue;
+            }
+
+            let device_local_bytes: u64 = device
+                .memory_heaps
+                .values()
+                .filter(|(_, device_local)| *device_local)
+                .map(|(bytes, _)| *bytes)
+                .sum();
+            let is_discrete = device.device_type.contains("DISCRETE_GPU");
+            let detected_vram = if is_discrete && device_local_bytes > 0 {
+                Some(Self::normalize_detected_vram_gb(
+                    device_local_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                ))
+            } else {
+                None
+            };
+            let estimated_vram =
+                detected_vram.or_else(|| Self::estimate_discrete_vram_from_name(&device.name));
+            let source = estimated_vram.map(|_| {
+                if detected_vram.is_some() {
+                    VramSource::VulkanDeviceMemory
+                } else {
+                    VramSource::LlmfitKnownGpuTable
+                }
+            });
+            let confidence = estimated_vram.map(|_| {
+                if detected_vram.is_some() {
+                    VramConfidence::Detected
+                } else {
+                    VramConfidence::Estimated
+                }
+            });
+
+            if let Some(existing) = gpus.iter_mut().find(|gpu| gpu.name == device.name) {
+                existing.count += 1;
+            } else {
+                gpus.push(GpuInfo {
+                    name: device.name,
+                    vram_gb: estimated_vram,
+                    vram_source: source,
+                    vram_confidence: confidence,
+                    backend: GpuBackend::Vulkan,
+                    count: 1,
+                    unified_memory: false,
+                });
+            }
+        }
+        gpus
+    }
+
+    fn is_vulkan_device_header(line: &str) -> bool {
+        line.strip_prefix("GPU")
+            .and_then(|value| value.strip_suffix(':'))
+            .is_some_and(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()))
+    }
+
+    fn normalize_detected_vram_gb(value: f64) -> f64 {
+        let nearest = value.round();
+        if nearest >= 1.0 && (value - nearest).abs() <= 0.25 {
+            nearest
+        } else {
+            value
+        }
     }
 
     fn is_same_gpu_name(existing_name: &str, candidate_name: &str) -> bool {
@@ -1280,6 +1606,7 @@ impl SystemSpecs {
         normalized.trim().to_string()
     }
 
+    #[cfg(test)]
     fn parse_vulkan_device_names(text: &str) -> Vec<String> {
         let mut names = Vec::new();
 
@@ -1384,6 +1711,8 @@ impl SystemSpecs {
                 let npu_info = GpuInfo {
                     name: npu_name.to_string(),
                     vram_gb: Some((mem as f64) / 1024.0),
+                    vram_source: Some(VramSource::AscendSmi),
+                    vram_confidence: Some(VramConfidence::Detected),
                     backend: GpuBackend::Ascend,
                     count: 1,
                     unified_memory: false,
@@ -1565,6 +1894,8 @@ impl SystemSpecs {
             self.gpus.push(GpuInfo {
                 name: "User-specified GPU".to_string(),
                 vram_gb: Some(vram_gb),
+                vram_source: Some(VramSource::UserOverride),
+                vram_confidence: Some(VramConfidence::Provided),
                 backend,
                 count: 1,
                 unified_memory: false,
@@ -1578,6 +1909,8 @@ impl SystemSpecs {
         } else {
             // Override the primary (first) GPU's VRAM.
             self.gpus[0].vram_gb = Some(vram_gb);
+            self.gpus[0].vram_source = Some(VramSource::UserOverride);
+            self.gpus[0].vram_confidence = Some(VramConfidence::Provided);
             self.gpu_vram_gb = Some(vram_gb);
             // Update total VRAM: per-card VRAM * count.
             let count = self.gpus[0].count;
@@ -1600,6 +1933,8 @@ impl SystemSpecs {
             for gpu in &mut self.gpus {
                 if gpu.unified_memory {
                     gpu.vram_gb = Some(ram_gb);
+                    gpu.vram_source = Some(VramSource::UserOverride);
+                    gpu.vram_confidence = Some(VramConfidence::Provided);
                 }
             }
         }
@@ -2872,6 +3207,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             gpus: vec![super::GpuInfo {
                 name: "NVIDIA RTX 3070".to_string(),
                 vram_gb: Some(8.0),
+                vram_source: None,
+                vram_confidence: None,
                 backend: super::GpuBackend::Cuda,
                 count: 1,
                 unified_memory: false,
@@ -3208,6 +3545,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             super::GpuInfo {
                 name: "Intel(R) UHD Graphics 770".to_string(),
                 vram_gb: Some(8.0),
+                vram_source: None,
+                vram_confidence: None,
                 backend: GpuBackend::Vulkan,
                 count: 1,
                 unified_memory: false,
@@ -3215,6 +3554,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             super::GpuInfo {
                 name: "NVIDIA GeForce RTX 4090".to_string(),
                 vram_gb: Some(4.0), // WMI 32-bit cap may report low value
+                vram_source: None,
+                vram_confidence: None,
                 backend: GpuBackend::Cuda,
                 count: 1,
                 unified_memory: false,
@@ -3231,6 +3572,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         let gpus = vec![super::GpuInfo {
             name: "Intel(R) UHD Graphics 770".to_string(),
             vram_gb: Some(2.0),
+            vram_source: None,
+            vram_confidence: None,
             backend: GpuBackend::Vulkan,
             count: 1,
             unified_memory: false,
@@ -3238,6 +3581,175 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
         let result = SystemSpecs::prefer_discrete_gpus(gpus);
         assert_eq!(result.len(), 1);
         assert!(result[0].name.contains("UHD"));
+    }
+
+    #[test]
+    fn test_vulkan_fallback_estimates_discrete_vram_from_name() {
+        assert_eq!(
+            SystemSpecs::estimate_discrete_vram_from_name("AMD Radeon RX 5700 XT"),
+            Some(8.0)
+        );
+    }
+
+    #[test]
+    fn test_vulkan_fallback_does_not_estimate_integrated_vram() {
+        assert_eq!(
+            SystemSpecs::estimate_discrete_vram_from_name("AMD Radeon(TM) Graphics"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_vulkan_device_memory_is_detected_before_known_gpu_fallback() {
+        let text = "\
+GPU0:
+deviceType = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+deviceName = AMD Radeon RX 5700 XT
+VkPhysicalDeviceMemoryProperties:
+memoryHeaps: count = 2
+memoryHeaps[0]:
+size = 8304721920
+flags: count = 1
+MEMORY_HEAP_DEVICE_LOCAL_BIT
+memoryHeaps[1]:
+size = 268435456
+flags: count = 1
+MEMORY_HEAP_DEVICE_LOCAL_BIT
+memoryTypes: count = 1
+";
+        let gpus = SystemSpecs::parse_vulkan_gpu_info(text);
+
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(gpus[0].vram_gb, Some(8.0));
+        assert_eq!(
+            gpus[0].vram_source,
+            Some(super::VramSource::VulkanDeviceMemory)
+        );
+        assert_eq!(
+            gpus[0].vram_confidence,
+            Some(super::VramConfidence::Detected)
+        );
+    }
+
+    #[test]
+    fn test_vulkan_known_discrete_without_memory_uses_estimated_fallback() {
+        let text = "\
+GPU0:
+deviceType = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+deviceName = AMD Radeon RX 5700 XT
+";
+        let gpus = SystemSpecs::parse_vulkan_gpu_info(text);
+
+        assert_eq!(gpus[0].vram_gb, Some(8.0));
+        assert_eq!(
+            gpus[0].vram_source,
+            Some(super::VramSource::LlmfitKnownGpuTable)
+        );
+        assert_eq!(
+            gpus[0].vram_confidence,
+            Some(super::VramConfidence::Estimated)
+        );
+    }
+
+    #[test]
+    fn test_vulkan_integrated_gpu_does_not_gain_detected_vram() {
+        let text = "\
+GPU0:
+deviceType = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+deviceName = AMD Radeon(TM) Graphics
+VkPhysicalDeviceMemoryProperties:
+memoryHeaps: count = 1
+memoryHeaps[0]:
+size = 17179869184
+flags: count = 1
+MEMORY_HEAP_DEVICE_LOCAL_BIT
+memoryTypes: count = 1
+";
+        let gpus = SystemSpecs::parse_vulkan_gpu_info(text);
+
+        assert_eq!(gpus[0].vram_gb, None);
+        assert_eq!(gpus[0].vram_source, None);
+        assert_eq!(gpus[0].vram_confidence, None);
+    }
+
+    #[test]
+    fn test_real_vram_replaces_estimate_but_estimate_never_replaces_real() {
+        let mut gpus = vec![super::GpuInfo {
+            name: "AMD Radeon RX 5700 XT".to_string(),
+            vram_gb: Some(8.0),
+            vram_source: Some(super::VramSource::LlmfitKnownGpuTable),
+            vram_confidence: Some(super::VramConfidence::Estimated),
+            backend: super::GpuBackend::Vulkan,
+            count: 1,
+            unified_memory: false,
+        }];
+        let detected = super::GpuInfo {
+            name: "AMD Radeon RX 5700 XT".to_string(),
+            vram_gb: Some(8.0),
+            vram_source: Some(super::VramSource::VulkanDeviceMemory),
+            vram_confidence: Some(super::VramConfidence::Detected),
+            backend: super::GpuBackend::Vulkan,
+            count: 1,
+            unified_memory: false,
+        };
+
+        SystemSpecs::merge_gpu(&mut gpus, detected.clone());
+        assert_eq!(
+            gpus[0].vram_source,
+            Some(super::VramSource::VulkanDeviceMemory)
+        );
+        SystemSpecs::merge_gpu(
+            &mut gpus,
+            super::GpuInfo {
+                vram_source: Some(super::VramSource::LlmfitKnownGpuTable),
+                vram_confidence: Some(super::VramConfidence::Estimated),
+                ..detected
+            },
+        );
+        assert_eq!(
+            gpus[0].vram_source,
+            Some(super::VramSource::VulkanDeviceMemory)
+        );
+    }
+
+    #[test]
+    fn test_wmi_real_vram_uses_wmi_source_instead_of_known_gpu_table() {
+        let (vram, source, confidence) =
+            SystemSpecs::resolve_wmi_vram(8 * 1024 * 1024 * 1024, "AMD Radeon RX 5700 XT");
+
+        assert_eq!(vram, Some(8.0));
+        assert_eq!(source, Some(super::VramSource::WindowsWmiAdapterRam));
+        assert_eq!(confidence, Some(super::VramConfidence::Detected));
+    }
+
+    #[test]
+    fn test_wmi_capped_vram_uses_estimated_known_gpu_table() {
+        let (vram, source, confidence) =
+            SystemSpecs::resolve_wmi_vram(4 * 1024 * 1024 * 1024, "AMD Radeon RX 5700 XT");
+
+        assert_eq!(vram, Some(8.0));
+        assert_eq!(source, Some(super::VramSource::LlmfitKnownGpuTable));
+        assert_eq!(confidence, Some(super::VramConfidence::Estimated));
+    }
+
+    #[test]
+    fn test_wmi_integrated_gpu_does_not_gain_detected_vram() {
+        let (vram, source, confidence) =
+            SystemSpecs::resolve_wmi_vram(2 * 1024 * 1024 * 1024, "AMD Radeon(TM) Graphics");
+
+        assert_eq!(vram, None);
+        assert_eq!(source, None);
+        assert_eq!(confidence, None);
+    }
+
+    #[test]
+    fn test_wmi_capped_unknown_gpu_is_not_marked_detected() {
+        let (vram, source, confidence) =
+            SystemSpecs::resolve_wmi_vram(4 * 1024 * 1024 * 1024, "OEM Graphics Adapter");
+
+        assert_eq!(vram, Some(4.0));
+        assert_eq!(source, Some(super::VramSource::WindowsWmiAdapterRam));
+        assert_eq!(confidence, Some(super::VramConfidence::Estimated));
     }
 
     #[test]
@@ -3280,6 +3792,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             gpus: vec![super::GpuInfo {
                 name: "Test GPU".to_string(),
                 vram_gb: Some(16.0),
+                vram_source: None,
+                vram_confidence: None,
                 backend: super::GpuBackend::Cuda,
                 count: 1,
                 unified_memory: false,
@@ -3313,6 +3827,8 @@ GPU id = 1 (NVIDIA GeForce RTX 4090)
             gpus: vec![super::GpuInfo {
                 name: "Apple M2 Max".to_string(),
                 vram_gb: Some(36.0),
+                vram_source: None,
+                vram_confidence: None,
                 backend: super::GpuBackend::Metal,
                 count: 1,
                 unified_memory: true,

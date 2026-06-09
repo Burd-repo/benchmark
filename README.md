@@ -93,6 +93,24 @@ burd-agent serve --host 127.0.0.1 --port 8787
 
 All commands with `--json` write valid JSON to stdout without mixed logs.
 
+## VRAM Detection And Confidence
+
+Hardware reports expose optional `vram_source` and `vram_confidence` fields for
+the primary GPU and each GPU entry.
+
+- `detected`: VRAM came from a system, driver, or device API such as
+  `nvidia-smi`, ROCm/sysfs, Windows WMI when reliable, or Vulkan device-local
+  memory heaps.
+- `estimated`: no reliable real measurement was available and llmfit used a
+  known-GPU table or unified-memory heuristic.
+- `provided`: the value came from an explicit user override.
+
+Real measurements always take precedence over estimates. Integrated, unknown,
+or ambiguous GPUs are not promoted to `detected` from a name-based estimate.
+Estimated VRAM remains acceptable for MVP/local validation, but future
+marketplace eligibility and pricing policy should require or prioritize
+`detected` high-confidence VRAM.
+
 ## Score
 
 The Burd Compute Score is a 0-100 score with these MVP weights:

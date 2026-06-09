@@ -54,6 +54,13 @@ message. Check status is `passed`, `warning`, or `failed`.
 `ready_locally` requires all seven checks to pass and therefore has a score of
 `100`. Warnings do not receive partial weight.
 
+Provider verification preserves optional `vram_source` and `vram_confidence`
+metadata. A real measurement is marked `detected`; llmfit known-GPU table and
+unified-memory fallbacks are marked `estimated`; explicit overrides are marked
+`provided`. Estimated VRAM is acceptable for MVP local readiness when capacity
+is otherwise available, but it is not production hardware attestation. Future
+marketplace policy should prioritize or require detected/high-confidence VRAM.
+
 ## Collection Behavior
 
 The command does not mutate local state. It does not create identity, tokens,

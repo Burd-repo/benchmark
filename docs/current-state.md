@@ -97,6 +97,12 @@ after the June 2026 reliability pass.
 - Provider Readiness consolidates identity, signed report, challenge evidence,
   verification, history, API token status, and raw redaction into a local
   score, checks, warnings, and recommendations.
+- VRAM detection records optional source and confidence metadata and prioritizes
+  real driver/system/device measurements over llmfit known-GPU estimates.
+- Vulkan fallback reads device-local memory heaps for discrete GPUs when
+  available. Name-table VRAM remains a final `estimated` fallback only.
+- System reports, signed reports, provider details, raw data, registration
+  payloads, and provider verification preserve VRAM source/confidence metadata.
 - Local API contract tests cover health, lightweight public endpoints,
   protected endpoint 401 behavior when token auth is enabled, and config/raw
   redaction expectations without starting `serve`.
@@ -116,6 +122,8 @@ after the June 2026 reliability pass.
 - Remote database or production cloud backend.
 - Reputation and provider marketplace ranking.
 - Hardware attestation through TPM/HSM/OS keychain.
+- Production marketplace policy that requires detected/high-confidence VRAM and
+  rejects or limits estimated capacity.
 
 ## Known Build Warnings
 

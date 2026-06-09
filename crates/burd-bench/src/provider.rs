@@ -62,6 +62,10 @@ pub struct ProviderHardware {
     pub backend: String,
     pub gpu_count: u32,
     pub vram_gb: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_confidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +73,10 @@ pub struct GpuModelDetail {
     pub vendor: String,
     pub model: String,
     pub vram_gb: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_confidence: Option<String>,
     pub count: u32,
 }
 
@@ -187,6 +195,8 @@ fn hardware_from_system(system: &SystemReport, disk_free_gb: Option<f64>) -> Pro
         backend: system.backend_detected.clone(),
         gpu_count: system.gpu_count,
         vram_gb: system.vram_total_gb.or(system.vram_per_gpu_gb),
+        vram_source: system.vram_source.clone(),
+        vram_confidence: system.vram_confidence.clone(),
     }
 }
 
@@ -198,6 +208,8 @@ fn gpu_models_from_system(system: &SystemReport) -> Vec<GpuModelDetail> {
             vendor: gpu_vendor(&gpu.name),
             model: gpu.name.clone(),
             vram_gb: gpu.vram_gb,
+            vram_source: gpu.vram_source.clone(),
+            vram_confidence: gpu.vram_confidence.clone(),
             count: gpu.count,
         })
         .collect()
@@ -277,6 +289,18 @@ fn attributes_from_system(system: &SystemReport) -> Vec<ProviderAttribute> {
             value: format!("{vram:.1}"),
         });
     }
+    if let Some(source) = system.vram_source.clone() {
+        attrs.push(ProviderAttribute {
+            key: "hardware-gpu-vram-source".to_string(),
+            value: source,
+        });
+    }
+    if let Some(confidence) = system.vram_confidence.clone() {
+        attrs.push(ProviderAttribute {
+            key: "hardware-gpu-vram-confidence".to_string(),
+            value: confidence,
+        });
+    }
     attrs
 }
 
@@ -315,6 +339,8 @@ mod tests {
             primary_gpu_name: Some("NVIDIA RTX 4090".to_string()),
             vram_per_gpu_gb: Some(24.0),
             vram_total_gb: Some(24.0),
+            vram_source: None,
+            vram_confidence: None,
             backend_detected: "CUDA".to_string(),
             cuda_available: true,
             rocm_available: false,
@@ -329,5 +355,29 @@ mod tests {
         let stats = stats_from_system(&system, Some(100.0));
         assert_eq!(stats.gpu.active, 0.0);
         assert_eq!(stats.gpu.total, 1.0);
+    }
+
+    #[test]
+    fn provider_preserves_vram_source_and_confidence() {
+        let mut system = crate::test_fixtures::system_report();
+        system.vram_source = Some("vulkan_device_memory".to_string());
+        system.vram_confidence = Some("detected".to_string());
+        system.gpus[0].vram_source = system.vram_source.clone();
+        system.gpus[0].vram_confidence = system.vram_confidence.clone();
+
+        let hardware = hardware_from_system(&system, None);
+        let gpu_models = gpu_models_from_system(&system);
+
+        assert_eq!(hardware.vram_gb, Some(24.0));
+        assert_eq!(
+            hardware.vram_source.as_deref(),
+            Some("vulkan_device_memory")
+        );
+        assert_eq!(hardware.vram_confidence.as_deref(), Some("detected"));
+        assert_eq!(
+            gpu_models[0].vram_source.as_deref(),
+            Some("vulkan_device_memory")
+        );
+        assert_eq!(gpu_models[0].vram_confidence.as_deref(), Some("detected"));
     }
 }

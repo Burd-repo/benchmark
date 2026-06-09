@@ -270,6 +270,29 @@ mod tests {
     }
 
     #[test]
+    fn report_preserves_vram_source_and_confidence_from_system_snapshot() {
+        let mut system = crate::test_fixtures::system_report();
+        system.vram_source = Some("vulkan_device_memory".to_string());
+        system.vram_confidence = Some("detected".to_string());
+        system.gpus[0].vram_source = system.vram_source.clone();
+        system.gpus[0].vram_confidence = system.vram_confidence.clone();
+
+        let report = generate_full_report_from_snapshot(
+            ReportRunOptions::new("0.1.0"),
+            &system,
+            &crate::test_fixtures::fit_report(),
+        );
+
+        assert_eq!(report.system["vram_total_gb"], 24.0);
+        assert_eq!(report.system["vram_source"], "vulkan_device_memory");
+        assert_eq!(report.system["vram_confidence"], "detected");
+        assert_eq!(
+            report.system["gpus"][0]["vram_source"],
+            "vulkan_device_memory"
+        );
+    }
+
+    #[test]
     fn signed_report_verification_detects_tamper() {
         let report = SignedReport {
             provider_id: "provider".to_string(),

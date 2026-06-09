@@ -64,6 +64,22 @@ pub(crate) fn build_registration_payload_from(
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
         .or(Some(provider.tier.clone()));
+    let mut capabilities = serde_json::json!({
+        "gpu_count": provider.hardware.gpu_count,
+        "vram_gb": provider.hardware.vram_gb,
+        "backend": provider.hardware.backend.clone(),
+        "recommended_workloads": provider.score.recommended_workloads.clone(),
+        "container_orchestration_future": false,
+        "marketplace_jobs_future": false,
+    });
+    if let Some(map) = capabilities.as_object_mut() {
+        if let Some(source) = provider.hardware.vram_source.clone() {
+            map.insert("vram_source".to_string(), serde_json::json!(source));
+        }
+        if let Some(confidence) = provider.hardware.vram_confidence.clone() {
+            map.insert("vram_confidence".to_string(), serde_json::json!(confidence));
+        }
+    }
 
     ProviderRegistrationPayload {
         provider_id: provider.provider_id.clone(),
@@ -92,14 +108,7 @@ pub(crate) fn build_registration_payload_from(
             "email": identity.as_ref().and_then(|config| config.email.clone()),
             "website": identity.as_ref().and_then(|config| config.website.clone()),
         }),
-        capabilities: serde_json::json!({
-            "gpu_count": provider.hardware.gpu_count,
-            "vram_gb": provider.hardware.vram_gb,
-            "backend": provider.hardware.backend.clone(),
-            "recommended_workloads": provider.score.recommended_workloads.clone(),
-            "container_orchestration_future": false,
-            "marketplace_jobs_future": false,
-        }),
+        capabilities,
         pricing: serde_json::to_value(&provider.pricing)
             .unwrap_or_else(|_| serde_json::json!({"error": "pricing serialization failed"})),
         verification: serde_json::to_value(verification)
@@ -157,5 +166,29 @@ mod tests {
         let json = serde_json::to_string(&payload).unwrap();
         assert!(!json.contains("private_key"));
         assert!(!json.contains("api_token"));
+    }
+
+    #[test]
+    fn registration_payload_preserves_vram_source_and_confidence() {
+        let mut provider = crate::test_fixtures::provider_details();
+        provider.hardware.vram_source = Some("vulkan_device_memory".to_string());
+        provider.hardware.vram_confidence = Some("detected".to_string());
+        let verification = crate::test_fixtures::provider_verification();
+
+        let payload = build_registration_payload_from(
+            "0.1.0",
+            &provider,
+            None,
+            None,
+            &verification,
+            "2026-06-08T00:00:00Z".to_string(),
+        );
+
+        assert_eq!(payload.capabilities["vram_source"], "vulkan_device_memory");
+        assert_eq!(payload.capabilities["vram_confidence"], "detected");
+        assert_eq!(
+            payload.provider_details["hardware"]["vram_source"],
+            "vulkan_device_memory"
+        );
     }
 }
