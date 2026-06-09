@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderVerification {
     pub hardware_verified: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_confidence: Option<String>,
     pub benchmark_verified: bool,
     pub signature_verified: bool,
     pub challenge_verified: bool,
@@ -123,6 +127,8 @@ pub(crate) fn verify_provider_from_reports(
 
     ProviderVerification {
         hardware_verified,
+        vram_source: system.vram_source.clone(),
+        vram_confidence: system.vram_confidence.clone(),
         benchmark_verified,
         signature_verified,
         challenge_verified,
@@ -145,6 +151,8 @@ mod tests {
     fn verification_serializes() {
         let value = ProviderVerification {
             hardware_verified: true,
+            vram_source: Some("vulkan_device_memory".to_string()),
+            vram_confidence: Some("detected".to_string()),
             benchmark_verified: false,
             signature_verified: false,
             challenge_verified: false,
@@ -159,5 +167,31 @@ mod tests {
         };
         let json = serde_json::to_string(&value).unwrap();
         assert!(json.contains("fraud_risk_level"));
+    }
+
+    #[test]
+    fn detected_vram_does_not_add_provider_verification_warning() {
+        let mut system = crate::test_fixtures::system_report();
+        system.vram_source = Some("vulkan_device_memory".to_string());
+        system.vram_confidence = Some("detected".to_string());
+        let verification = verify_provider_from_reports(
+            Ok(()),
+            &system,
+            &crate::test_fixtures::score_report(),
+            crate::test_fixtures::signed_report(None),
+        );
+
+        assert!(verification.hardware_verified);
+        assert_eq!(
+            verification.vram_source.as_deref(),
+            Some("vulkan_device_memory")
+        );
+        assert_eq!(verification.vram_confidence.as_deref(), Some("detected"));
+        assert!(
+            !verification
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("VRAM"))
+        );
     }
 }

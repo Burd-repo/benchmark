@@ -33,6 +33,10 @@ Implemented now:
 - Real-hardware CI is manual-only, targets a dedicated ephemeral self-hosted
   runner, uses a protected environment, disables persisted checkout
   credentials, and isolates Burd state under `runner.temp`.
+- VRAM reports distinguish real system/driver/device measurements (`detected`)
+  from llmfit name-table or unified-memory heuristics (`estimated`) and explicit
+  user overrides (`provided`).
+- Real VRAM measurements are not overwritten by lower-confidence estimates.
 
 Not implemented yet:
 
@@ -42,6 +46,8 @@ Not implemented yet:
 - Hardware attestation.
 - Fraud scoring beyond local heuristic warnings.
 - Production key storage such as OS keychain, TPM, HSM, or encrypted secrets.
+- Backend attestation of VRAM source/confidence and enforcement of marketplace
+  policy for estimated or user-provided capacity.
 
 Recommended operation for this MVP:
 
@@ -52,3 +58,5 @@ Recommended operation for this MVP:
 4. Treat `~/.burd/agent.key` as sensitive.
 5. Use signed reports and challenge responses only as local validation artifacts
    until the Burd backend exists.
+6. Treat `estimated` or `provided` VRAM as local/MVP evidence, not production
+   hardware attestation.

@@ -9,6 +9,10 @@ pub const BENCHMARK_VERSION: &str = "2026.06-mvp";
 pub struct GpuReport {
     pub name: String,
     pub vram_gb: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_confidence: Option<String>,
     pub backend: String,
     pub count: u32,
     pub unified_memory: bool,
@@ -27,6 +31,10 @@ pub struct SystemReport {
     pub primary_gpu_name: Option<String>,
     pub vram_per_gpu_gb: Option<f64>,
     pub vram_total_gb: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_confidence: Option<String>,
     pub backend_detected: String,
     pub cuda_available: bool,
     pub rocm_available: bool,
@@ -51,11 +59,16 @@ pub fn build_system_report(specs: &SystemSpecs, agent_version: &str) -> SystemRe
         .map(|gpu| GpuReport {
             name: gpu.name.clone(),
             vram_gb: gpu.vram_gb.map(round2),
+            vram_source: gpu.vram_source.map(|source| source.label().to_string()),
+            vram_confidence: gpu
+                .vram_confidence
+                .map(|confidence| confidence.label().to_string()),
             backend: gpu.backend.label().to_string(),
             count: gpu.count,
             unified_memory: gpu.unified_memory,
         })
         .collect();
+    let primary = specs.gpus.first();
 
     SystemReport {
         os: std::env::consts::OS.to_string(),
@@ -69,6 +82,12 @@ pub fn build_system_report(specs: &SystemSpecs, agent_version: &str) -> SystemRe
         primary_gpu_name: specs.gpu_name.clone(),
         vram_per_gpu_gb: specs.gpu_vram_gb.map(round2),
         vram_total_gb: specs.total_gpu_vram_gb.map(round2),
+        vram_source: primary
+            .and_then(|gpu| gpu.vram_source)
+            .map(|source| source.label().to_string()),
+        vram_confidence: primary
+            .and_then(|gpu| gpu.vram_confidence)
+            .map(|confidence| confidence.label().to_string()),
         backend_detected: specs.backend.label().to_string(),
         cuda_available: specs.backend == GpuBackend::Cuda || command_exists("nvidia-smi"),
         rocm_available: specs.backend == GpuBackend::Rocm || command_exists("rocm-smi"),
@@ -162,6 +181,8 @@ mod tests {
             primary_gpu_name: None,
             vram_per_gpu_gb: None,
             vram_total_gb: None,
+            vram_source: None,
+            vram_confidence: None,
             backend_detected: "CPU (x86)".to_string(),
             cuda_available: false,
             rocm_available: false,

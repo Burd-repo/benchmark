@@ -290,6 +290,8 @@ mod tests {
             primary_gpu_name: Some("NVIDIA GeForce RTX 4090".to_string()),
             vram_per_gpu_gb: Some(24.0),
             vram_total_gb: Some(24.0),
+            vram_source: None,
+            vram_confidence: None,
             backend_detected: "CUDA".to_string(),
             cuda_available: true,
             rocm_available: false,

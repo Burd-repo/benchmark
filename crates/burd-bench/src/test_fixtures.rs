@@ -31,6 +31,8 @@ pub(crate) fn system_report() -> SystemReport {
         gpus: vec![GpuReport {
             name: "NVIDIA GeForce RTX 4090".to_string(),
             vram_gb: Some(24.0),
+            vram_source: None,
+            vram_confidence: None,
             backend: "CUDA".to_string(),
             count: 1,
             unified_memory: false,
@@ -39,6 +41,8 @@ pub(crate) fn system_report() -> SystemReport {
         primary_gpu_name: Some("NVIDIA GeForce RTX 4090".to_string()),
         vram_per_gpu_gb: Some(24.0),
         vram_total_gb: Some(24.0),
+        vram_source: None,
+        vram_confidence: None,
         backend_detected: "CUDA".to_string(),
         cuda_available: true,
         rocm_available: false,
@@ -161,11 +165,15 @@ pub(crate) fn provider_details() -> BurdProviderDetails {
             backend: system.backend_detected.clone(),
             gpu_count: system.gpu_count,
             vram_gb: system.vram_total_gb,
+            vram_source: None,
+            vram_confidence: None,
         },
         gpu_models: vec![GpuModelDetail {
             vendor: "nvidia".to_string(),
             model: system.primary_gpu_name.clone().unwrap(),
             vram_gb: system.vram_total_gb,
+            vram_source: None,
+            vram_confidence: None,
             count: 1,
         }],
         uptime_1d: uptime.uptime_1d,
@@ -203,6 +211,8 @@ pub(crate) fn provider_details() -> BurdProviderDetails {
 pub(crate) fn provider_verification() -> ProviderVerification {
     ProviderVerification {
         hardware_verified: true,
+        vram_source: None,
+        vram_confidence: None,
         benchmark_verified: true,
         signature_verified: true,
         challenge_verified: false,
