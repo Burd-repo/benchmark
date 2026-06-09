@@ -27,6 +27,16 @@ Run it explicitly only when validating detection on the current machine:
 cargo test -p burd-bench real_hardware_detection_integration_is_available -- --ignored
 ```
 
+The default CI workflow enforces a 15-second budget for the precompiled
+`burd-bench` contract suite. Check the same budget locally with:
+
+```powershell
+.\scripts\check-contract-test-time.ps1
+```
+
+Real-hardware CI is intentionally separate and manually dispatched. It requires
+a self-hosted GitHub Actions runner labeled `burd-hardware`.
+
 ## Fast Local Commands
 
 These commands do not start the local API server and do not run an infinite

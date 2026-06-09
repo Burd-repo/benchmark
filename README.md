@@ -166,6 +166,16 @@ ignored by the default `cargo test` run and can be executed intentionally:
 cargo test -p burd-bench real_hardware_detection_integration_is_available -- --ignored
 ```
 
+CI runs `cargo test --workspace` and enforces a 15-second budget for the
+precompiled `burd-bench` contract suite. Run the same performance guard locally:
+
+```powershell
+.\scripts\check-contract-test-time.ps1
+```
+
+The `.github/workflows/real-hardware-integration.yml` workflow runs only through
+manual dispatch on a self-hosted runner labeled `burd-hardware`.
+
 ## Local API Token
 
 Run:
