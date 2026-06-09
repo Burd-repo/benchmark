@@ -9,6 +9,7 @@ pub mod pricing;
 pub mod profiles;
 pub mod provider;
 pub mod raw;
+pub mod readiness;
 pub mod registration;
 pub mod report;
 pub mod score;
@@ -42,6 +43,10 @@ pub use pricing::{PricingReport, calculate_pricing};
 pub use profiles::{BenchmarkProfile, all_profiles, profile_for_vram};
 pub use provider::{BurdProviderDetails, build_provider_details};
 pub use raw::{RawData, build_raw_data};
+pub use readiness::{
+    ProviderReadiness, ProviderReadinessStatus, ReadinessCheck, ReadinessCheckStatus,
+    build_provider_readiness,
+};
 pub use registration::{
     ProviderRegistrationExport, ProviderRegistrationPayload, build_registration_payload,
     export_registration_payload,

@@ -134,6 +134,7 @@ try {
     Invoke-Endpoint "/api/v1/system"
     Invoke-Endpoint "/api/v1/score"
     Invoke-Endpoint "/api/v1/provider"
+    Invoke-Endpoint "/api/v1/readiness"
     Invoke-Endpoint "/api/v1/verification"
     Invoke-Endpoint "/api/v1/pricing"
     Invoke-Endpoint "/api/v1/earnings"

@@ -57,6 +57,8 @@ heartbeat loop.
 .\target\debug\burd-agent.exe report --json
 .\target\debug\burd-agent.exe report --run-all --signed --json
 .\target\debug\burd-agent.exe verify-provider --json
+.\target\debug\burd-agent.exe readiness
+.\target\debug\burd-agent.exe readiness --json
 .\target\debug\burd-agent.exe challenge create-mock --json
 .\target\debug\burd-agent.exe provider --json
 .\target\debug\burd-agent.exe pricing --json

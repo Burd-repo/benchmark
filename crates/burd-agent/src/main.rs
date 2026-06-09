@@ -3,14 +3,14 @@ mod cli;
 use anyhow::Result;
 use burd_bench::{
     DiskBenchmarkOptions, LlmBenchmarkOptions, NetworkBenchmarkOptions, ReportRunOptions,
-    append_report_history, append_signed_report_history, build_provider_details, build_raw_data,
-    build_registration_payload, calculate_pricing, calculate_score, clear_history,
-    clear_uptime_history, detect_health, estimate_earnings, export_history,
-    export_registration_payload, generate_full_report, generate_signed_report, heartbeat_once,
-    load_actions, load_history_list, load_latest_history, load_logs, load_logs_for_task,
-    load_signed_report_file, load_uptime_summary, profile_for_vram, record_action,
-    run_disk_benchmark, run_llm_benchmark, run_network_benchmark, run_stability_benchmark,
-    save_latest_report, verify_provider, verify_signed_report,
+    append_report_history, append_signed_report_history, build_provider_details,
+    build_provider_readiness, build_raw_data, build_registration_payload, calculate_pricing,
+    calculate_score, clear_history, clear_uptime_history, detect_health, estimate_earnings,
+    export_history, export_registration_payload, generate_full_report, generate_signed_report,
+    heartbeat_once, load_actions, load_history_list, load_latest_history, load_logs,
+    load_logs_for_task, load_signed_report_file, load_uptime_summary, profile_for_vram,
+    record_action, run_disk_benchmark, run_llm_benchmark, run_network_benchmark,
+    run_stability_benchmark, save_latest_report, verify_provider, verify_signed_report,
 };
 use burd_hardware::{build_system_report, detect_specs, detect_system_report};
 use burd_llmfit::build_fit_report;
@@ -388,6 +388,14 @@ fn run() -> Result<()> {
         Commands::VerifyProvider { json: _ } => {
             print_json(&verify_provider(AGENT_VERSION))?;
         }
+        Commands::Readiness { json } => {
+            let readiness = build_provider_readiness(AGENT_VERSION, "http://127.0.0.1:8787");
+            if json {
+                print_json(&readiness)?;
+            } else {
+                print_readiness(&readiness);
+            }
+        }
         Commands::Pricing { json: _ } => {
             let (system, score) = system_and_score();
             print_json(&calculate_pricing(&system, &score))?;
@@ -518,6 +526,40 @@ fn run() -> Result<()> {
 fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+fn print_readiness(readiness: &burd_bench::ProviderReadiness) {
+    println!(
+        "Provider readiness: {} ({}/100)",
+        readiness.readiness_level, readiness.readiness_score
+    );
+    println!("Status: {}", readiness.status.as_str());
+    println!();
+    println!("Checks:");
+    for check in &readiness.checks {
+        println!(
+            "- [{}] {}: {} ({}/{})",
+            check.status.as_str(),
+            check.label,
+            check.message,
+            check.score,
+            check.max_score
+        );
+    }
+    if !readiness.warnings.is_empty() {
+        println!();
+        println!("Warnings:");
+        for warning in &readiness.warnings {
+            println!("- {warning}");
+        }
+    }
+    if !readiness.recommendations.is_empty() {
+        println!();
+        println!("Recommendations:");
+        for recommendation in &readiness.recommendations {
+            println!("- {recommendation}");
+        }
+    }
 }
 
 fn system_and_score() -> (burd_hardware::SystemReport, burd_bench::ScoreReport) {

@@ -71,6 +71,7 @@ The UI consumes these local endpoints when opened through `serve`:
 - `GET /api/v1/score`
 - `GET /api/v1/report`
 - `GET /api/v1/provider`
+- `GET /api/v1/readiness`
 - `GET /api/v1/verification`
 - `GET /api/v1/uptime`
 - `GET /api/v1/history`
@@ -92,18 +93,22 @@ instead of hiding it.
 The UI includes:
 
 1. Overview
-2. Hardware
-3. Benchmarks
-4. History
-5. Uptime
-6. Security
-7. Registration
-8. Logs
-9. Raw Data
+2. Readiness
+3. Hardware
+4. Benchmarks
+5. History
+6. Uptime
+7. Security
+8. Registration
+9. Logs
+10. Raw Data
 
 Overview shows provider and machine identity, online status, Burd Compute Score,
 tier, local marketplace readiness, GPU, backend, suggested demonstrative price,
 uptime, signed report status, and challenge status.
+
+Readiness shows the canonical local readiness score, level, status, individual
+checks, warnings, and recommendations from `GET /api/v1/readiness`.
 
 Hardware shows CPU, RAM, GPU, VRAM, backend, driver/runtime signals, disk, and
 network summary.
@@ -141,4 +146,3 @@ This replaces unhelpful browser errors such as `Failed to fetch`.
 The console intentionally does not implement a production backend, Pix, billing,
 payouts, real marketplace listings, real jobs, leases, orchestration, reputation
 ranking, TPM/HSM attestation, remote storage, or remote telemetry.
-

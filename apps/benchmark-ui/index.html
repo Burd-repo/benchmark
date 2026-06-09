@@ -42,6 +42,7 @@
 
       <nav class="tabs" aria-label="Provider console sections">
         <button class="tab active" data-tab="overview" type="button">Overview</button>
+        <button class="tab" data-tab="readiness" type="button">Readiness</button>
         <button class="tab" data-tab="hardware" type="button">Hardware</button>
         <button class="tab" data-tab="benchmarks" type="button">Benchmarks</button>
         <button class="tab" data-tab="history" type="button">History</button>
@@ -83,6 +84,22 @@
           <article class="tile"><span>Fraud risk</span><strong id="overviewFraud">--</strong></article>
           <article class="tile"><span>Backend verification</span><strong id="overviewBackendVerification">--</strong></article>
         </div>
+      </section>
+
+      <section class="tab-panel" data-panel="readiness">
+        <div class="section-head"><span>Provider Readiness</span><strong id="readinessStatus">--</strong></div>
+        <div class="grid four">
+          <article class="tile"><span>Readiness score</span><strong id="readinessScore">--</strong></article>
+          <article class="tile"><span>Readiness level</span><strong id="readinessLevel">--</strong></article>
+          <article class="tile"><span>Checks passed</span><strong id="readinessPassed">--</strong></article>
+          <article class="tile"><span>Warnings</span><strong id="readinessWarningCount">--</strong></article>
+        </div>
+        <div class="section-head"><span>Checks</span><strong>Local validation</strong></div>
+        <div class="list" id="readinessChecks"></div>
+        <div class="section-head"><span>Warnings</span><strong id="readinessWarningsLabel">0 warnings</strong></div>
+        <div class="list" id="readinessWarnings"></div>
+        <div class="section-head"><span>Recommendations</span><strong>Next local steps</strong></div>
+        <div class="list" id="readinessRecommendations"></div>
       </section>
 
       <section class="tab-panel" data-panel="hardware">
@@ -200,6 +217,7 @@
         score: "/api/v1/score",
         report: "/api/v1/report",
         provider: "/api/v1/provider",
+        readiness: "/api/v1/readiness",
         verification: "/api/v1/verification",
         uptime: "/api/v1/uptime",
         history: "/api/v1/history",
@@ -321,6 +339,7 @@
       function currentData() {
         const raw = isError(state.raw) ? {} : state.raw || {};
         const provider = isError(state.provider) ? raw.provider_details || {} : state.provider || raw.provider_details || {};
+        const readiness = isError(state.readiness) ? {} : state.readiness || {};
         const report = isError(state.report) ? provider.raw_report || raw.latest_report || {} : state.report || provider.raw_report || raw.latest_report || {};
         const system = isError(state.system) ? report.system || {} : state.system || report.system || {};
         const score = isError(state.score) ? provider.score || report.score || raw.score || {} : state.score || provider.score || report.score || raw.score || {};
@@ -336,7 +355,7 @@
         const actions = Array.isArray(state.actions) ? state.actions : raw.actions?.items || [];
         const logs = Array.isArray(state.logs) ? state.logs : raw.actions?.logs || [];
 
-        return { raw, provider, report, system, score, verification, uptime, pricing, earnings, history, registration, config, fit, benchmarkStatus, actions, logs };
+        return { raw, provider, readiness, report, system, score, verification, uptime, pricing, earnings, history, registration, config, fit, benchmarkStatus, actions, logs };
       }
 
       function render() {
@@ -355,7 +374,7 @@
         const latestHistory = (data.history.entries || []).slice(-1)[0] || data.raw.history_summary?.latest || {};
         const signed = data.verification.signature_verified ? "Valid" : latestHistory.signed ? "Signed" : "Missing";
         const challenge = data.verification.challenge_verified ? "Verified" : latestHistory.challenge_id ? "Local response" : "Pending";
-        const readiness = data.provider.is_verified || data.score.eligible ? "Ready locally" : "Needs verification";
+        const readiness = first(data.readiness.readiness_level, data.provider.is_verified || data.score.eligible ? "Ready locally" : "Needs verification");
         const online = first(data.provider.is_online, state.health && !isError(state.health) ? true : null);
 
         write("healthStatus", apiOffline ? "Offline" : isError(state.health) ? "Degraded" : "Online");
@@ -388,6 +407,16 @@
         write("overviewChallenge", challenge);
         write("overviewFraud", data.verification.fraud_risk_level || "--");
         write("overviewBackendVerification", data.provider.backend_verification_status_future || "--");
+
+        write("readinessStatus", data.readiness.status || "--");
+        write("readinessScore", data.readiness.readiness_score !== undefined ? `${data.readiness.readiness_score}/100` : "--");
+        write("readinessLevel", data.readiness.readiness_level || "--");
+        write("readinessPassed", `${(data.readiness.checks || []).filter((check) => check.status === "passed").length}/${(data.readiness.checks || []).length || 0}`);
+        write("readinessWarningCount", (data.readiness.warnings || []).length);
+        write("readinessWarningsLabel", `${(data.readiness.warnings || []).length} warnings`);
+        renderReadinessChecks(data.readiness.checks || []);
+        renderReadinessItems("readinessWarnings", data.readiness.warnings || [], "No readiness warnings");
+        renderReadinessItems("readinessRecommendations", data.readiness.recommendations || [], "No readiness recommendations");
 
         write("hardwareSummary", `${first(data.system.gpu_count, data.provider.hardware?.gpu_count, 0)} GPU / ${backend || "--"}`);
         write("hardwareCpu", data.system.cpu || data.provider.hardware?.cpu || "--");
@@ -469,6 +498,24 @@
             <strong>${escapeHtml(model.estimated_tps ?? "--")} TPS</strong>
           </article>
         `).join("") || `<article class="list-row"><span>No fit rows loaded</span><strong>--</strong></article>`;
+      }
+
+      function renderReadinessChecks(checks) {
+        $("readinessChecks").innerHTML = (checks || []).map((check) => `
+          <article class="list-row">
+            <span>${escapeHtml(check.label)} | ${escapeHtml(check.message)} | ${escapeHtml(check.score ?? 0)}/${escapeHtml(check.max_score ?? 0)}</span>
+            <strong>${escapeHtml(check.status || "--")}</strong>
+          </article>
+        `).join("") || `<article class="list-row"><span>No readiness checks loaded</span><strong>--</strong></article>`;
+      }
+
+      function renderReadinessItems(id, items, emptyLabel) {
+        $(id).innerHTML = (items || []).map((item) => `
+          <article class="list-row">
+            <span>${escapeHtml(item)}</span>
+            <strong>Readiness</strong>
+          </article>
+        `).join("") || `<article class="list-row"><span>${escapeHtml(emptyLabel)}</span><strong>OK</strong></article>`;
       }
 
       function renderHistory(entries) {
