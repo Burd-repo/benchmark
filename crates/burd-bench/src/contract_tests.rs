@@ -1,7 +1,10 @@
 use crate::raw::build_raw_data_from_provider;
+use crate::readiness::{
+    ProviderReadinessInputs, ProviderReadinessStatus, ReadinessCheckStatus,
+    evaluate_provider_readiness,
+};
 use crate::registration::build_registration_payload_from;
 use crate::test_fixtures;
-use crate::verification::verify_provider_from_reports;
 use crate::{
     append_signed_report_history, export_history, load_history_list, load_latest_history,
     load_latest_signed_report, save_latest_signed_report, verify_signed_report,
@@ -342,74 +345,110 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
     let env = TestEnv::new("provider-readiness");
     env.assert_active();
 
-    let fresh = classify_local_readiness(TEST_AGENT_VERSION);
-    assert_eq!(fresh.status, LocalReadinessStatus::Uninitialized);
-    assert!(fresh.messages.iter().any(|item| item == "identity missing"));
+    let fresh = evaluate_provider_readiness(readiness_inputs(None, None));
+    assert_eq!(fresh.status, ProviderReadinessStatus::Uninitialized);
+    assert_eq!(fresh.readiness_score, 0);
+    assert_eq!(fresh.readiness_level, "Not Ready");
+    assert_eq!(fresh.checks.len(), 7);
     assert!(
         fresh
-            .messages
+            .recommendations
             .iter()
-            .any(|item| item == "signed report missing")
+            .any(|item| item.contains("identity init"))
     );
 
     env.install_identity();
-    let initialized = classify_local_readiness(TEST_AGENT_VERSION);
-    assert_eq!(initialized.status, LocalReadinessStatus::NotVerified);
-    assert!(
-        initialized
-            .messages
-            .iter()
-            .any(|item| item == "signed report missing")
-    );
-    assert!(
-        initialized
-            .messages
-            .iter()
-            .any(|item| item == "challenge pending")
-    );
+    let provider = test_fixtures::provider_details();
+    let mut not_verified = test_fixtures::provider_verification();
+    not_verified.signature_verified = false;
+    not_verified.audit_status = "not_audited".to_string();
+    not_verified
+        .failed_checks
+        .push("signed_report_missing".to_string());
+    let raw = build_raw_data_from_provider(&provider, &not_verified);
+    let initialized = evaluate_provider_readiness(readiness_inputs(Some(not_verified), Some(raw)));
+    assert_eq!(initialized.status, ProviderReadinessStatus::NotVerified);
+    assert!(initialized.readiness_score > 0);
+    assert!(initialized.readiness_score < 100);
 
     let signed = test_fixtures::signed_report(None).unwrap();
     save_latest_signed_report(&signed).unwrap();
     append_signed_report_history(&signed).unwrap();
-    let provider = test_fixtures::provider_details();
     let verification = test_fixtures::provider_verification();
+    let raw = build_raw_data_from_provider(&provider, &verification);
+    let partial =
+        evaluate_provider_readiness(readiness_inputs(Some(verification.clone()), Some(raw)));
+    assert_eq!(partial.status, ProviderReadinessStatus::Partial);
+    assert_eq!(partial.readiness_score, 75);
+    assert!(
+        partial
+            .warnings
+            .iter()
+            .any(|item| item == "Provider challenge is pending.")
+    );
+
+    let challenge = light_challenge();
+    let challenged_signed = signed_report_for_challenge(&challenge);
+    save_latest_signed_report(&challenged_signed).unwrap();
+    append_signed_report_history(&challenged_signed).unwrap();
+    let _token = create_api_token().unwrap();
+    let raw = build_raw_data_from_provider(&provider, &verification);
+    let ready = evaluate_provider_readiness(readiness_inputs(
+        Some(verification.clone()),
+        Some(raw.clone()),
+    ));
+    assert_eq!(ready.status, ProviderReadinessStatus::ReadyLocally);
+    assert_eq!(ready.readiness_score, 100);
+    assert_eq!(ready.readiness_level, "Ready Locally");
+    assert!(ready.warnings.is_empty());
+    assert!(ready.recommendations.is_empty());
+    assert!(
+        ready
+            .checks
+            .iter()
+            .all(|check| check.status == ReadinessCheckStatus::Passed)
+    );
+
     let identity = load_identity().unwrap();
     let payload = build_registration_payload_from(
         TEST_AGENT_VERSION,
         &provider,
         Some(&identity),
-        Some(&signed),
+        Some(&challenged_signed),
         &verification,
         test_fixtures::FIXTURE_TIMESTAMP.to_string(),
     );
     let latest = load_latest_history().unwrap();
-    let raw = build_raw_data_from_provider(&provider, &verification);
-    let ready = classify_local_readiness(TEST_AGENT_VERSION);
-    assert_eq!(ready.status, LocalReadinessStatus::ReadyLocally);
-    assert!(ready.messages.iter().any(|item| item == "ready locally"));
-    assert!(
-        ready
-            .messages
-            .iter()
-            .any(|item| item == "challenge pending")
-    );
     assert_eq!(
         payload.latest_signed_report_hash.as_deref(),
-        Some(signed.report_hash.as_str())
+        Some(challenged_signed.report_hash.as_str())
     );
     assert!(latest.latest.is_some());
     assert!(raw.redacted);
 
+    let mut unsafe_raw = raw.clone();
+    unsafe_raw.redacted = false;
+    let redaction_failed = evaluate_provider_readiness(readiness_inputs(
+        Some(verification.clone()),
+        Some(unsafe_raw),
+    ));
+    assert_eq!(redaction_failed.status, ProviderReadinessStatus::Failed);
+    assert!(
+        redaction_failed.checks.iter().any(
+            |check| check.id == "raw_redaction" && check.status == ReadinessCheckStatus::Failed
+        )
+    );
+
     let mut tampered = load_latest_signed_report().unwrap();
     tampered.signature = "bad-signature".to_string();
     save_latest_signed_report(&tampered).unwrap();
-    let failed = classify_local_readiness(TEST_AGENT_VERSION);
-    assert_eq!(failed.status, LocalReadinessStatus::Failed);
+    let failed = evaluate_provider_readiness(readiness_inputs(Some(verification), Some(raw)));
+    assert_eq!(failed.status, ProviderReadinessStatus::Failed);
     assert!(
         failed
-            .messages
+            .warnings
             .iter()
-            .any(|item| item == "signed report failed")
+            .any(|item| item == "Latest signed report failed local verification.")
     );
 }
 
@@ -549,59 +588,24 @@ fn response_for_signed_report(
     (response, verification)
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum LocalReadinessStatus {
-    Uninitialized,
-    NotVerified,
-    ReadyLocally,
-    Failed,
-}
-
-struct LocalReadiness {
-    status: LocalReadinessStatus,
-    messages: Vec<String>,
-}
-
-fn classify_local_readiness(_agent_version: &str) -> LocalReadiness {
-    let identity_missing = load_identity().is_err();
-    let signed_missing = load_latest_signed_report().is_err();
-    let system = test_fixtures::system_report();
-    let score = test_fixtures::score_report();
-    let verification = verify_provider_from_reports(
-        load_identity().map(|_| ()),
-        &system,
-        &score,
-        load_latest_signed_report(),
-    );
-    let mut messages = Vec::new();
-
-    if identity_missing {
-        messages.push("identity missing".to_string());
+fn readiness_inputs(
+    verification: Option<crate::ProviderVerification>,
+    raw: Option<crate::RawData>,
+) -> ProviderReadinessInputs {
+    let identity = load_identity();
+    let private_key = identity
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(load_private_key);
+    ProviderReadinessInputs {
+        identity,
+        private_key,
+        signed_report: load_latest_signed_report(),
+        verification,
+        history: load_history_list(),
+        api_token: show_api_token_status(),
+        raw,
     }
-    if signed_missing {
-        messages.push("signed report missing".to_string());
-    }
-    if !verification.challenge_verified {
-        messages.push("challenge pending".to_string());
-    }
-
-    let status = if identity_missing {
-        LocalReadinessStatus::Uninitialized
-    } else if verification
-        .failed_checks
-        .iter()
-        .any(|check| check == "report_signature_invalid")
-    {
-        messages.push("signed report failed".to_string());
-        LocalReadinessStatus::Failed
-    } else if !signed_missing && verification.signature_verified {
-        messages.push("ready locally".to_string());
-        LocalReadinessStatus::ReadyLocally
-    } else {
-        LocalReadinessStatus::NotVerified
-    };
-
-    LocalReadiness { status, messages }
 }
 
 fn assert_no_secret_fields(value: &Value, token: Option<&str>) {
@@ -659,7 +663,8 @@ fn assert_contract_snapshot(name: &str, mut value: Value, env: &TestEnv) {
     }
 
     let expected = fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("contract snapshot missing at {}: {error}", path.display()));
+        .unwrap_or_else(|error| panic!("contract snapshot missing at {}: {error}", path.display()))
+        .replace("\r\n", "\n");
     assert_eq!(
         actual,
         expected,

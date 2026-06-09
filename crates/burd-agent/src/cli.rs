@@ -99,6 +99,11 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Consolidate local provider readiness checks.
+    Readiness {
+        #[arg(long)]
+        json: bool,
+    },
     /// Show demonstrative pricing.
     Pricing {
         #[arg(long)]

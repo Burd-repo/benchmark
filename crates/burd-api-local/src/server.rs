@@ -6,8 +6,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_bench::{
     ReportRunOptions, append_report_history, append_signed_report_history, build_provider_details,
-    build_raw_data, build_registration_payload, calculate_pricing, calculate_score,
-    estimate_earnings, generate_full_report, generate_signed_report, load_actions,
+    build_provider_readiness, build_raw_data, build_registration_payload, calculate_pricing,
+    calculate_score, estimate_earnings, generate_full_report, generate_signed_report, load_actions,
     load_history_list, load_logs, load_uptime_summary, record_action, save_latest_report,
     verify_provider,
 };
@@ -87,6 +87,7 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/report/signed", post(signed_report))
         .route("/api/v1/challenge/mock", get(challenge_mock))
         .route("/api/v1/provider", get(provider))
+        .route("/api/v1/readiness", get(readiness))
         .route("/api/v1/verification", get(verification))
         .route("/api/v1/uptime", get(uptime))
         .route("/api/v1/history", get(history))
@@ -169,6 +170,13 @@ async fn challenge_mock() -> Json<serde_json::Value> {
 
 async fn provider(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(serde_json::json!(build_provider_details(
+        &state.agent_version,
+        &state.host_uri
+    )))
+}
+
+async fn readiness(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!(build_provider_readiness(
         &state.agent_version,
         &state.host_uri
     )))
@@ -563,6 +571,17 @@ mod tests {
                 vec!["uptime_1d", "uptime_7d", "uptime_30d", "checks_total"],
             ),
             ("/api/v1/history", vec!["entries_total", "entries"]),
+            (
+                "/api/v1/readiness",
+                vec![
+                    "status",
+                    "readiness_score",
+                    "readiness_level",
+                    "checks",
+                    "warnings",
+                    "recommendations",
+                ],
+            ),
             ("/api/v1/actions", vec![]),
             ("/api/v1/logs", vec![]),
             (

@@ -74,6 +74,8 @@ burd-agent uptime --json
 burd-agent uptime clear --confirm
 burd-agent provider --json
 burd-agent verify-provider --json
+burd-agent readiness
+burd-agent readiness --json
 burd-agent pricing --json
 burd-agent earnings --json
 burd-agent actions --json
@@ -244,6 +246,23 @@ identity, latest signed report hash, score, tier, capabilities, pricing, and
 verification summary. It does not submit anything to Burd and does not include
 secrets.
 
+## Provider Readiness
+
+Run:
+
+```sh
+burd-agent readiness
+burd-agent readiness --json
+```
+
+Readiness consolidates identity, signed report, challenge evidence, provider
+verification, benchmark history, API token status, and raw-data redaction into
+a `0-100` score, checks, warnings, and recommendations.
+
+`ready_locally` means all local checks pass. It does not mean backend
+verification, audit approval, or marketplace acceptance. See
+`docs/provider-readiness.md` for the complete contract and status definitions.
+
 ## Provider Console API and UI
 
 Run:
@@ -260,6 +279,7 @@ Endpoints:
 - `GET /api/v1/score`
 - `GET /api/v1/report`
 - `GET /api/v1/provider`
+- `GET /api/v1/readiness`
 - `GET /api/v1/verification`
 - `GET /api/v1/uptime`
 - `GET /api/v1/history`
@@ -277,7 +297,7 @@ Endpoints:
 The local Provider Console UI is in `apps/benchmark-ui` and is served at `/` by
 the local API. It follows the dark technical Burd design system from `SKILL.md`
 and includes Overview, Hardware, Benchmarks, History, Uptime, Security,
-Registration, Logs, and Raw Data.
+Readiness, Registration, Logs, and Raw Data.
 
 Open the UI in a browser at:
 

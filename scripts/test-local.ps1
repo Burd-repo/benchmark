@@ -53,6 +53,7 @@ try {
     Invoke-External "score" $Agent @("score", "--json")
     Invoke-External "provider" $Agent @("provider", "--json")
     Invoke-External "verify-provider" $Agent @("verify-provider", "--json")
+    Invoke-External "readiness" $Agent @("readiness", "--json")
     Invoke-External "pricing" $Agent @("pricing", "--json")
     Invoke-External "earnings" $Agent @("earnings", "--json")
     Invoke-External "raw" $Agent @("raw", "--json")

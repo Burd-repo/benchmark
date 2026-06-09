@@ -35,6 +35,8 @@ after the June 2026 reliability pass.
 - `heartbeat --once --json`
 - `provider --json`
 - `verify-provider --json`
+- `readiness`
+- `readiness --json`
 - `pricing --json`
 - `earnings --json`
 - `actions --json`
@@ -91,7 +93,10 @@ after the June 2026 reliability pass.
 - Raw data includes explicit redaction metadata and summaries for history,
   signed reports, uptime, actions, logs, verification, pricing, and earnings.
 - Provider Console includes Overview, Hardware, Benchmarks, History, Uptime,
-  Security, Registration, Logs, and Raw Data.
+  Security, Readiness, Registration, Logs, and Raw Data.
+- Provider Readiness consolidates identity, signed report, challenge evidence,
+  verification, history, API token status, and raw redaction into a local
+  score, checks, warnings, and recommendations.
 - Local API contract tests cover health, lightweight public endpoints,
   protected endpoint 401 behavior when token auth is enabled, and config/raw
   redaction expectations without starting `serve`.
