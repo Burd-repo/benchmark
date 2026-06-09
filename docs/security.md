@@ -30,6 +30,9 @@ Implemented now:
   payloads, benchmark history, config, and raw data do not expose private key
   material, API token values, or API token hashes. These tests run against
   isolated temporary agent homes instead of the real `~/.burd` directory.
+- Real-hardware CI is manual-only, targets a dedicated ephemeral self-hosted
+  runner, uses a protected environment, disables persisted checkout
+  credentials, and isolates Burd state under `runner.temp`.
 
 Not implemented yet:
 

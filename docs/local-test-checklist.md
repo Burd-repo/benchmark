@@ -34,8 +34,14 @@ The default CI workflow enforces a 15-second budget for the precompiled
 .\scripts\check-contract-test-time.ps1
 ```
 
+The suite also compares sanitized JSON snapshots for provider details, raw data,
+and registration payloads. For intentional updates, follow
+`docs/json-contract-snapshots.md`.
+
 Real-hardware CI is intentionally separate and manually dispatched. It requires
 a self-hosted GitHub Actions runner labeled `burd-hardware`.
+See `docs/real-hardware-runner.md` for the isolated runner setup and security
+requirements.
 
 ## Fast Local Commands
 

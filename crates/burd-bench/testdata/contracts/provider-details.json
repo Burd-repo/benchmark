@@ -1,0 +1,312 @@
+{
+  "active_jobs_future": 0,
+  "attributes": [
+    {
+      "key": "host",
+      "value": "burd"
+    },
+    {
+      "key": "backend",
+      "value": "CUDA"
+    }
+  ],
+  "audit_status": "self_verified",
+  "backend_verification_status_future": "not_connected",
+  "created_at": "<timestamp>",
+  "estimated_earnings": {
+    "active_jobs_future": 0,
+    "daily_earned_brl_future": 0.0,
+    "daily_estimated_brl": 85.25,
+    "monthly_estimated_brl": 2557.44,
+    "note": "Demonstrative only; no marketplace payouts are implemented in this MVP.",
+    "total_earned_brl_future": 0.0,
+    "total_jobs_future": 0,
+    "utilization_assumption_pct": 60.0,
+    "warning": "Ganhos sao estimativas demonstrativas e dependem de demanda, disponibilidade, performance, reputacao e regras da plataforma."
+  },
+  "gpu_models": [
+    {
+      "count": 1,
+      "model": "NVIDIA GeForce RTX 4090",
+      "vendor": "nvidia",
+      "vram_gb": 24.0
+    }
+  ],
+  "hardware": {
+    "architecture": "x86_64",
+    "backend": "CUDA",
+    "cpu": "Burd Contract CPU",
+    "disk_free_gb": 512.0,
+    "gpu_count": 1,
+    "memory_gb": 64.0,
+    "vram_gb": 24.0
+  },
+  "host_uri": "http://127.0.0.1:8787",
+  "is_audited": false,
+  "is_online": true,
+  "is_verified": true,
+  "last_check_date": "<timestamp>",
+  "location": {
+    "city": "Sao Paulo",
+    "country": "BR",
+    "region": "br-southeast",
+    "timezone": "America/Sao_Paulo"
+  },
+  "logs_summary": {
+    "actions_total": 0,
+    "latest_action": null,
+    "logs_total": 0
+  },
+  "machine_id": "burd-machine-contract",
+  "pricing": {
+    "cpu_price_brl_hour": 0.24,
+    "endpoint_price_brl_hour_future": 0.0,
+    "final_suggested_price_brl_hour": 5.92,
+    "gpu_price_brl_hour": 5.9,
+    "ip_price_brl_hour_future": 0.0,
+    "memory_price_brl_gb_hour": 0.006,
+    "prices_are_demonstrative": true,
+    "storage_price_brl_gb_hour": 0.0004,
+    "warnings": [
+      "Prices are demonstrative and depend on future Burd marketplace policy."
+    ]
+  },
+  "provider_id": "burd-provider-contract",
+  "public_key": "<cryptographic-value>",
+  "raw_report": {
+    "agent_version": "0.1.0-test",
+    "benchmark_profile": "profile_24gb",
+    "benchmark_version": "2026.06-mvp",
+    "challenge": null,
+    "disk": {
+      "reason": "not run in fast contract fixture",
+      "status": "skipped"
+    },
+    "fit": {
+      "models": [
+        {
+          "best_quantization": "Q4_K_M",
+          "category": "General",
+          "effective_context": 32768,
+          "estimated_tps": 80.0,
+          "fit_level": "Perfect",
+          "memory_available_gb": 24.0,
+          "memory_estimated_gb": 6.0,
+          "memory_usage_pct": 25.0,
+          "name": "Burd Contract Model",
+          "notes": [
+            "deterministic contract fixture"
+          ],
+          "parameter_count": "8B",
+          "provider": "fixture",
+          "run_mode": "GPU",
+          "runtime": "llama.cpp/Ollama",
+          "score": 95.0,
+          "workloads": [
+            "LLM inference",
+            "agents"
+          ]
+        }
+      ],
+      "not_recommended_workloads": [
+        "fine-tuning pesado"
+      ],
+      "provider_capability_summary": "deterministic CUDA fixture",
+      "recommended_workloads": [
+        "LLM medio quantizado",
+        "agentes"
+      ],
+      "runnable_models": 1,
+      "source": "contract fixture",
+      "total_models_analyzed": 1
+    },
+    "identity": {
+      "api_url": "https://api.burd.cloud",
+      "benchmark_profile": "auto",
+      "city": "Sao Paulo",
+      "country": "BR",
+      "created_at": "<timestamp>",
+      "email": null,
+      "key_algorithm": "ed25519",
+      "machine_id": "burd-machine-contract",
+      "preferred_provider": "ollama",
+      "provider_id": "burd-provider-contract",
+      "public_key": "<cryptographic-value>",
+      "region": "br-southeast",
+      "telemetry_enabled": false,
+      "website": null
+    },
+    "llm_benchmark": {
+      "reason": "not run in fast contract fixture",
+      "status": "skipped"
+    },
+    "network": {
+      "reason": "not run in fast contract fixture",
+      "status": "skipped"
+    },
+    "score": {
+      "burd_compute_score": 82.5,
+      "components": {
+        "disk": 85.0,
+        "llm_benchmark": 75.0,
+        "network": 80.0,
+        "stability": 90.0,
+        "verification": 100.0,
+        "vram_capacity": 82.0
+      },
+      "eligible": true,
+      "not_recommended_workloads": [
+        "fine-tuning pesado"
+      ],
+      "notes": [
+        "deterministic contract fixture"
+      ],
+      "price_basis": "deterministic contract fixture",
+      "prices_are_demonstrative": true,
+      "recommended_workloads": [
+        "LLM medio quantizado",
+        "agentes"
+      ],
+      "suggested_price_brl_hour": 5.9,
+      "tier": "Burd Pro",
+      "warnings": []
+    },
+    "signature": {
+      "algorithm": "placeholder-ed25519",
+      "status": "mocked",
+      "value": "placeholder-signature:burd-machine-contract:no-challenge"
+    },
+    "stability": {
+      "reason": "not run in fast contract fixture",
+      "status": "skipped"
+    },
+    "system": {
+      "agent_version": "0.1.0-test",
+      "amd_driver": null,
+      "architecture": "x86_64",
+      "backend_detected": "CUDA",
+      "benchmark_version": "2026.06-mvp",
+      "container_detected": false,
+      "cpu": "Burd Contract CPU",
+      "cpu_cores": 16,
+      "cuda_available": true,
+      "gpu_count": 1,
+      "gpus": [
+        {
+          "backend": "CUDA",
+          "count": 1,
+          "name": "NVIDIA GeForce RTX 4090",
+          "unified_memory": false,
+          "vram_gb": 24.0
+        }
+      ],
+      "nvidia_driver": "555.42",
+      "os": "linux",
+      "primary_gpu_name": "NVIDIA GeForce RTX 4090",
+      "ram_available_gb": 48.0,
+      "ram_total_gb": 64.0,
+      "rocm_available": false,
+      "timestamp": "<timestamp>",
+      "vm_detected": false,
+      "vram_per_gpu_gb": 24.0,
+      "vram_total_gb": 24.0
+    },
+    "timestamp": "<timestamp>"
+  },
+  "score": {
+    "burd_compute_score": 82.5,
+    "components": {
+      "disk": 85.0,
+      "llm_benchmark": 75.0,
+      "network": 80.0,
+      "stability": 90.0,
+      "verification": 100.0,
+      "vram_capacity": 82.0
+    },
+    "eligible": true,
+    "not_recommended_workloads": [
+      "fine-tuning pesado"
+    ],
+    "notes": [
+      "deterministic contract fixture"
+    ],
+    "price_basis": "deterministic contract fixture",
+    "prices_are_demonstrative": true,
+    "recommended_workloads": [
+      "LLM medio quantizado",
+      "agentes"
+    ],
+    "suggested_price_brl_hour": 5.9,
+    "tier": "Burd Pro",
+    "warnings": []
+  },
+  "stats": {
+    "cpu": {
+      "active": 0.0,
+      "available": 16.0,
+      "pending": 0.0,
+      "total": 16.0
+    },
+    "gpu": {
+      "active": 0.0,
+      "available": 1.0,
+      "pending": 0.0,
+      "total": 1.0
+    },
+    "memory": {
+      "active": 0.0,
+      "available": 48.0,
+      "pending": 0.0,
+      "total": 64.0
+    },
+    "storage": {
+      "ephemeral": {
+        "active": 0.0,
+        "available": 512.0,
+        "pending": 0.0,
+        "total": 512.0
+      },
+      "persistent_future": {
+        "active": 0.0,
+        "available": 0.0,
+        "pending": 0.0,
+        "total": 0.0
+      },
+      "total": {
+        "active": 0.0,
+        "available": 512.0,
+        "pending": 0.0,
+        "total": 512.0
+      }
+    }
+  },
+  "tier": "Burd Pro",
+  "total_jobs_future": 0,
+  "uptime": {
+    "checks_failed": 0,
+    "checks_total": 1,
+    "current_status": "idle",
+    "last_failed_check_at": null,
+    "last_online_at": "<timestamp>",
+    "uptime_1d": 1.0,
+    "uptime_30d": 1.0,
+    "uptime_7d": 1.0
+  },
+  "uptime_1d": 1.0,
+  "uptime_30d": 1.0,
+  "uptime_7d": 1.0,
+  "verification": {
+    "audit_status": "self_verified",
+    "benchmark_verified": true,
+    "challenge_verified": false,
+    "disk_verified": true,
+    "failed_checks": [],
+    "fraud_risk_level": "low",
+    "hardware_verified": true,
+    "llm_runtime_verified": true,
+    "network_verified": true,
+    "signature_verified": true,
+    "uptime_verified": false,
+    "warnings": []
+  }
+}

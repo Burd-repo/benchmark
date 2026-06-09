@@ -78,6 +78,43 @@ fn contract_report_fixtures_are_deterministic() {
 }
 
 #[test]
+fn sanitized_json_contract_snapshots_are_stable() {
+    let _guard = env_lock();
+    let env = TestEnv::new("json-contract-snapshots");
+    env.assert_active();
+    env.install_identity();
+
+    let signed = test_fixtures::signed_report(None).unwrap();
+    save_latest_signed_report(&signed).unwrap();
+    let provider = test_fixtures::provider_details();
+    let verification = test_fixtures::provider_verification();
+    let identity = load_identity().unwrap();
+    let registration = build_registration_payload_from(
+        TEST_AGENT_VERSION,
+        &provider,
+        Some(&identity),
+        Some(&signed),
+        &verification,
+        test_fixtures::FIXTURE_TIMESTAMP.to_string(),
+    );
+    let raw = build_raw_data_from_provider(&provider, &verification);
+
+    for (name, value) in [
+        (
+            "provider-details.json",
+            serde_json::to_value(&provider).unwrap(),
+        ),
+        ("raw-data.json", serde_json::to_value(&raw).unwrap()),
+        (
+            "registration-payload.json",
+            serde_json::to_value(&registration).unwrap(),
+        ),
+    ] {
+        assert_contract_snapshot(name, value, &env);
+    }
+}
+
+#[test]
 fn challenge_local_contract_validates_success_expiry_required_tests_and_nonce() {
     let _guard = env_lock();
     let env = TestEnv::new("challenge");
@@ -601,6 +638,92 @@ fn assert_no_secret_values(value: &Value, token: Option<&str>) {
     if let Some(token) = token {
         assert!(!json.contains(token), "unexpected API token value");
     }
+}
+
+fn assert_contract_snapshot(name: &str, mut value: Value, env: &TestEnv) {
+    sanitize_contract_value(&mut value);
+    assert_no_secret_values(&value, None);
+    let actual = format!("{}\n", serde_json::to_string_pretty(&value).unwrap());
+    assert!(
+        !actual.contains(&env.state_dir.display().to_string()),
+        "snapshot contains temporary state path"
+    );
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join("contracts")
+        .join(name);
+
+    if std::env::var_os("BURD_UPDATE_CONTRACT_SNAPSHOTS").is_some() {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, &actual).unwrap();
+    }
+
+    let expected = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("contract snapshot missing at {}: {error}", path.display()));
+    assert_eq!(
+        actual,
+        expected,
+        "sanitized contract snapshot changed: {}",
+        path.display()
+    );
+}
+
+fn sanitize_contract_value(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                sanitize_contract_value(item);
+            }
+        }
+        Value::Object(map) => {
+            for (key, item) in map {
+                if item.is_string() && is_secret_field(key) {
+                    *item = Value::String("<redacted>".to_string());
+                } else if item.is_string() && is_path_field(key) {
+                    *item = Value::String("<path>".to_string());
+                } else if item.is_string() && is_timestamp_field(key) {
+                    *item = Value::String("<timestamp>".to_string());
+                } else if item.is_string() && is_cryptographic_field(key) {
+                    *item = Value::String("<cryptographic-value>".to_string());
+                } else {
+                    sanitize_contract_value(item);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_secret_field(key: &str) -> bool {
+    matches!(
+        key,
+        "secret_key_base64" | "private_key_path" | "api_token_hash" | "api_token" | "credentials"
+    )
+}
+
+fn is_path_field(key: &str) -> bool {
+    matches!(key, "path" | "output" | "config_path")
+}
+
+fn is_timestamp_field(key: &str) -> bool {
+    matches!(
+        key,
+        "timestamp"
+            | "created_at"
+            | "last_check_date"
+            | "last_seen_at"
+            | "last_online_at"
+            | "last_failed_check_at"
+            | "signed_at"
+            | "checked_at"
+            | "issued_at"
+            | "expires_at"
+            | "completed_at"
+    )
+}
+
+fn is_cryptographic_field(key: &str) -> bool {
+    matches!(key, "public_key" | "signature") || key.ends_with("report_hash")
 }
 
 struct TestEnv {
