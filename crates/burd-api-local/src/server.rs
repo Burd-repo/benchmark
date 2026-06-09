@@ -11,7 +11,7 @@ use burd_bench::{
     load_history_list, load_logs, load_uptime_summary, record_action, save_latest_report,
     verify_provider,
 };
-use burd_hardware::{detect_specs, detect_system_report};
+use burd_hardware::{build_system_report, detect_specs, detect_system_report};
 use burd_llmfit::build_fit_report;
 use burd_protocol::{
     Challenge, ChallengeResponse, challenge_response_message, load_identity, load_private_key,
@@ -132,7 +132,7 @@ async fn fit() -> Json<serde_json::Value> {
 
 async fn score(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let specs = detect_specs();
-    let system = detect_system_report(&state.agent_version);
+    let system = build_system_report(&specs, &state.agent_version);
     let fit = build_fit_report(&specs, Some(25));
     let score = calculate_score(&system, Some(&fit), None, None, None, None);
     Json(serde_json::json!(score))
@@ -470,7 +470,7 @@ fn api_auth_warning(host: &str) -> Option<String> {
 
 fn system_and_score(agent_version: &str) -> (burd_hardware::SystemReport, burd_bench::ScoreReport) {
     let specs = detect_specs();
-    let system = detect_system_report(agent_version);
+    let system = build_system_report(&specs, agent_version);
     let fit = build_fit_report(&specs, Some(25));
     let score = calculate_score(&system, Some(&fit), None, None, None, None);
     (system, score)

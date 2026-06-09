@@ -4,8 +4,8 @@ use crate::network::{NetworkBenchmarkOptions, run_network_benchmark};
 use crate::profiles::profile_for_vram;
 use crate::score::calculate_score;
 use crate::stability::{StabilityBenchmarkReport, run_stability_benchmark};
-use burd_hardware::{BENCHMARK_VERSION, detect_specs, detect_system_report};
-use burd_llmfit::build_fit_report;
+use burd_hardware::{BENCHMARK_VERSION, SystemReport, build_system_report, detect_specs};
+use burd_llmfit::{FitReport, build_fit_report};
 use burd_protocol::{
     AgentConfig, Challenge, FullReport, KEY_ALGORITHM, PrivateKeyFile, ReportSignature,
     SignedReport, VerifyReportResult, default_state_dir, hash_canonical, load_identity,
@@ -40,13 +40,21 @@ impl ReportRunOptions {
 
 pub fn generate_full_report(options: ReportRunOptions) -> FullReport {
     let specs = detect_specs();
-    let system = detect_system_report(&options.agent_version);
+    let system = build_system_report(&specs, &options.agent_version);
+    let fit = build_fit_report(&specs, Some(25));
+    generate_full_report_from_snapshot(options, &system, &fit)
+}
+
+pub(crate) fn generate_full_report_from_snapshot(
+    options: ReportRunOptions,
+    system: &SystemReport,
+    fit: &FitReport,
+) -> FullReport {
     let vram = system
         .vram_total_gb
         .or(system.vram_per_gpu_gb)
         .unwrap_or(0.0);
     let profile = profile_for_vram(vram);
-    let fit = build_fit_report(&specs, Some(25));
     let identity = load_identity().ok().map(|config| config.public_identity());
 
     let mut llm_benchmark: Option<LlmBenchmarkReport> = None;
@@ -72,7 +80,7 @@ pub fn generate_full_report(options: ReportRunOptions) -> FullReport {
 
     let score = calculate_score(
         &system,
-        Some(&fit),
+        Some(fit),
         llm_benchmark.as_ref(),
         stability.as_ref(),
         network.as_ref(),
@@ -86,8 +94,8 @@ pub fn generate_full_report(options: ReportRunOptions) -> FullReport {
         .map(|value| value.challenge_id.clone());
     FullReport {
         identity,
-        system: serde_json::to_value(&system).expect("system report serializes"),
-        fit: Some(serde_json::to_value(&fit).expect("fit report serializes")),
+        system: serde_json::to_value(system).expect("system report serializes"),
+        fit: Some(serde_json::to_value(fit).expect("fit report serializes")),
         llm_benchmark: if let Some(value) = &llm_benchmark {
             Some(serde_json::to_value(value).expect("llm benchmark serializes"))
         } else {

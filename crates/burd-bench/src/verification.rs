@@ -1,6 +1,6 @@
 use crate::report::{load_latest_signed_report, verify_signed_report};
 use crate::score::calculate_score;
-use burd_hardware::{detect_specs, detect_system_report};
+use burd_hardware::{build_system_report, detect_specs};
 use burd_llmfit::build_fit_report;
 use burd_protocol::load_identity;
 use serde::{Deserialize, Serialize};
@@ -22,8 +22,8 @@ pub struct ProviderVerification {
 }
 
 pub fn verify_provider(agent_version: &str) -> ProviderVerification {
-    let system = detect_system_report(agent_version);
     let specs = detect_specs();
+    let system = build_system_report(&specs, agent_version);
     let fit = build_fit_report(&specs, Some(25));
     let score = calculate_score(&system, Some(&fit), None, None, None, None);
     verify_provider_from_reports(
