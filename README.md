@@ -169,7 +169,8 @@ cargo test -p burd-bench real_hardware_detection_integration_is_available -- --i
 ```
 
 CI runs `cargo test --workspace` and enforces a 15-second budget for the
-precompiled `burd-bench` contract suite. Run the same performance guard locally:
+precompiled fast `burd-bench` library test suite. Run the same performance guard
+locally:
 
 ```powershell
 .\scripts\check-contract-test-time.ps1
@@ -182,7 +183,9 @@ updating them.
 The `.github/workflows/real-hardware-integration.yml` workflow runs only through
 manual dispatch on a self-hosted runner labeled `burd-hardware`.
 Runner isolation, registration, and removal are documented in
-`docs/real-hardware-runner.md`.
+`docs/real-hardware-runner.md`. No real-hardware runner is configured or started
+by the repository; an operator must provision a dedicated runner before this
+workflow can execute.
 
 ## Local API Token
 
@@ -278,6 +281,8 @@ Endpoints:
 - `GET /api/v1/fit`
 - `GET /api/v1/score`
 - `GET /api/v1/report`
+- `POST /api/v1/report/signed`
+- `GET /api/v1/challenge/mock`
 - `GET /api/v1/provider`
 - `GET /api/v1/readiness`
 - `GET /api/v1/verification`
@@ -296,8 +301,8 @@ Endpoints:
 
 The local Provider Console UI is in `apps/benchmark-ui` and is served at `/` by
 the local API. It follows the dark technical Burd design system from `SKILL.md`
-and includes Overview, Hardware, Benchmarks, History, Uptime, Security,
-Readiness, Registration, Logs, and Raw Data.
+and includes Overview, Readiness, Hardware, Benchmarks, History, Uptime,
+Security, Registration, Logs, and Raw Data.
 
 Open the UI in a browser at:
 
@@ -354,6 +359,7 @@ records output under `tmp/test-output/`, and stops the server by PID in a
 - `docs/benchmark-history.md`
 - `docs/local-api.md`
 - `docs/provider-registration.md`
+- `docs/provider-readiness.md`
 - `docs/provider-console-ui.md`
 - `docs/llmfit-adaptation.md`
 - `docs/benchmark-profiles.md`
