@@ -26,9 +26,12 @@ after the June 2026 reliability pass.
 - `report --run-all --signed --json`
 - `verify-report --file <path> --json`
 - `identity init`
+- `identity migrate --confirm`
+- `identity migrate --from <state-directory> --confirm`
 - `identity show --json`
 - `identity rotate-key --confirm`
 - `challenge create-mock --json`
+- `challenge run-local --json`
 - `challenge run --file <path> --json`
 - `challenge verify --file <path> --json`
 - `health --json`
@@ -80,6 +83,12 @@ after the June 2026 reliability pass.
 - Benchmark history persists to `~/.burd/benchmark-history.json`.
 - `report --run-all` and `report --run-all --signed` append history entries.
 - Challenge runs append signed benchmark history entries with `challenge_id`.
+- Challenge runs persist a complete response bundle; readiness revalidates it
+  and does not trust a history `challenge_id` alone.
+- State resolution is canonical: `BURD_AGENT_CONFIG` and its parent directory
+  take precedence, then `BURD_AGENT_HOME`, then `~/.burd`.
+- Identity migration backs up, validates, normalizes, repairs, or imports local
+  state without silently overwriting the previous target state.
 - Signed report envelope includes `canonicalization_version`.
 - Challenge policy validates expiry, nonce, required tests, signed reports,
   report hash, signatures, and minimum versions locally.
@@ -139,6 +148,8 @@ after the June 2026 reliability pass.
 - `~/.burd/agent.key`: Ed25519 private key, never exposed in reports/raw/history.
 - `~/.burd/latest-report.json`: latest unsigned/full report.
 - `~/.burd/latest-signed-report.json`: latest signed report envelope.
+- `~/.burd/latest-challenge-response.json`: latest complete local challenge
+  response and verification bundle.
 - `~/.burd/benchmark-history.json`: benchmark history summaries.
 - `~/.burd/uptime.json`: heartbeat history.
 - `~/.burd/actions.json`: action records.

@@ -1,10 +1,22 @@
-use crate::signature::{KEY_ALGORITHM, encode_base64, generate_keypair, sha256_hex};
+use crate::signature::{
+    KEY_ALGORITHM, encode_base64, generate_keypair, sha256_hex, sign_message, verify_message,
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+const MIGRATED_STATE_FILES: [&str; 7] = [
+    "latest-report.json",
+    "latest-signed-report.json",
+    "latest-challenge-response.json",
+    "benchmark-history.json",
+    "uptime.json",
+    "actions.json",
+    "logs.json",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -90,6 +102,26 @@ pub struct ApiTokenStatus {
     pub warning: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentStatePaths {
+    pub state_dir: String,
+    pub config_path: String,
+    pub source: String,
+    pub consistent: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentityMigrationResult {
+    pub state_dir: String,
+    pub config_path: String,
+    pub source_config_path: String,
+    pub backup_dir: Option<String>,
+    pub migrated: bool,
+    pub identity: AgentIdentityPublic,
+    pub warnings: Vec<String>,
+}
+
 impl AgentConfig {
     pub fn public_identity(&self) -> AgentIdentityPublic {
         AgentIdentityPublic {
@@ -112,25 +144,22 @@ impl AgentConfig {
 }
 
 pub fn default_state_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("BURD_AGENT_HOME")
-        && !path.trim().is_empty()
-    {
-        return PathBuf::from(path);
-    }
-
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".burd")
+    resolved_state_paths().0
 }
 
 pub fn default_config_path() -> PathBuf {
-    if let Ok(path) = std::env::var("BURD_AGENT_CONFIG")
-        && !path.trim().is_empty()
-    {
-        return PathBuf::from(path);
-    }
+    resolved_state_paths().1
+}
 
-    default_state_dir().join("agent.json")
+pub fn agent_state_paths() -> AgentStatePaths {
+    let (state_dir, config_path, source, warnings) = resolved_state_paths();
+    AgentStatePaths {
+        state_dir: state_dir.display().to_string(),
+        config_path: config_path.display().to_string(),
+        source,
+        consistent: warnings.is_empty(),
+        warnings,
+    }
 }
 
 pub fn load_identity() -> Result<AgentConfig, String> {
@@ -169,51 +198,153 @@ pub fn init_identity() -> Result<IdentityInitResult, String> {
         });
     }
 
-    let dir = path
-        .parent()
-        .ok_or_else(|| "cannot resolve Burd agent config directory".to_string())?;
-    fs::create_dir_all(dir)
-        .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
-
-    let created_at = Utc::now().to_rfc3339();
-    let private_key_path = dir.join("agent.key");
-    let keypair = generate_keypair()?;
-    let private_key = PrivateKeyFile {
-        key_algorithm: KEY_ALGORITHM.to_string(),
-        secret_key_base64: keypair.secret_key_base64,
-        created_at: created_at.clone(),
-    };
-    write_private_key(&private_key_path, &private_key)?;
-
-    let config = AgentConfig {
-        provider_id: format!("burd-provider-{}", Uuid::new_v4()),
-        machine_id: format!("burd-machine-{}", Uuid::new_v4()),
-        api_url: "https://api.burd.cloud".to_string(),
-        preferred_provider: "ollama".to_string(),
-        benchmark_profile: "auto".to_string(),
-        telemetry_enabled: false,
-        created_at,
-        public_key: keypair.public_key_base64,
-        key_algorithm: KEY_ALGORITHM.to_string(),
-        private_key_path: private_key_path.display().to_string(),
-        email: None,
-        website: None,
-        country: None,
-        city: None,
-        region: None,
-        api_token_hash: None,
-        api_auth_enabled: false,
-        api_bind_host: default_api_bind_host(),
-        api_port: default_api_port(),
-        default_network_endpoint: default_network_endpoint(),
-    };
-
-    write_config(&path, &config)?;
+    let config = create_fresh_identity(&path)?;
 
     Ok(IdentityInitResult {
         config_path: path.display().to_string(),
         identity: config.public_identity(),
         created: true,
+    })
+}
+
+pub fn migrate_identity(
+    source: Option<&Path>,
+    confirm: bool,
+) -> Result<IdentityMigrationResult, String> {
+    if !confirm {
+        return Err("identity migration requires --confirm".to_string());
+    }
+
+    let target_state_dir = default_state_dir();
+    let target_config_path = default_config_path();
+    let source_config_path = source
+        .map(source_config_path)
+        .unwrap_or_else(|| target_config_path.clone());
+    let source_state_dir = source_config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let same_state = source_state_dir == target_state_dir;
+    let mut warnings = Vec::new();
+
+    if !source_config_path.exists() {
+        if source.is_some() {
+            return Err(format!(
+                "source identity config not found at {}",
+                source_config_path.display()
+            ));
+        }
+        let config = create_fresh_identity(&target_config_path)?;
+        warnings.push("No previous identity existed; initialized a fresh identity.".to_string());
+        return Ok(IdentityMigrationResult {
+            state_dir: target_state_dir.display().to_string(),
+            config_path: target_config_path.display().to_string(),
+            source_config_path: source_config_path.display().to_string(),
+            backup_dir: None,
+            migrated: true,
+            identity: config.public_identity(),
+            warnings,
+        });
+    }
+
+    let raw = fs::read_to_string(&source_config_path).map_err(|error| {
+        format!(
+            "failed to read source identity config at {}: {error}",
+            source_config_path.display()
+        )
+    })?;
+    let parsed = serde_json::from_str::<AgentConfig>(&raw);
+
+    let mut config = match parsed {
+        Ok(config) => config,
+        Err(error) if source.is_none() => {
+            let backup_dir = backup_existing_state(&target_state_dir)?;
+            warnings.push(format!(
+                "Previous identity config was invalid and was replaced after backup: {error}"
+            ));
+            let config = create_fresh_identity(&target_config_path)?;
+            return Ok(IdentityMigrationResult {
+                state_dir: target_state_dir.display().to_string(),
+                config_path: target_config_path.display().to_string(),
+                source_config_path: source_config_path.display().to_string(),
+                backup_dir: backup_dir.map(|path| path.display().to_string()),
+                migrated: true,
+                identity: config.public_identity(),
+                warnings,
+            });
+        }
+        Err(error) => {
+            return Err(format!(
+                "source identity config at {} is invalid: {error}",
+                source_config_path.display()
+            ));
+        }
+    };
+
+    let private_key = match load_private_key(&config).and_then(|key| {
+        validate_keypair(&config, &key)?;
+        Ok(key)
+    }) {
+        Ok(key) => key,
+        Err(error) if source.is_none() => {
+            let backup_dir = backup_existing_state(&target_state_dir)?;
+            warnings.push(format!(
+                "Previous signing key was unavailable or invalid and was replaced after backup: {error}"
+            ));
+            if contains_legacy_secret_fields(&raw) {
+                warnings.push(
+                    "Legacy secret fields were removed from agent.json; the original remains in the backup."
+                        .to_string(),
+                );
+            }
+            let key = replace_identity_key(&mut config, &target_state_dir)?;
+            write_private_key(Path::new(&config.private_key_path), &key)?;
+            write_config(&target_config_path, &config)?;
+            return Ok(IdentityMigrationResult {
+                state_dir: target_state_dir.display().to_string(),
+                config_path: target_config_path.display().to_string(),
+                source_config_path: source_config_path.display().to_string(),
+                backup_dir: backup_dir.map(|path| path.display().to_string()),
+                migrated: true,
+                identity: config.public_identity(),
+                warnings,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let backup_dir = backup_existing_state(&target_state_dir)?;
+    fs::create_dir_all(&target_state_dir).map_err(|error| {
+        format!(
+            "failed to create target state directory {}: {error}",
+            target_state_dir.display()
+        )
+    })?;
+    let target_private_key_path = target_state_dir.join("agent.key");
+    write_private_key(&target_private_key_path, &private_key)?;
+    config.private_key_path = target_private_key_path.display().to_string();
+    write_config(&target_config_path, &config)?;
+
+    if !same_state {
+        copy_public_state_files(&source_state_dir, &target_state_dir)?;
+    } else {
+        warnings
+            .push("Identity config was normalized in its existing state directory.".to_string());
+    }
+    if contains_legacy_secret_fields(&raw) {
+        warnings.push(
+            "Legacy secret fields were removed from agent.json; the original remains in the backup."
+                .to_string(),
+        );
+    }
+
+    Ok(IdentityMigrationResult {
+        state_dir: target_state_dir.display().to_string(),
+        config_path: target_config_path.display().to_string(),
+        source_config_path: source_config_path.display().to_string(),
+        backup_dir: backup_dir.map(|path| path.display().to_string()),
+        migrated: true,
+        identity: config.public_identity(),
+        warnings,
     })
 }
 
@@ -336,6 +467,205 @@ fn generate_api_token() -> Result<String, String> {
     Ok(encode_base64(&bytes))
 }
 
+fn resolved_state_paths() -> (PathBuf, PathBuf, String, Vec<String>) {
+    resolve_state_paths_from(
+        non_empty_env("BURD_AGENT_HOME"),
+        non_empty_env("BURD_AGENT_CONFIG"),
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
+    )
+}
+
+fn resolve_state_paths_from(
+    agent_home: Option<PathBuf>,
+    agent_config: Option<PathBuf>,
+    home_dir: PathBuf,
+) -> (PathBuf, PathBuf, String, Vec<String>) {
+    if let Some(config_path) = agent_config {
+        let state_dir = config_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let mut warnings = Vec::new();
+        if let Some(agent_home) = agent_home
+            && agent_home != state_dir
+        {
+            warnings.push(format!(
+                "BURD_AGENT_CONFIG takes precedence; BURD_AGENT_HOME={} is ignored to prevent split state.",
+                agent_home.display()
+            ));
+        }
+        return (
+            state_dir,
+            config_path,
+            "burd_agent_config".to_string(),
+            warnings,
+        );
+    }
+
+    if let Some(state_dir) = agent_home {
+        return (
+            state_dir.clone(),
+            state_dir.join("agent.json"),
+            "burd_agent_home".to_string(),
+            Vec::new(),
+        );
+    }
+
+    let state_dir = home_dir.join(".burd");
+    (
+        state_dir.clone(),
+        state_dir.join("agent.json"),
+        "default_home".to_string(),
+        Vec::new(),
+    )
+}
+
+fn non_empty_env(name: &str) -> Option<PathBuf> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn source_config_path(source: &Path) -> PathBuf {
+    if source.is_dir() {
+        source.join("agent.json")
+    } else {
+        source.to_path_buf()
+    }
+}
+
+fn create_fresh_identity(path: &Path) -> Result<AgentConfig, String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| "cannot resolve Burd agent config directory".to_string())?;
+    fs::create_dir_all(dir)
+        .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
+
+    let created_at = Utc::now().to_rfc3339();
+    let private_key_path = dir.join("agent.key");
+    let keypair = generate_keypair()?;
+    let private_key = PrivateKeyFile {
+        key_algorithm: KEY_ALGORITHM.to_string(),
+        secret_key_base64: keypair.secret_key_base64,
+        created_at: created_at.clone(),
+    };
+    write_private_key(&private_key_path, &private_key)?;
+
+    let config = AgentConfig {
+        provider_id: format!("burd-provider-{}", Uuid::new_v4()),
+        machine_id: format!("burd-machine-{}", Uuid::new_v4()),
+        api_url: "https://api.burd.cloud".to_string(),
+        preferred_provider: "ollama".to_string(),
+        benchmark_profile: "auto".to_string(),
+        telemetry_enabled: false,
+        created_at,
+        public_key: keypair.public_key_base64,
+        key_algorithm: KEY_ALGORITHM.to_string(),
+        private_key_path: private_key_path.display().to_string(),
+        email: None,
+        website: None,
+        country: None,
+        city: None,
+        region: None,
+        api_token_hash: None,
+        api_auth_enabled: false,
+        api_bind_host: default_api_bind_host(),
+        api_port: default_api_port(),
+        default_network_endpoint: default_network_endpoint(),
+    };
+    write_config(path, &config)?;
+    Ok(config)
+}
+
+fn validate_keypair(config: &AgentConfig, private_key: &PrivateKeyFile) -> Result<(), String> {
+    let message = b"burd-identity-migration-validation";
+    let signature = sign_message(&private_key.secret_key_base64, message)?;
+    if verify_message(&config.public_key, message, &signature)? {
+        Ok(())
+    } else {
+        Err("source identity public key does not match its private key".to_string())
+    }
+}
+
+fn replace_identity_key(
+    config: &mut AgentConfig,
+    state_dir: &Path,
+) -> Result<PrivateKeyFile, String> {
+    let keypair = generate_keypair()?;
+    let private_key = PrivateKeyFile {
+        key_algorithm: KEY_ALGORITHM.to_string(),
+        secret_key_base64: keypair.secret_key_base64,
+        created_at: Utc::now().to_rfc3339(),
+    };
+    config.public_key = keypair.public_key_base64;
+    config.key_algorithm = KEY_ALGORITHM.to_string();
+    config.private_key_path = state_dir.join("agent.key").display().to_string();
+    Ok(private_key)
+}
+
+fn backup_existing_state(state_dir: &Path) -> Result<Option<PathBuf>, String> {
+    if !state_dir.exists() {
+        return Ok(None);
+    }
+    let files = fs::read_dir(state_dir)
+        .map_err(|error| format!("failed to inspect {}: {error}", state_dir.display()))?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .collect::<Vec<_>>();
+    if files.is_empty() {
+        return Ok(None);
+    }
+
+    let backup_dir = state_dir.join(format!(
+        "migration-backup-{}",
+        Utc::now().timestamp_millis()
+    ));
+    fs::create_dir_all(&backup_dir)
+        .map_err(|error| format!("failed to create {}: {error}", backup_dir.display()))?;
+    for entry in files {
+        let target = backup_dir.join(entry.file_name());
+        fs::copy(entry.path(), &target).map_err(|error| {
+            format!(
+                "failed to back up {} to {}: {error}",
+                entry.path().display(),
+                target.display()
+            )
+        })?;
+    }
+    Ok(Some(backup_dir))
+}
+
+fn copy_public_state_files(source_dir: &Path, target_dir: &Path) -> Result<(), String> {
+    for name in MIGRATED_STATE_FILES {
+        let source = source_dir.join(name);
+        if !source.exists() {
+            continue;
+        }
+        let target = target_dir.join(name);
+        fs::copy(&source, &target).map_err(|error| {
+            format!(
+                "failed to migrate {} to {}: {error}",
+                source.display(),
+                target.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn contains_legacy_secret_fields(raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .is_some_and(|map| {
+            ["private_key", "secret_key_base64", "api_token"]
+                .iter()
+                .any(|key| map.contains_key(*key))
+        })
+}
+
 fn identity_status(config: &AgentConfig, config_path: &std::path::Path) -> IdentityStatus {
     let private_key_status = if std::path::Path::new(&config.private_key_path).exists() {
         "ready"
@@ -382,6 +712,10 @@ fn default_network_endpoint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     #[test]
     fn public_identity_hides_private_key() {
@@ -448,5 +782,162 @@ mod tests {
         let token = generate_api_token().unwrap();
         assert!(token.len() > 32);
         assert_ne!(sha256_hex(token.as_bytes()), token);
+    }
+
+    #[test]
+    fn config_override_is_the_canonical_state_directory() {
+        let (state_dir, config_path, source, warnings) = resolve_state_paths_from(
+            Some(PathBuf::from("ignored-home")),
+            Some(PathBuf::from("canonical").join("agent.json")),
+            PathBuf::from("home"),
+        );
+
+        assert_eq!(state_dir, PathBuf::from("canonical"));
+        assert_eq!(config_path, PathBuf::from("canonical").join("agent.json"));
+        assert_eq!(source, "burd_agent_config");
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn home_override_keeps_config_and_state_together() {
+        let (state_dir, config_path, source, warnings) =
+            resolve_state_paths_from(Some(PathBuf::from("state")), None, PathBuf::from("home"));
+
+        assert_eq!(state_dir, PathBuf::from("state"));
+        assert_eq!(config_path, PathBuf::from("state").join("agent.json"));
+        assert_eq!(source, "burd_agent_home");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn migration_imports_identity_and_persisted_evidence_with_backup() {
+        let _guard = env_lock();
+        let root = std::env::temp_dir().join(format!("burd-protocol-migrate-{}", Uuid::new_v4()));
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::create_dir_all(&target).unwrap();
+        let source_config = source.join("agent.json");
+        let source_identity = create_fresh_identity(&source_config).unwrap();
+        fs::write(source.join("benchmark-history.json"), "[]").unwrap();
+        fs::write(target.join("old-state.json"), r#"{"legacy":true}"#).unwrap();
+        let env = TestStateEnv::new(&target);
+
+        let result = migrate_identity(Some(&source), true).unwrap();
+
+        assert_eq!(result.identity.provider_id, source_identity.provider_id);
+        assert!(target.join("agent.json").exists());
+        assert!(target.join("agent.key").exists());
+        assert!(target.join("benchmark-history.json").exists());
+        let backup = PathBuf::from(result.backup_dir.unwrap());
+        assert!(backup.join("old-state.json").exists());
+        validate_keypair(
+            &load_identity().unwrap(),
+            &load_private_key(&load_identity().unwrap()).unwrap(),
+        )
+        .unwrap();
+
+        drop(env);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn migration_repairs_invalid_legacy_config_without_leaking_secret_fields() {
+        let _guard = env_lock();
+        let root = std::env::temp_dir().join(format!("burd-protocol-repair-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("agent.json"),
+            r#"{"provider_id":null,"private_key":"legacy-secret"}"#,
+        )
+        .unwrap();
+        let env = TestStateEnv::new(&root);
+
+        let result = migrate_identity(None, true).unwrap();
+
+        assert!(result.migrated);
+        assert!(load_identity().is_ok());
+        let normalized = fs::read_to_string(root.join("agent.json")).unwrap();
+        assert!(!normalized.contains("legacy-secret"));
+        assert!(!normalized.contains("\"private_key\""));
+        let backup = PathBuf::from(result.backup_dir.unwrap());
+        assert!(
+            fs::read_to_string(backup.join("agent.json"))
+                .unwrap()
+                .contains("legacy-secret")
+        );
+
+        drop(env);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn migration_repairs_missing_private_key_and_preserves_identity_ids() {
+        let _guard = env_lock();
+        let root =
+            std::env::temp_dir().join(format!("burd-protocol-key-repair-{}", Uuid::new_v4()));
+        let config_path = root.join("agent.json");
+        let original = create_fresh_identity(&config_path).unwrap();
+        fs::remove_file(root.join("agent.key")).unwrap();
+        let env = TestStateEnv::new(&root);
+
+        let result = migrate_identity(None, true).unwrap();
+
+        assert_eq!(result.identity.provider_id, original.provider_id);
+        assert_eq!(result.identity.machine_id, original.machine_id);
+        let repaired = load_identity().unwrap();
+        let repaired_key = load_private_key(&repaired).unwrap();
+        validate_keypair(&repaired, &repaired_key).unwrap();
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("signing key"))
+        );
+
+        drop(env);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct TestStateEnv {
+        previous_home: Option<OsString>,
+        previous_config: Option<OsString>,
+    }
+
+    impl TestStateEnv {
+        fn new(state_dir: &Path) -> Self {
+            let previous_home = std::env::var_os("BURD_AGENT_HOME");
+            let previous_config = std::env::var_os("BURD_AGENT_CONFIG");
+            // SAFETY: identity tests that mutate environment variables hold ENV_LOCK.
+            unsafe {
+                std::env::set_var("BURD_AGENT_HOME", state_dir);
+                std::env::remove_var("BURD_AGENT_CONFIG");
+            }
+            Self {
+                previous_home,
+                previous_config,
+            }
+        }
+    }
+
+    impl Drop for TestStateEnv {
+        fn drop(&mut self) {
+            // SAFETY: identity tests that mutate environment variables hold ENV_LOCK.
+            unsafe {
+                if let Some(value) = &self.previous_home {
+                    std::env::set_var("BURD_AGENT_HOME", value);
+                } else {
+                    std::env::remove_var("BURD_AGENT_HOME");
+                }
+                if let Some(value) = &self.previous_config {
+                    std::env::set_var("BURD_AGENT_CONFIG", value);
+                } else {
+                    std::env::remove_var("BURD_AGENT_CONFIG");
+                }
+            }
+        }
     }
 }

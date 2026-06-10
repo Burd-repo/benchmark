@@ -15,15 +15,21 @@ Flow:
 Current MVP commands:
 
 ```sh
+burd-agent challenge run-local --json
 burd-agent challenge create-mock --json
 burd-agent challenge run --file docs/examples/challenge.json --json
 burd-agent challenge verify --file signed-response.json --json
 ```
 
-`create-mock` creates a local mock challenge. `run` returns a bundle containing
-the original challenge, signed report, response, and local verification result.
-`verify` expects that same bundle so it can compare nonce, expiry, required
-tests, minimum versions, report hash, and signatures.
+`run-local` creates and runs a local mock challenge in one command, then
+persists the complete verified bundle as `latest-challenge-response.json`.
+`create-mock` creates a local mock challenge. `run` accepts a challenge file and
+returns the same bundle. `verify` expects that bundle so it can compare nonce,
+expiry, required tests, minimum versions, report hash, and signatures.
+
+Readiness revalidates the persisted bundle every time. Expired or invalid
+evidence receives no Challenge points. A history entry containing a
+`challenge_id` alone is not treated as verified evidence.
 
 Challenge fields:
 

@@ -5,15 +5,17 @@ use crate::readiness::{
 };
 use crate::registration::build_registration_payload_from;
 use crate::test_fixtures;
+use crate::verification::verify_provider_from_reports;
 use crate::{
     append_signed_report_history, export_history, load_history_list, load_latest_history,
     load_latest_signed_report, save_latest_signed_report, verify_signed_report,
 };
 use burd_protocol::{
-    Challenge, ChallengePolicy, ChallengeResponse, RequiredTest, SignedReport,
+    Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, RequiredTest, SignedReport,
     challenge_response_message, create_api_token, default_config_path, default_state_dir,
-    load_identity, load_private_key, redacted_config_value, sha256_hex, show_api_token_status,
-    sign_message, verify_api_token, verify_challenge_response,
+    load_identity, load_latest_challenge_output, load_private_key, redacted_config_value,
+    save_latest_challenge_output, sha256_hex, show_api_token_status, sign_message,
+    verify_api_token, verify_challenge_response,
 };
 use chrono::{Duration, Utc};
 use serde_json::Value;
@@ -376,8 +378,10 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
     append_signed_report_history(&signed).unwrap();
     let verification = test_fixtures::provider_verification();
     let raw = build_raw_data_from_provider(&provider, &verification);
-    let partial =
-        evaluate_provider_readiness(readiness_inputs(Some(verification.clone()), Some(raw)));
+    let partial = evaluate_provider_readiness(readiness_inputs(
+        Some(verification.clone()),
+        Some(raw.clone()),
+    ));
     assert_eq!(partial.status, ProviderReadinessStatus::Partial);
     assert_eq!(partial.readiness_score, 75);
     assert!(
@@ -391,6 +395,35 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
     let challenged_signed = signed_report_for_challenge(&challenge);
     save_latest_signed_report(&challenged_signed).unwrap();
     append_signed_report_history(&challenged_signed).unwrap();
+    let history_only = evaluate_provider_readiness(readiness_inputs(
+        Some(verification.clone()),
+        Some(raw.clone()),
+    ));
+    assert!(
+        history_only
+            .checks
+            .iter()
+            .any(|check| check.id == "challenge" && check.score == 0),
+        "a challenge_id in history alone is not verified challenge evidence"
+    );
+
+    let (challenge_response, challenge_verification) =
+        response_for_signed_report(&challenge, challenged_signed.clone());
+    let challenge_output = ChallengeRunOutput {
+        challenge: challenge.clone(),
+        signed_report: challenged_signed.clone(),
+        response: challenge_response,
+        verification: challenge_verification,
+    };
+    save_latest_challenge_output(&challenge_output).unwrap();
+    let provider_challenge_verification = verify_provider_from_reports(
+        Ok(()),
+        &test_fixtures::system_report(),
+        &test_fixtures::score_report(),
+        Ok(challenged_signed.clone()),
+        Ok(challenge_output),
+    );
+    assert!(provider_challenge_verification.challenge_verified);
     let _token = create_api_token().unwrap();
     let raw = build_raw_data_from_provider(&provider, &verification);
     let ready = evaluate_provider_readiness(readiness_inputs(
@@ -425,6 +458,20 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
     );
     assert!(latest.latest.is_some());
     assert!(raw.redacted);
+
+    let valid_challenge_output = load_latest_challenge_output().unwrap();
+    let mut expired_challenge_output = valid_challenge_output.clone();
+    expired_challenge_output.challenge.expires_at =
+        (Utc::now() - Duration::seconds(1)).to_rfc3339();
+    save_latest_challenge_output(&expired_challenge_output).unwrap();
+    let expired_challenge_readiness = evaluate_provider_readiness(readiness_inputs(
+        Some(verification.clone()),
+        Some(raw.clone()),
+    ));
+    assert!(expired_challenge_readiness.checks.iter().any(|check| {
+        check.id == "challenge" && check.status == ReadinessCheckStatus::Warning && check.score == 0
+    }));
+    save_latest_challenge_output(&valid_challenge_output).unwrap();
 
     let mut unsafe_raw = raw.clone();
     unsafe_raw.redacted = false;
@@ -603,6 +650,7 @@ fn readiness_inputs(
         signed_report: load_latest_signed_report(),
         verification,
         history: load_history_list(),
+        challenge: load_latest_challenge_output(),
         api_token: show_api_token_status(),
         raw,
     }

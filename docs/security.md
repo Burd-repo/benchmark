@@ -7,6 +7,8 @@ Implemented now:
 
 - Ed25519 local keypair generation.
 - Private key stored separately from `agent.json`.
+- Identity migration validates the signing key pair and creates a timestamped
+  backup before rewriting or importing state.
 - Reports never include the private key.
 - Signed reports include canonical report hash, public key, signature, signing
   algorithm, timestamp, and local verification status.
@@ -37,6 +39,8 @@ Implemented now:
   from llmfit name-table or unified-memory heuristics (`estimated`) and explicit
   user overrides (`provided`).
 - Real VRAM measurements are not overwritten by lower-confidence estimates.
+- Migration backups are not included in reports or raw payloads, but may retain
+  legacy secret fields from an old config.
 
 Not implemented yet:
 
@@ -60,3 +64,5 @@ Recommended operation for this MVP:
    until the Burd backend exists.
 6. Treat `estimated` or `provided` VRAM as local/MVP evidence, not production
    hardware attestation.
+7. Review and securely remove migration backups after validating the migrated
+   state.

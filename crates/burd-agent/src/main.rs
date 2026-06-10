@@ -15,16 +15,17 @@ use burd_bench::{
 use burd_hardware::{build_system_report, detect_specs, detect_system_report};
 use burd_llmfit::build_fit_report;
 use burd_protocol::{
-    Challenge, ChallengeResponse, challenge_response_message, create_api_token, init_identity,
-    load_identity, load_private_key, mock_challenge, rotate_api_token, rotate_identity_key,
-    show_api_token_status, show_identity, sign_message, verify_challenge_response,
+    Challenge, ChallengeResponse, ChallengeRunOutput, challenge_response_message, create_api_token,
+    init_identity, load_identity, load_private_key, migrate_identity, mock_challenge,
+    rotate_api_token, rotate_identity_key, save_latest_challenge_output, show_api_token_status,
+    show_identity, sign_message, verify_challenge_response,
 };
 use clap::Parser;
 use cli::{
     ApiTokenCommands, BenchCommands, ChallengeCommands, Cli, Commands, HistoryCommands,
     IdentityCommands, UptimeCommands,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::Path;
 use std::time::Duration;
 
@@ -256,6 +257,18 @@ fn run() -> Result<()> {
                 );
                 print_json(&result)?;
             }
+            IdentityCommands::Migrate { from, confirm } => {
+                let result =
+                    migrate_identity(from.as_deref(), confirm).map_err(anyhow::Error::msg)?;
+                let _ = record_action(
+                    "identity migration",
+                    "completed",
+                    "Migrate identity",
+                    "Normalized, repaired, or imported local provider state after backup.",
+                    result.warnings.clone(),
+                );
+                print_json(&result)?;
+            }
             IdentityCommands::Show { json: _ } => {
                 print_json(&show_identity().map_err(anyhow::Error::msg)?)?;
             }
@@ -276,74 +289,13 @@ fn run() -> Result<()> {
                 let challenge = mock_challenge(&profile);
                 print_json(&challenge)?;
             }
+            ChallengeCommands::RunLocal { profile, json: _ } => {
+                let output = run_challenge(mock_challenge(&profile))?;
+                print_json(&output)?;
+            }
             ChallengeCommands::Run { file, json: _ } => {
                 let challenge = read_json_file::<Challenge>(&file)?;
-                let mut options = ReportRunOptions::new(AGENT_VERSION);
-                options.run_all = true;
-                options.challenge = Some(challenge.clone());
-                let signed_report = generate_signed_report(options).map_err(anyhow::Error::msg)?;
-                let _ = save_latest_report(&signed_report.report);
-                let _ = append_signed_report_history(&signed_report);
-                let config = load_identity().map_err(anyhow::Error::msg)?;
-                let private_key = load_private_key(&config).map_err(anyhow::Error::msg)?;
-                let message = challenge_response_message(
-                    &challenge.challenge_id,
-                    &challenge.nonce,
-                    &config.provider_id,
-                    &config.machine_id,
-                    &signed_report.report_hash,
-                )
-                .map_err(anyhow::Error::msg)?;
-                let signature = sign_message(&private_key.secret_key_base64, message.as_bytes())
-                    .map_err(anyhow::Error::msg)?;
-                let mut response = ChallengeResponse {
-                    challenge_id: challenge.challenge_id.clone(),
-                    nonce: challenge.nonce.clone(),
-                    provider_id: config.provider_id,
-                    machine_id: config.machine_id,
-                    report_hash: signed_report.report_hash.clone(),
-                    signed_report: Some(signed_report.clone()),
-                    signature,
-                    public_key: signed_report.public_key.clone(),
-                    completed_at: chrono::Utc::now().to_rfc3339(),
-                    status: "partial".to_string(),
-                    failed_requirements: Vec::new(),
-                    verification_result: None,
-                };
-                let verification = verify_challenge_response(&challenge, &response);
-                response.status = if verification.expired {
-                    "expired".to_string()
-                } else if verification.valid {
-                    "passed".to_string()
-                } else {
-                    "failed".to_string()
-                };
-                response.failed_requirements = verification.errors.clone();
-                response.verification_result = Some(serde_json::json!({
-                    "valid": verification.valid,
-                    "signature_valid": verification.signature_valid,
-                    "expired": verification.expired,
-                    "checked_at": verification.checked_at.clone(),
-                    "warnings": verification.warnings.clone(),
-                    "errors": verification.errors.clone(),
-                }));
-                let output = ChallengeRunOutput {
-                    challenge,
-                    signed_report,
-                    response,
-                    verification,
-                };
-                let _ = record_action(
-                    "challenge response",
-                    if output.verification.valid {
-                        "completed"
-                    } else {
-                        "failed"
-                    },
-                    "Run challenge",
-                    "Ran local challenge and signed response.",
-                    output.verification.errors.clone(),
-                );
+                let output = run_challenge(challenge)?;
                 print_json(&output)?;
             }
             ChallengeCommands::Verify { file, json: _ } => {
@@ -534,6 +486,11 @@ fn print_readiness(readiness: &burd_bench::ProviderReadiness) {
         readiness.readiness_level, readiness.readiness_score
     );
     println!("Status: {}", readiness.status.as_str());
+    println!("State directory: {}", readiness.state.state_dir);
+    println!("Config path: {}", readiness.state.config_path);
+    for warning in &readiness.state.warnings {
+        println!("State warning: {warning}");
+    }
     println!();
     println!("Checks:");
     for check in &readiness.checks {
@@ -592,10 +549,73 @@ fn run_heartbeat_loop(seconds: u64) -> Result<()> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChallengeRunOutput {
-    challenge: Challenge,
-    signed_report: burd_protocol::SignedReport,
-    response: ChallengeResponse,
-    verification: burd_protocol::ChallengeVerification,
+fn run_challenge(challenge: Challenge) -> Result<ChallengeRunOutput> {
+    let mut options = ReportRunOptions::new(AGENT_VERSION);
+    options.run_all = true;
+    options.challenge = Some(challenge.clone());
+    let signed_report = generate_signed_report(options).map_err(anyhow::Error::msg)?;
+    let _ = save_latest_report(&signed_report.report);
+    let _ = append_signed_report_history(&signed_report);
+    let config = load_identity().map_err(anyhow::Error::msg)?;
+    let private_key = load_private_key(&config).map_err(anyhow::Error::msg)?;
+    let message = challenge_response_message(
+        &challenge.challenge_id,
+        &challenge.nonce,
+        &config.provider_id,
+        &config.machine_id,
+        &signed_report.report_hash,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let signature = sign_message(&private_key.secret_key_base64, message.as_bytes())
+        .map_err(anyhow::Error::msg)?;
+    let mut response = ChallengeResponse {
+        challenge_id: challenge.challenge_id.clone(),
+        nonce: challenge.nonce.clone(),
+        provider_id: config.provider_id,
+        machine_id: config.machine_id,
+        report_hash: signed_report.report_hash.clone(),
+        signed_report: Some(signed_report.clone()),
+        signature,
+        public_key: signed_report.public_key.clone(),
+        completed_at: chrono::Utc::now().to_rfc3339(),
+        status: "partial".to_string(),
+        failed_requirements: Vec::new(),
+        verification_result: None,
+    };
+    let verification = verify_challenge_response(&challenge, &response);
+    response.status = if verification.expired {
+        "expired".to_string()
+    } else if verification.valid {
+        "passed".to_string()
+    } else {
+        "failed".to_string()
+    };
+    response.failed_requirements = verification.errors.clone();
+    response.verification_result = Some(serde_json::json!({
+        "valid": verification.valid,
+        "signature_valid": verification.signature_valid,
+        "expired": verification.expired,
+        "checked_at": verification.checked_at.clone(),
+        "warnings": verification.warnings.clone(),
+        "errors": verification.errors.clone(),
+    }));
+    let output = ChallengeRunOutput {
+        challenge,
+        signed_report,
+        response,
+        verification,
+    };
+    save_latest_challenge_output(&output).map_err(anyhow::Error::msg)?;
+    let _ = record_action(
+        "challenge response",
+        if output.verification.valid {
+            "completed"
+        } else {
+            "failed"
+        },
+        "Run challenge",
+        "Ran local challenge and signed response.",
+        output.verification.errors.clone(),
+    );
+    Ok(output)
 }

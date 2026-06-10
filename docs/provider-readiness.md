@@ -19,6 +19,8 @@ structured contract used by automation and the local Provider Console.
 
 The result contains:
 
+- `state`: canonical state directory, config path, resolution source,
+  consistency status, and non-secret path warnings;
 - `status`: machine-readable readiness state;
 - `readiness_score`: weighted local score from `0` to `100`;
 - `readiness_level`: `Not Ready`, `Partial`, or `Ready Locally`;
@@ -45,7 +47,7 @@ message. Check status is `passed`, `warning`, or `failed`.
 | --- | ---: | --- |
 | Identity | 15 | Identity config and configured private signing key are available. |
 | Signed report | 20 | Latest signed report passes local hash/signature verification. |
-| Challenge | 15 | Local challenge evidence exists in verification, signed report, or history. |
+| Challenge | 15 | Latest persisted challenge response revalidates locally and is unexpired. |
 | Provider verification | 20 | Hardware, benchmark, and signature are self-verified locally. |
 | History | 10 | At least one benchmark history entry is persisted. |
 | API token | 10 | Local API authentication is enabled with a configured token. |
@@ -67,6 +69,15 @@ The command does not mutate local state. It does not create identity, tokens,
 reports, challenges, or history entries. When identity exists, it reuses the
 existing provider aggregation to evaluate local provider verification and raw
 redaction.
+
+Run `burd-agent challenge run-local --json` when the Challenge check is missing
+or expired. A signed report or history entry containing only a `challenge_id`
+does not count as verified challenge evidence. The complete persisted response
+must pass nonce, expiry, required-test, report-hash, and signature validation.
+
+All readiness inputs use the same canonical state directory. When
+`BURD_AGENT_CONFIG` is set, its parent directory overrides a conflicting
+`BURD_AGENT_HOME`; the conflict is reported in `state.warnings`.
 
 Tests evaluate the same readiness contract with deterministic internal fixtures
 and isolated temporary `BURD_AGENT_HOME` / `BURD_AGENT_CONFIG` paths. They do

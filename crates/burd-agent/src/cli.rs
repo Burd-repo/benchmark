@@ -213,6 +213,13 @@ pub enum BenchCommands {
 pub enum IdentityCommands {
     /// Create ~/.burd/agent.json and a local Ed25519 private key.
     Init,
+    /// Safely normalize, repair, or import an identity state after creating a backup.
+    Migrate {
+        #[arg(long)]
+        from: Option<PathBuf>,
+        #[arg(long)]
+        confirm: bool,
+    },
     /// Show public identity status.
     Show {
         #[arg(long)]
@@ -229,6 +236,13 @@ pub enum IdentityCommands {
 pub enum ChallengeCommands {
     /// Create a mock backend challenge.
     CreateMock {
+        #[arg(long, default_value = "profile_8gb")]
+        profile: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create and run a local mock challenge without intermediate files.
+    RunLocal {
         #[arg(long, default_value = "profile_8gb")]
         profile: String,
         #[arg(long)]

@@ -2,7 +2,9 @@ use crate::report::{load_latest_signed_report, verify_signed_report};
 use crate::score::calculate_score;
 use burd_hardware::{build_system_report, detect_specs};
 use burd_llmfit::build_fit_report;
-use burd_protocol::load_identity;
+use burd_protocol::{
+    ChallengeRunOutput, load_identity, load_latest_challenge_output, verify_challenge_response,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +37,7 @@ pub fn verify_provider(agent_version: &str) -> ProviderVerification {
         &system,
         &score,
         load_latest_signed_report(),
+        load_latest_challenge_output(),
     )
 }
 
@@ -43,6 +46,7 @@ pub(crate) fn verify_provider_from_reports(
     system: &burd_hardware::SystemReport,
     score: &crate::score::ScoreReport,
     signed_result: Result<burd_protocol::SignedReport, String>,
+    challenge_result: Result<ChallengeRunOutput, String>,
 ) -> ProviderVerification {
     let mut warnings = Vec::new();
     let mut failed_checks = Vec::new();
@@ -108,7 +112,10 @@ pub(crate) fn verify_provider_from_reports(
     let network_verified = signature_verified;
     let disk_verified = signature_verified;
     let uptime_verified = false;
-    let challenge_verified = false;
+    let challenge_verified = challenge_result.as_ref().ok().is_some_and(|output| {
+        let verification = verify_challenge_response(&output.challenge, &output.response);
+        verification.valid && verification.signature_valid && !verification.expired
+    });
 
     let fraud_risk_level =
         if failed_checks.iter().any(|item| item.contains("signature")) || !identity_ok {
@@ -179,6 +186,7 @@ mod tests {
             &system,
             &crate::test_fixtures::score_report(),
             crate::test_fixtures::signed_report(None),
+            Err("challenge unavailable".to_string()),
         );
 
         assert!(verification.hardware_verified);

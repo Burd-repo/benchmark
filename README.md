@@ -60,12 +60,15 @@ burd-agent report --run-all --json
 burd-agent report --run-all --signed --json
 burd-agent verify-report --file docs/examples/signed-report.json --json
 burd-agent identity init
+burd-agent identity migrate --confirm
+burd-agent identity migrate --from C:\path\to\existing-state --confirm
 burd-agent identity show --json
 burd-agent identity rotate-key --confirm
 burd-agent api-token create --json
 burd-agent api-token rotate --json
 burd-agent api-token show --json
 burd-agent challenge create-mock --json
+burd-agent challenge run-local --json
 burd-agent challenge run --file docs/examples/challenge.json --json
 burd-agent challenge verify --file signed-response.json --json
 burd-agent health --json
@@ -148,7 +151,15 @@ private key separately at `~/.burd/agent.key`. Reports and raw data never expose
 the private key.
 
 For automation, set `BURD_AGENT_HOME` or `BURD_AGENT_CONFIG` to an alternate
-workspace path.
+workspace path. `BURD_AGENT_CONFIG` takes precedence and its parent directory
+becomes the canonical state directory, preventing identity, reports, history,
+and challenge evidence from being split across different locations.
+
+Use `identity migrate --confirm` to back up and normalize the current state, or
+`identity migrate --from <state-directory> --confirm` to import an existing
+valid state into the canonical directory. Migration validates the signing key,
+rewrites `agent.json` without legacy secret fields, and copies persisted
+evidence.
 
 ## Signed Reports
 
@@ -228,13 +239,14 @@ Authorization: Bearer <token>
 Run:
 
 ```sh
+burd-agent challenge run-local --json
 burd-agent challenge create-mock --json
 burd-agent challenge run --file docs/examples/challenge.json --json
 ```
 
-The MVP challenge flow is local and mock-backed. It prepares the future backend
-flow where Burd issues a nonce-bound challenge, receives a signed response, and
-validates report hash, signature, expiry, and provider identity.
+`challenge run-local` is the recommended local validation command because it
+creates, runs, signs, verifies, and persists challenge evidence without an
+intermediate file. The MVP challenge flow is local and mock-backed.
 
 Local verification now checks expiry, nonce, required tests, minimum agent and
 benchmark versions, signed report hash, signed report signature, and challenge
@@ -279,6 +291,10 @@ burd-agent readiness --json
 Readiness consolidates identity, signed report, challenge evidence, provider
 verification, benchmark history, API token status, and raw-data redaction into
 a `0-100` score, checks, warnings, and recommendations.
+
+The JSON also reports the canonical state directory and config path. Challenge
+points require the persisted challenge bundle to revalidate successfully and
+remain unexpired; a `challenge_id` in history alone is not sufficient.
 
 `ready_locally` means all local checks pass. It does not mean backend
 verification, audit approval, or marketplace acceptance. See
