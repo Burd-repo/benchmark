@@ -9,7 +9,7 @@ use crate::score::{ScoreReport, calculate_score};
 use crate::verification::{ProviderVerification, verify_provider_from_reports};
 use burd_hardware::{SystemReport, build_system_report, detect_specs};
 use burd_llmfit::build_fit_report;
-use burd_protocol::load_identity;
+use burd_protocol::{load_identity, load_latest_challenge_output};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +124,7 @@ pub fn build_provider_details(agent_version: &str, host_uri: &str) -> BurdProvid
         &system,
         &score,
         load_latest_signed_report(),
+        load_latest_challenge_output(),
     );
     let raw_report = serde_json::to_value(generate_full_report_from_snapshot(
         ReportRunOptions::new(agent_version.to_string()),

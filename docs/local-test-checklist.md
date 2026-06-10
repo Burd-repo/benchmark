@@ -53,6 +53,7 @@ heartbeat loop.
 .\target\debug\burd-agent.exe fit --json --limit 3
 .\target\debug\burd-agent.exe score --json
 .\target\debug\burd-agent.exe identity init
+.\target\debug\burd-agent.exe identity migrate --confirm
 .\target\debug\burd-agent.exe identity show --json
 .\target\debug\burd-agent.exe report --json
 .\target\debug\burd-agent.exe report --run-all --signed --json
@@ -60,6 +61,7 @@ heartbeat loop.
 .\target\debug\burd-agent.exe readiness
 .\target\debug\burd-agent.exe readiness --json
 .\target\debug\burd-agent.exe challenge create-mock --json
+.\target\debug\burd-agent.exe challenge run-local --json
 .\target\debug\burd-agent.exe provider --json
 .\target\debug\burd-agent.exe pricing --json
 .\target\debug\burd-agent.exe earnings --json

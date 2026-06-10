@@ -4,8 +4,9 @@ use crate::raw::{RawData, build_raw_data_from_provider};
 use crate::report::{load_latest_signed_report, verify_signed_report};
 use crate::verification::ProviderVerification;
 use burd_protocol::{
-    AgentConfig, ApiTokenStatus, PrivateKeyFile, SignedReport, load_identity, load_private_key,
-    show_api_token_status,
+    AgentConfig, AgentStatePaths, ApiTokenStatus, ChallengeRunOutput, PrivateKeyFile, SignedReport,
+    agent_state_paths, load_identity, load_latest_challenge_output, load_private_key,
+    show_api_token_status, verify_challenge_response,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -70,6 +71,7 @@ pub struct ReadinessCheck {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderReadiness {
+    pub state: AgentStatePaths,
     pub status: ProviderReadinessStatus,
     pub readiness_score: u8,
     pub readiness_level: String,
@@ -86,6 +88,7 @@ pub fn build_provider_readiness(agent_version: &str, host_uri: &str) -> Provider
         .and_then(load_private_key);
     let signed_report = load_latest_signed_report();
     let history = load_history_list();
+    let challenge = load_latest_challenge_output();
     let api_token = show_api_token_status();
 
     let (verification, raw) = if identity.is_ok() {
@@ -103,6 +106,7 @@ pub fn build_provider_readiness(agent_version: &str, host_uri: &str) -> Provider
         signed_report,
         verification,
         history,
+        challenge,
         api_token,
         raw,
     })
@@ -114,6 +118,7 @@ pub(crate) struct ProviderReadinessInputs {
     pub signed_report: Result<SignedReport, String>,
     pub verification: Option<ProviderVerification>,
     pub history: Result<BenchmarkHistoryList, String>,
+    pub challenge: Result<ChallengeRunOutput, String>,
     pub api_token: Result<ApiTokenStatus, String>,
     pub raw: Option<RawData>,
 }
@@ -128,6 +133,7 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
     let mut warnings = Vec::new();
     let mut recommendations = Vec::new();
     let mut checks = Vec::new();
+    let state = agent_state_paths();
 
     match (&inputs.identity, &inputs.private_key) {
         (Ok(_), Ok(_)) => checks.push(passed(
@@ -225,38 +231,41 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
         }
     };
 
-    let challenge_verified = inputs
-        .verification
+    let challenge_verification = inputs
+        .challenge
         .as_ref()
-        .is_some_and(|verification| verification.challenge_verified)
-        || inputs
-            .signed_report
-            .as_ref()
-            .ok()
-            .is_some_and(|report| report.report.challenge.is_some())
-        || inputs
-            .history
-            .as_ref()
-            .ok()
-            .and_then(|history| history.entries.last())
-            .is_some_and(|entry| entry.challenge_id.is_some());
-    if challenge_verified {
+        .ok()
+        .map(|output| verify_challenge_response(&output.challenge, &output.response));
+    if challenge_verification.as_ref().is_some_and(|verification| {
+        verification.valid && verification.signature_valid && !verification.expired
+    }) {
         checks.push(passed(
             "challenge",
             "Challenge",
             CHALLENGE_WEIGHT,
-            "Local challenge evidence is present.",
+            "Latest local challenge evidence is valid and unexpired.",
         ));
     } else {
+        let invalid_evidence = challenge_verification.is_some();
         checks.push(warning(
             "challenge",
             "Challenge",
             CHALLENGE_WEIGHT,
-            "No locally verified challenge evidence is available.",
+            if invalid_evidence {
+                "Latest local challenge evidence is invalid or expired."
+            } else {
+                "No locally verified challenge evidence is available."
+            },
         ));
-        warnings.push("Provider challenge is pending.".to_string());
-        recommendations
-            .push("Run a local challenge flow and retain its signed history entry.".to_string());
+        warnings.push(if invalid_evidence {
+            "Provider challenge evidence is invalid or expired.".to_string()
+        } else {
+            "Provider challenge is pending.".to_string()
+        });
+        recommendations.push(
+            "Run `burd-agent challenge run-local --json` to create locally verified challenge evidence."
+                .to_string(),
+        );
     }
 
     let provider_verified = match &inputs.verification {
@@ -436,6 +445,7 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
     };
 
     ProviderReadiness {
+        state,
         status,
         readiness_score,
         readiness_level: readiness_level.to_string(),

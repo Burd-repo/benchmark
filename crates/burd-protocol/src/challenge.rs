@@ -1,7 +1,9 @@
+use crate::identity::default_state_dir;
 use crate::report::SignedReport;
 use crate::signature::{KEY_ALGORITHM, canonical_json, hash_canonical, verify_message};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use std::fs;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +77,14 @@ pub struct ChallengeVerification {
     pub checked_at: String,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChallengeRunOutput {
+    pub challenge: Challenge,
+    pub signed_report: SignedReport,
+    pub response: ChallengeResponse,
+    pub verification: ChallengeVerification,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -206,6 +216,24 @@ pub fn verify_challenge_response(
         warnings,
         errors,
     }
+}
+
+pub fn save_latest_challenge_output(output: &ChallengeRunOutput) -> Result<(), String> {
+    let path = default_state_dir().join("latest-challenge-response.json");
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)
+            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
+    }
+    let json = serde_json::to_string_pretty(output)
+        .map_err(|error| format!("failed to serialize challenge output: {error}"))?;
+    fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+}
+
+pub fn load_latest_challenge_output() -> Result<ChallengeRunOutput, String> {
+    let path = default_state_dir().join("latest-challenge-response.json");
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|error| format!("invalid challenge output JSON: {error}"))
 }
 
 fn validate_required_tests(
