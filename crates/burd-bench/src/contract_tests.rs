@@ -1088,9 +1088,10 @@ fn assert_no_secret_values(value: &Value, token: Option<&str>) {
 
 fn find_secret_field(value: &Value, path: &str) -> Option<String> {
     match value {
-        Value::Array(items) => items.iter().enumerate().find_map(|(index, item)| {
-            find_secret_field(item, &format!("{path}[{index}]"))
-        }),
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| find_secret_field(item, &format!("{path}[{index}]"))),
         Value::Object(map) => map.iter().find_map(|(key, value)| {
             let next_path = format!("{path}.{key}");
             if matches!(
