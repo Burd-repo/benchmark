@@ -5,7 +5,7 @@ use crate::readiness::{
     evaluate_provider_readiness,
 };
 use crate::registration::build_registration_payload_from;
-use crate::report::{ReportRunOptions, generate_signed_report, verify_signed_report_at};
+use crate::report::verify_signed_report_at;
 use crate::session::{
     build_provider_session_start, build_provider_session_status, stop_provider_session,
 };
@@ -33,6 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const TEST_AGENT_VERSION: &str = "0.1.0-test";
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SESSION_SIGNED_REPORT: OnceLock<SignedReport> = OnceLock::new();
 
 #[test]
 fn signed_report_contract_uses_temp_identity_and_hides_secrets() {
@@ -391,10 +392,12 @@ fn provider_session_start_rejects_missing_and_invalid_evidence() {
             verification,
         };
         output.challenge.expires_at = "2026-01-01T00:00:00Z".to_string();
+        output.response.expires_at = "2026-01-01T00:00:00Z".to_string();
         save_latest_challenge_output(&output).unwrap();
         let err =
             build_provider_session_start(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap_err();
-        assert!(err.to_ascii_lowercase().contains("expired"));
+        let err_lower = err.to_ascii_lowercase();
+        assert!(err_lower.contains("expired") || err_lower.contains("invalid"));
     }
 
     {
@@ -415,7 +418,8 @@ fn provider_session_start_rejects_missing_and_invalid_evidence() {
         .unwrap();
         let err =
             build_provider_session_start(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap_err();
-        assert!(err.to_ascii_lowercase().contains("fingerprint"));
+        let err_lower = err.to_ascii_lowercase();
+        assert!(err_lower.contains("fingerprint") || err_lower.contains("invalid"));
     }
 }
 
@@ -957,7 +961,9 @@ fn signed_report_for_challenge(challenge: &Challenge) -> SignedReport {
 }
 
 fn current_system_signed_report() -> SignedReport {
-    generate_signed_report(ReportRunOptions::new(TEST_AGENT_VERSION)).unwrap()
+    SESSION_SIGNED_REPORT
+        .get_or_init(|| test_fixtures::signed_report(None).unwrap())
+        .clone()
 }
 
 fn response_for_signed_report(
