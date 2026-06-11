@@ -26,7 +26,7 @@ pub use actions::{
     ActionStatus, Task, TaskLogs, load_actions, load_logs, load_logs_for_task, logs_summary,
     record_action,
 };
-pub use burd_protocol::ProviderSessionStatusReport;
+pub use burd_protocol::session::ProviderSessionStatusReport;
 pub use disk::{DiskBenchmarkOptions, DiskBenchmarkReport, run_disk_benchmark};
 pub use earnings::{EarningsReport, estimate_earnings};
 pub use health::{
