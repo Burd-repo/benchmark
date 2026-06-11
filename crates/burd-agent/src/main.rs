@@ -12,13 +12,16 @@ use burd_bench::{
     record_action, run_disk_benchmark, run_llm_benchmark, run_network_benchmark,
     run_stability_benchmark, save_latest_report, verify_provider, verify_signed_report,
 };
-use burd_hardware::{build_system_report, detect_specs, detect_system_report};
+use burd_hardware::{
+    build_hardware_fingerprint_report, build_system_report, detect_specs, detect_system_report,
+};
 use burd_llmfit::build_fit_report;
 use burd_protocol::{
-    Challenge, ChallengeResponse, ChallengeRunOutput, challenge_response_message, create_api_token,
-    init_identity, load_identity, load_private_key, migrate_identity, mock_challenge,
-    rotate_api_token, rotate_identity_key, save_latest_challenge_output, show_api_token_status,
-    show_identity, sign_message, verify_challenge_response,
+    Challenge, ChallengeResponse, ChallengeRunOutput, challenge_response_message_with_fingerprint,
+    create_api_token, evidence_freshness_from_window, init_identity, load_identity,
+    load_private_key, migrate_identity, mock_challenge, rotate_api_token, rotate_identity_key,
+    save_latest_challenge_output, show_api_token_status, show_identity, sign_message,
+    verify_challenge_response,
 };
 use clap::Parser;
 use cli::{
@@ -49,6 +52,21 @@ fn run() -> Result<()> {
                 "Detect system",
                 "Detected local hardware and runtime signals.",
                 vec!["system report generated".to_string()],
+            );
+            print_json(&report)?;
+        }
+        Commands::Fingerprint { json: _ } => {
+            let system = detect_system_report(AGENT_VERSION);
+            let report = build_hardware_fingerprint_report(&system);
+            let _ = record_action(
+                "hardware fingerprint",
+                "completed",
+                "Build hardware fingerprint",
+                "Built stable hardware fingerprint and marketplace GPU policy snapshot.",
+                vec![format!(
+                    "marketplace_eligible: {}",
+                    report.marketplace_policy.marketplace_eligible
+                )],
             );
             print_json(&report)?;
         }
@@ -558,26 +576,42 @@ fn run_challenge(challenge: Challenge) -> Result<ChallengeRunOutput> {
     let _ = append_signed_report_history(&signed_report);
     let config = load_identity().map_err(anyhow::Error::msg)?;
     let private_key = load_private_key(&config).map_err(anyhow::Error::msg)?;
-    let message = challenge_response_message(
+    let hardware_fingerprint = signed_report
+        .report
+        .hardware_fingerprint
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("signed report does not include hardware fingerprint"))?;
+    let message = challenge_response_message_with_fingerprint(
         &challenge.challenge_id,
         &challenge.nonce,
         &config.provider_id,
         &config.machine_id,
         &signed_report.report_hash,
+        &hardware_fingerprint,
     )
     .map_err(anyhow::Error::msg)?;
     let signature = sign_message(&private_key.secret_key_base64, message.as_bytes())
         .map_err(anyhow::Error::msg)?;
+    let completed_at = chrono::Utc::now().to_rfc3339();
+    let response_evidence =
+        evidence_freshness_from_window(&challenge.issued_at, &challenge.expires_at)
+            .map_err(anyhow::Error::msg)?;
     let mut response = ChallengeResponse {
         challenge_id: challenge.challenge_id.clone(),
         nonce: challenge.nonce.clone(),
         provider_id: config.provider_id,
         machine_id: config.machine_id,
         report_hash: signed_report.report_hash.clone(),
+        hardware_fingerprint: Some(hardware_fingerprint),
         signed_report: Some(signed_report.clone()),
         signature,
         public_key: signed_report.public_key.clone(),
-        completed_at: chrono::Utc::now().to_rfc3339(),
+        completed_at,
+        issued_at: response_evidence.issued_at,
+        expires_at: response_evidence.expires_at,
+        is_expired: response_evidence.is_expired,
+        age_seconds: response_evidence.age_seconds,
+        ttl_seconds: response_evidence.ttl_seconds,
         status: "partial".to_string(),
         failed_requirements: Vec::new(),
         verification_result: None,
@@ -595,6 +629,7 @@ fn run_challenge(challenge: Challenge) -> Result<ChallengeRunOutput> {
         "valid": verification.valid,
         "signature_valid": verification.signature_valid,
         "expired": verification.expired,
+        "evidence": verification.evidence.clone(),
         "checked_at": verification.checked_at.clone(),
         "warnings": verification.warnings.clone(),
         "errors": verification.errors.clone(),

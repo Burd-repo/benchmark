@@ -29,7 +29,10 @@
     }
   ],
   "issued_at": "2030-01-01T00:00:00Z",
-  "expires_at": "2030-01-01T00:30:00Z",
+  "expires_at": "2030-01-02T00:00:00Z",
+  "is_expired": false,
+  "age_seconds": 0,
+  "ttl_seconds": 86400,
   "backend_url": "https://api.burd.cloud",
   "min_agent_version": "0.1.0",
   "min_benchmark_version": "2026.06-mvp"

@@ -2,7 +2,10 @@ use crate::actions::{load_actions, load_logs, logs_summary};
 use crate::health::load_uptime_summary;
 use crate::history::history_summary;
 use crate::provider::build_provider_details;
-use burd_protocol::{default_state_dir, redacted_config_value};
+use crate::report::{load_latest_signed_report, verify_signed_report};
+use burd_protocol::{
+    FULL_REPORT_TTL_SECONDS, default_state_dir, evidence_freshness, redacted_config_value,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 
@@ -44,7 +47,7 @@ pub(crate) fn build_raw_data_from_provider(
             "api_token_hash".to_string(),
             "credentials".to_string(),
         ],
-        latest_report: read_json("latest-report.json"),
+        latest_report: latest_report(),
         latest_signed_report_summary: signed_report_summary(),
         provider_details: serde_json::to_value(&provider)
             .unwrap_or_else(|_| serde_json::json!({"error": "provider serialization failed"})),
@@ -82,16 +85,28 @@ fn read_json(name: &str) -> Option<serde_json::Value> {
 }
 
 fn signed_report_summary() -> Option<serde_json::Value> {
-    let report = read_json("latest-signed-report.json")?;
+    let report = load_latest_signed_report().ok()?;
+    let verification = verify_signed_report(&report);
     Some(serde_json::json!({
-        "provider_id": report.get("provider_id"),
-        "machine_id": report.get("machine_id"),
-        "report_hash": report.get("report_hash"),
-        "key_algorithm": report.get("key_algorithm"),
-        "signed_at": report.get("signed_at"),
-        "signature_valid_locally": report.get("signature_valid_locally"),
-        "canonicalization_version": report.get("canonicalization_version"),
+        "provider_id": report.provider_id,
+        "machine_id": report.machine_id,
+        "report_hash": report.report_hash,
+        "key_algorithm": report.key_algorithm,
+        "signed_at": report.signed_at,
+        "evidence": verification.evidence,
+        "signature_valid_locally": report.signature_valid_locally,
+        "canonicalization_version": report.canonicalization_version,
     }))
+}
+
+fn latest_report() -> Option<serde_json::Value> {
+    let mut report = read_json("latest-report.json")?;
+    let timestamp = report.get("timestamp")?.as_str()?;
+    let evidence = evidence_freshness(timestamp, FULL_REPORT_TTL_SECONDS).ok()?;
+    report
+        .as_object_mut()?
+        .insert("evidence".to_string(), serde_json::to_value(evidence).ok()?);
+    Some(report)
 }
 
 #[cfg(test)]

@@ -65,6 +65,13 @@
   "latest_report": null,
   "latest_signed_report_summary": {
     "canonicalization_version": "burd-json-c14n-v1",
+    "evidence": {
+      "age_seconds": 0,
+      "expires_at": "<timestamp>",
+      "is_expired": false,
+      "issued_at": "<timestamp>",
+      "ttl_seconds": 604800
+    },
     "key_algorithm": "ed25519",
     "machine_id": "burd-machine-contract",
     "provider_id": "burd-provider-contract",
@@ -121,7 +128,9 @@
         "count": 1,
         "model": "NVIDIA GeForce RTX 4090",
         "vendor": "nvidia",
-        "vram_gb": 24.0
+        "vram_confidence": "detected",
+        "vram_gb": 24.0,
+        "vram_source": "nvidia_smi"
       }
     ],
     "hardware": {
@@ -131,8 +140,11 @@
       "disk_free_gb": 512.0,
       "gpu_count": 1,
       "memory_gb": 64.0,
-      "vram_gb": 24.0
+      "vram_confidence": "detected",
+      "vram_gb": 24.0,
+      "vram_source": "nvidia_smi"
     },
+    "hardware_fingerprint": "sha256:f8a228492fef21157d3b87c5ac938a191be72f39577c8cd8ca8b745d4675fa5b",
     "host_uri": "http://127.0.0.1:8787",
     "is_audited": false,
     "is_online": true,
@@ -150,6 +162,16 @@
       "logs_total": 0
     },
     "machine_id": "burd-machine-contract",
+    "marketplace_policy": {
+      "eligibility_level": "marketplace_eligible",
+      "gpu_policy": "nvidia_cuda_only_mvp",
+      "marketplace_eligible": true,
+      "minimum_class": "rtx_30xx_or_datacenter",
+      "reasons": [],
+      "requires_cuda": true,
+      "requires_detected_vram": true,
+      "requires_nvidia": true
+    },
     "pricing": {
       "cpu_price_brl_hour": 0.24,
       "endpoint_price_brl_hour_future": 0.0,
@@ -173,6 +195,13 @@
       "disk": {
         "reason": "not run in fast contract fixture",
         "status": "skipped"
+      },
+      "evidence": {
+        "age_seconds": 0,
+        "expires_at": "<timestamp>",
+        "is_expired": false,
+        "issued_at": "<timestamp>",
+        "ttl_seconds": 604800
       },
       "fit": {
         "models": [
@@ -212,6 +241,7 @@
         "source": "contract fixture",
         "total_models_analyzed": 1
       },
+      "hardware_fingerprint": "sha256:f8a228492fef21157d3b87c5ac938a191be72f39577c8cd8ca8b745d4675fa5b",
       "identity": {
         "api_url": "https://api.burd.cloud",
         "benchmark_profile": "auto",
@@ -231,6 +261,16 @@
       "llm_benchmark": {
         "reason": "not run in fast contract fixture",
         "status": "skipped"
+      },
+      "marketplace_policy": {
+        "eligibility_level": "marketplace_eligible",
+        "gpu_policy": "nvidia_cuda_only_mvp",
+        "marketplace_eligible": true,
+        "minimum_class": "rtx_30xx_or_datacenter",
+        "reasons": [],
+        "requires_cuda": true,
+        "requires_detected_vram": true,
+        "requires_nvidia": true
       },
       "network": {
         "reason": "not run in fast contract fixture",
@@ -289,7 +329,9 @@
             "count": 1,
             "name": "NVIDIA GeForce RTX 4090",
             "unified_memory": false,
-            "vram_gb": 24.0
+            "vram_confidence": "detected",
+            "vram_gb": 24.0,
+            "vram_source": "nvidia_smi"
           }
         ],
         "nvidia_driver": "555.42",
@@ -300,7 +342,9 @@
         "rocm_available": false,
         "timestamp": "<timestamp>",
         "vm_detected": false,
+        "vram_confidence": "detected",
         "vram_per_gpu_gb": 24.0,
+        "vram_source": "nvidia_smi",
         "vram_total_gb": 24.0
       },
       "timestamp": "<timestamp>"
@@ -393,12 +437,25 @@
       "challenge_verified": false,
       "disk_verified": true,
       "failed_checks": [],
+      "fingerprint_matches": true,
       "fraud_risk_level": "low",
+      "hardware_fingerprint": "sha256:f8a228492fef21157d3b87c5ac938a191be72f39577c8cd8ca8b745d4675fa5b",
       "hardware_verified": true,
       "llm_runtime_verified": true,
       "network_verified": true,
       "signature_verified": true,
+      "signed_report_current": true,
+      "signed_report_evidence": {
+        "age_seconds": 0,
+        "expires_at": "<timestamp>",
+        "is_expired": false,
+        "issued_at": "<timestamp>",
+        "ttl_seconds": 604800
+      },
+      "signed_report_hardware_fingerprint": "sha256:f8a228492fef21157d3b87c5ac938a191be72f39577c8cd8ca8b745d4675fa5b",
       "uptime_verified": false,
+      "vram_confidence": "detected",
+      "vram_source": "nvidia_smi",
       "warnings": []
     }
   },
@@ -427,12 +484,25 @@
     "challenge_verified": false,
     "disk_verified": true,
     "failed_checks": [],
+    "fingerprint_matches": true,
     "fraud_risk_level": "low",
+    "hardware_fingerprint": "sha256:f8a228492fef21157d3b87c5ac938a191be72f39577c8cd8ca8b745d4675fa5b",
     "hardware_verified": true,
     "llm_runtime_verified": true,
     "network_verified": true,
     "signature_verified": true,
+    "signed_report_current": true,
+    "signed_report_evidence": {
+      "age_seconds": 0,
+      "expires_at": "<timestamp>",
+      "is_expired": false,
+      "issued_at": "<timestamp>",
+      "ttl_seconds": 604800
+    },
+    "signed_report_hardware_fingerprint": "sha256:f8a228492fef21157d3b87c5ac938a191be72f39577c8cd8ca8b745d4675fa5b",
     "uptime_verified": false,
+    "vram_confidence": "detected",
+    "vram_source": "nvidia_smi",
     "warnings": []
   }
 }

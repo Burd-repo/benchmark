@@ -17,6 +17,8 @@ Fields:
 - `public_key`
 - `agent_version`
 - `benchmark_version`
+- `hardware_fingerprint`
+- `marketplace_policy`
 - `provider_details`
 - `latest_signed_report_hash`
 - `latest_score`
@@ -26,6 +28,7 @@ Fields:
 - `capabilities`
 - `pricing`
 - `verification`
+- `evidence`
 - `created_at`
 - `secrets_included`
 
@@ -42,3 +45,11 @@ The payload does not include:
 Future backend work can POST this payload to Burd, attach backend verification,
 and produce marketplace eligibility. That is intentionally out of scope for this
 local agent stage.
+
+The current payload carries the live hardware fingerprint and local
+`nvidia_cuda_only_mvp` policy snapshot. Provider verification also exposes the
+latest signed-report fingerprint and whether it matches current hardware.
+
+`evidence` includes signed-report and challenge freshness. An expired signed
+report remains visible by hash for audit/history purposes, but its signed score
+and tier do not count as current registration evidence.

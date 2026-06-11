@@ -7,7 +7,10 @@ use crate::report::{
 };
 use crate::score::{ScoreReport, calculate_score};
 use crate::verification::{ProviderVerification, verify_provider_from_reports};
-use burd_hardware::{SystemReport, build_system_report, detect_specs};
+use burd_hardware::{
+    MarketplaceGpuPolicy, SystemReport, build_hardware_fingerprint_report, build_system_report,
+    detect_specs, gpu_vendor,
+};
 use burd_llmfit::build_fit_report;
 use burd_protocol::{load_identity, load_latest_challenge_output};
 use serde::{Deserialize, Serialize};
@@ -25,6 +28,8 @@ pub struct BurdProviderDetails {
     pub is_audited: bool,
     pub audit_status: String,
     pub location: ProviderLocation,
+    pub hardware_fingerprint: String,
+    pub marketplace_policy: MarketplaceGpuPolicy,
     pub hardware: ProviderHardware,
     pub gpu_models: Vec<GpuModelDetail>,
     pub uptime_1d: f64,
@@ -147,6 +152,7 @@ pub fn build_provider_details(agent_version: &str, host_uri: &str) -> BurdProvid
         region: identity.as_ref().and_then(|config| config.region.clone()),
         timezone: None,
     };
+    let fingerprint = build_hardware_fingerprint_report(&system);
 
     BurdProviderDetails {
         provider_id,
@@ -160,6 +166,8 @@ pub fn build_provider_details(agent_version: &str, host_uri: &str) -> BurdProvid
         is_audited: verification.audit_status == "burd_verified_future",
         audit_status: verification.audit_status.clone(),
         location,
+        hardware_fingerprint: fingerprint.hardware_fingerprint,
+        marketplace_policy: fingerprint.marketplace_policy,
         hardware: hardware_from_system(&system, health.disk_free_gb),
         gpu_models: gpu_models_from_system(&system),
         uptime_1d: health.uptime.uptime_1d,
@@ -303,23 +311,6 @@ fn attributes_from_system(system: &SystemReport) -> Vec<ProviderAttribute> {
         });
     }
     attrs
-}
-
-fn gpu_vendor(name: &str) -> String {
-    let lower = name.to_lowercase();
-    if lower.contains("nvidia")
-        || lower.contains("rtx")
-        || lower.contains("a100")
-        || lower.contains("h100")
-    {
-        "nvidia".to_string()
-    } else if lower.contains("amd") || lower.contains("radeon") {
-        "amd".to_string()
-    } else if lower.contains("apple") {
-        "apple".to_string()
-    } else {
-        "unknown".to_string()
-    }
 }
 
 #[cfg(test)]

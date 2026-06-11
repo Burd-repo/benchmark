@@ -1,13 +1,15 @@
 use crate::history::{BenchmarkHistoryList, load_history_list};
 use crate::provider::build_provider_details;
 use crate::raw::{RawData, build_raw_data_from_provider};
-use crate::report::{load_latest_signed_report, verify_signed_report};
+use crate::report::{load_latest_signed_report, verify_signed_report_at};
 use crate::verification::ProviderVerification;
 use burd_protocol::{
-    AgentConfig, AgentStatePaths, ApiTokenStatus, ChallengeRunOutput, PrivateKeyFile, SignedReport,
-    agent_state_paths, load_identity, load_latest_challenge_output, load_private_key,
+    AgentConfig, AgentStatePaths, ApiTokenStatus, ChallengeRunOutput, EvidenceFreshness,
+    PrivateKeyFile, SIGNED_REPORT_TTL_SECONDS, SignedReport, agent_state_paths,
+    evidence_freshness_at, load_identity, load_latest_challenge_output, load_private_key,
     show_api_token_status, verify_challenge_response,
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -49,6 +51,25 @@ pub enum ReadinessCheckStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadinessEvidenceStatus {
+    Missing,
+    Invalid,
+    Expired,
+    Valid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadinessEvidenceSummary {
+    pub signed_report: ReadinessEvidenceStatus,
+    pub challenge: ReadinessEvidenceStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_report_freshness: Option<EvidenceFreshness>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub challenge_freshness: Option<EvidenceFreshness>,
+}
+
 impl ReadinessCheckStatus {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -75,6 +96,7 @@ pub struct ProviderReadiness {
     pub status: ProviderReadinessStatus,
     pub readiness_score: u8,
     pub readiness_level: String,
+    pub evidence: ReadinessEvidenceSummary,
     pub checks: Vec<ReadinessCheck>,
     pub warnings: Vec<String>,
     pub recommendations: Vec<String>,
@@ -109,6 +131,7 @@ pub fn build_provider_readiness(agent_version: &str, host_uri: &str) -> Provider
         challenge,
         api_token,
         raw,
+        now: Utc::now(),
     })
 }
 
@@ -121,6 +144,7 @@ pub(crate) struct ProviderReadinessInputs {
     pub challenge: Result<ChallengeRunOutput, String>,
     pub api_token: Result<ApiTokenStatus, String>,
     pub raw: Option<RawData>,
+    pub now: DateTime<Utc>,
 }
 
 pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> ProviderReadiness {
@@ -134,6 +158,9 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
     let mut recommendations = Vec::new();
     let mut checks = Vec::new();
     let state = agent_state_paths();
+    let signed_report_freshness = inputs.signed_report.as_ref().ok().and_then(|report| {
+        evidence_freshness_at(&report.signed_at, SIGNED_REPORT_TTL_SECONDS, inputs.now).ok()
+    });
 
     match (&inputs.identity, &inputs.private_key) {
         (Ok(_), Ok(_)) => checks.push(passed(
@@ -176,17 +203,36 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
         }
     }
 
-    let signed_report_valid = match &inputs.signed_report {
+    let (signed_report_valid, signed_report_evidence_status) = match &inputs.signed_report {
         Ok(report) => {
-            let result = verify_signed_report(report);
+            let result = verify_signed_report_at(report, inputs.now);
             if result.signature_valid && result.errors.is_empty() {
-                checks.push(passed(
-                    "signed_report",
-                    "Signed report",
-                    SIGNED_REPORT_WEIGHT,
-                    "Latest signed report is valid locally.",
-                ));
-                true
+                if result
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.is_expired)
+                {
+                    checks.push(warning(
+                        "signed_report",
+                        "Signed report",
+                        SIGNED_REPORT_WEIGHT,
+                        "Latest signed report is valid but expired.",
+                    ));
+                    warnings.push("Latest signed report is expired.".to_string());
+                    recommendations.push(
+                        "Renew the signed report with `burd-agent report --signed --json`."
+                            .to_string(),
+                    );
+                    (false, ReadinessEvidenceStatus::Expired)
+                } else {
+                    checks.push(passed(
+                        "signed_report",
+                        "Signed report",
+                        SIGNED_REPORT_WEIGHT,
+                        "Latest signed report is valid and unexpired locally.",
+                    ));
+                    (true, ReadinessEvidenceStatus::Valid)
+                }
             } else {
                 critical_failure = true;
                 checks.push(failed(
@@ -200,7 +246,7 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
                     "Generate a new signed report with `burd-agent report --signed --json`."
                         .to_string(),
                 );
-                false
+                (false, ReadinessEvidenceStatus::Invalid)
             }
         }
         Err(error) => {
@@ -227,7 +273,14 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
             recommendations.push(
                 "Generate a signed report with `burd-agent report --signed --json`.".to_string(),
             );
-            false
+            (
+                false,
+                if malformed {
+                    ReadinessEvidenceStatus::Invalid
+                } else {
+                    ReadinessEvidenceStatus::Missing
+                },
+            )
         }
     };
 
@@ -236,7 +289,7 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
         .as_ref()
         .ok()
         .map(|output| verify_challenge_response(&output.challenge, &output.response));
-    if challenge_verification.as_ref().is_some_and(|verification| {
+    let challenge_evidence_status = if challenge_verification.as_ref().is_some_and(|verification| {
         verification.valid && verification.signature_valid && !verification.expired
     }) {
         checks.push(passed(
@@ -245,20 +298,28 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
             CHALLENGE_WEIGHT,
             "Latest local challenge evidence is valid and unexpired.",
         ));
+        ReadinessEvidenceStatus::Valid
     } else {
         let invalid_evidence = challenge_verification.is_some();
+        let expired_evidence = challenge_verification
+            .as_ref()
+            .is_some_and(|verification| verification.expired);
         checks.push(warning(
             "challenge",
             "Challenge",
             CHALLENGE_WEIGHT,
-            if invalid_evidence {
-                "Latest local challenge evidence is invalid or expired."
+            if expired_evidence {
+                "Latest local challenge evidence is expired."
+            } else if invalid_evidence {
+                "Latest local challenge evidence is invalid."
             } else {
                 "No locally verified challenge evidence is available."
             },
         ));
-        warnings.push(if invalid_evidence {
-            "Provider challenge evidence is invalid or expired.".to_string()
+        warnings.push(if expired_evidence {
+            "Provider challenge evidence is expired.".to_string()
+        } else if invalid_evidence {
+            "Provider challenge evidence is invalid.".to_string()
         } else {
             "Provider challenge is pending.".to_string()
         });
@@ -266,7 +327,14 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
             "Run `burd-agent challenge run-local --json` to create locally verified challenge evidence."
                 .to_string(),
         );
-    }
+        if expired_evidence {
+            ReadinessEvidenceStatus::Expired
+        } else if invalid_evidence {
+            ReadinessEvidenceStatus::Invalid
+        } else {
+            ReadinessEvidenceStatus::Missing
+        }
+    };
 
     let provider_verified = match &inputs.verification {
         Some(verification)
@@ -449,6 +517,13 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
         status,
         readiness_score,
         readiness_level: readiness_level.to_string(),
+        evidence: ReadinessEvidenceSummary {
+            signed_report: signed_report_evidence_status,
+            challenge: challenge_evidence_status,
+            signed_report_freshness,
+            challenge_freshness: challenge_verification
+                .and_then(|verification| verification.evidence),
+        },
         checks,
         warnings,
         recommendations,

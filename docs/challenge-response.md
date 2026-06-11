@@ -9,8 +9,10 @@ Flow:
 3. Agent runs the required local report/benchmark flow.
 4. Agent hashes and signs the report.
 5. Agent signs the challenge response payload:
-   `challenge_id`, `nonce`, `provider_id`, `machine_id`, `report_hash`.
-6. Backend can verify nonce, expiry, report hash, public key, and signature.
+   `challenge_id`, `nonce`, `provider_id`, `machine_id`, `report_hash`,
+   `hardware_fingerprint`.
+6. Backend can verify nonce, expiry, report hash, fingerprint, public key, and
+   signature.
 
 Current MVP commands:
 
@@ -39,6 +41,9 @@ Challenge fields:
 - `required_tests`
 - `issued_at`
 - `expires_at`
+- `is_expired`
+- `age_seconds`
+- `ttl_seconds`
 - `backend_url`
 - `min_agent_version`
 - `min_benchmark_version`
@@ -55,10 +60,16 @@ Challenge response fields:
 - `provider_id`
 - `machine_id`
 - `report_hash`
+- `hardware_fingerprint`
 - `signed_report`
 - `signature`
 - `public_key`
 - `completed_at`
+- `issued_at`
+- `expires_at`
+- `is_expired`
+- `age_seconds`
+- `ttl_seconds`
 - `status`: `passed`, `failed`, `expired`, or `partial`
 - `failed_requirements`
 - `verification_result`
@@ -70,13 +81,19 @@ Local validation:
 - required tests must be present in the signed report;
 - signed report hash must match the canonical report;
 - signed report signature must verify when policy requires it;
+- response fingerprint must match the signed report fingerprint;
 - challenge response signature must verify;
 - agent and benchmark versions must meet the challenge minimums.
 
 Contract tests cover the local mock challenge flow without starting the API
 server: a passing lightweight challenge, expired challenge rejection, required
 test failures, wrong nonce rejection, response shape, signed report binding, and
-absence of private key/API token material in the response.
+hardware-fingerprint binding, and absence of private key/API token material in
+the response.
+
+Local challenges and their responses use a 24-hour TTL. Verification
+recalculates freshness from the challenge issuance/expiry window rather than
+trusting persisted `is_expired` or `age_seconds` values.
 
 Backend future:
 

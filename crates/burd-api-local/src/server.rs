@@ -14,9 +14,9 @@ use burd_bench::{
 use burd_hardware::{build_system_report, detect_specs, detect_system_report};
 use burd_llmfit::build_fit_report;
 use burd_protocol::{
-    Challenge, ChallengeResponse, challenge_response_message, load_identity, load_private_key,
-    mock_challenge, redacted_config_value, sign_message, verify_api_token,
-    verify_challenge_response,
+    Challenge, ChallengeResponse, challenge_response_message_with_fingerprint,
+    evidence_freshness_from_window, load_identity, load_private_key, mock_challenge,
+    redacted_config_value, sign_message, verify_api_token, verify_challenge_response,
 };
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
@@ -338,12 +338,22 @@ async fn run_challenge(
             }));
         }
     };
-    let message = match challenge_response_message(
+    let hardware_fingerprint = match signed_report.report.hardware_fingerprint.clone() {
+        Some(fingerprint) => fingerprint,
+        None => {
+            return ok_json(serde_json::json!({
+                "status": "failed",
+                "error": "signed report does not include hardware fingerprint",
+            }));
+        }
+    };
+    let message = match challenge_response_message_with_fingerprint(
         &challenge.challenge_id,
         &challenge.nonce,
         &config.provider_id,
         &config.machine_id,
         &signed_report.report_hash,
+        &hardware_fingerprint,
     ) {
         Ok(message) => message,
         Err(error) => {
@@ -362,16 +372,33 @@ async fn run_challenge(
             }));
         }
     };
+    let completed_at = chrono::Utc::now().to_rfc3339();
+    let response_evidence =
+        match evidence_freshness_from_window(&challenge.issued_at, &challenge.expires_at) {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                return ok_json(serde_json::json!({
+                    "status": "failed",
+                    "error": error,
+                }));
+            }
+        };
     let mut response = ChallengeResponse {
         challenge_id: challenge.challenge_id.clone(),
         nonce: challenge.nonce.clone(),
         provider_id: config.provider_id,
         machine_id: config.machine_id,
         report_hash: signed_report.report_hash.clone(),
+        hardware_fingerprint: Some(hardware_fingerprint),
         signed_report: Some(signed_report.clone()),
         signature,
         public_key: signed_report.public_key.clone(),
-        completed_at: chrono::Utc::now().to_rfc3339(),
+        completed_at,
+        issued_at: response_evidence.issued_at,
+        expires_at: response_evidence.expires_at,
+        is_expired: response_evidence.is_expired,
+        age_seconds: response_evidence.age_seconds,
+        ttl_seconds: response_evidence.ttl_seconds,
         status: "partial".to_string(),
         failed_requirements: Vec::new(),
         verification_result: None,
@@ -389,6 +416,7 @@ async fn run_challenge(
         "valid": verification.valid,
         "signature_valid": verification.signature_valid,
         "expired": verification.expired,
+        "evidence": verification.evidence.clone(),
         "checked_at": verification.checked_at.clone(),
         "warnings": verification.warnings.clone(),
         "errors": verification.errors.clone(),

@@ -8,10 +8,13 @@ use crate::provider::{
 use crate::report::sign_full_report_at;
 use crate::score::{ScoreComponents, ScoreReport};
 use crate::verification::ProviderVerification;
-use burd_hardware::{BENCHMARK_VERSION, GpuReport, SystemReport};
+use burd_hardware::{
+    BENCHMARK_VERSION, GpuReport, SystemReport, build_hardware_fingerprint_report,
+};
 use burd_llmfit::{BurdFitModel, FitReport};
 use burd_protocol::{
-    AgentIdentityPublic, Challenge, FullReport, KEY_ALGORITHM, ReportSignature, SignedReport,
+    AgentIdentityPublic, Challenge, EvidenceFreshness, FullReport, KEY_ALGORITHM, ReportSignature,
+    SignedReport,
 };
 
 pub(crate) const FIXTURE_TIMESTAMP: &str = "2026-06-08T00:00:00Z";
@@ -31,8 +34,8 @@ pub(crate) fn system_report() -> SystemReport {
         gpus: vec![GpuReport {
             name: "NVIDIA GeForce RTX 4090".to_string(),
             vram_gb: Some(24.0),
-            vram_source: None,
-            vram_confidence: None,
+            vram_source: Some("nvidia_smi".to_string()),
+            vram_confidence: Some("detected".to_string()),
             backend: "CUDA".to_string(),
             count: 1,
             unified_memory: false,
@@ -41,8 +44,8 @@ pub(crate) fn system_report() -> SystemReport {
         primary_gpu_name: Some("NVIDIA GeForce RTX 4090".to_string()),
         vram_per_gpu_gb: Some(24.0),
         vram_total_gb: Some(24.0),
-        vram_source: None,
-        vram_confidence: None,
+        vram_source: Some("nvidia_smi".to_string()),
+        vram_confidence: Some("detected".to_string()),
         backend_detected: "CUDA".to_string(),
         cuda_available: true,
         rocm_available: false,
@@ -109,8 +112,12 @@ pub(crate) fn score_report() -> ScoreReport {
 }
 
 pub(crate) fn full_report(challenge: Option<Challenge>) -> FullReport {
+    let fingerprint = build_hardware_fingerprint_report(&system_report());
     FullReport {
         identity: Some(identity()),
+        evidence: Some(fixture_evidence()),
+        hardware_fingerprint: Some(fingerprint.hardware_fingerprint),
+        marketplace_policy: Some(serde_json::to_value(fingerprint.marketplace_policy).unwrap()),
         system: serde_json::to_value(system_report()).unwrap(),
         fit: Some(serde_json::to_value(fit_report()).unwrap()),
         llm_benchmark: Some(skipped("not run in fast contract fixture")),
@@ -140,6 +147,7 @@ pub(crate) fn provider_details() -> BurdProviderDetails {
     let score = score_report();
     let pricing = calculate_pricing(&system, &score);
     let uptime = uptime_summary();
+    let fingerprint = build_hardware_fingerprint_report(&system);
     BurdProviderDetails {
         provider_id: FIXTURE_PROVIDER_ID.to_string(),
         machine_id: FIXTURE_MACHINE_ID.to_string(),
@@ -157,6 +165,8 @@ pub(crate) fn provider_details() -> BurdProviderDetails {
             region: Some("br-southeast".to_string()),
             timezone: Some("America/Sao_Paulo".to_string()),
         },
+        hardware_fingerprint: fingerprint.hardware_fingerprint,
+        marketplace_policy: fingerprint.marketplace_policy,
         hardware: ProviderHardware {
             cpu: system.cpu.clone(),
             architecture: system.architecture.clone(),
@@ -165,15 +175,15 @@ pub(crate) fn provider_details() -> BurdProviderDetails {
             backend: system.backend_detected.clone(),
             gpu_count: system.gpu_count,
             vram_gb: system.vram_total_gb,
-            vram_source: None,
-            vram_confidence: None,
+            vram_source: system.vram_source.clone(),
+            vram_confidence: system.vram_confidence.clone(),
         },
         gpu_models: vec![GpuModelDetail {
             vendor: "nvidia".to_string(),
             model: system.primary_gpu_name.clone().unwrap(),
             vram_gb: system.vram_total_gb,
-            vram_source: None,
-            vram_confidence: None,
+            vram_source: system.vram_source.clone(),
+            vram_confidence: system.vram_confidence.clone(),
             count: 1,
         }],
         uptime_1d: uptime.uptime_1d,
@@ -209,10 +219,18 @@ pub(crate) fn provider_details() -> BurdProviderDetails {
 }
 
 pub(crate) fn provider_verification() -> ProviderVerification {
+    let hardware_fingerprint =
+        build_hardware_fingerprint_report(&system_report()).hardware_fingerprint;
     ProviderVerification {
         hardware_verified: true,
-        vram_source: None,
-        vram_confidence: None,
+        hardware_fingerprint: hardware_fingerprint.clone(),
+        signed_report_hardware_fingerprint: Some(hardware_fingerprint),
+        fingerprint_matches: true,
+        signed_report_evidence: Some(fixture_evidence()),
+        signed_report_current: true,
+        challenge_evidence: None,
+        vram_source: Some("nvidia_smi".to_string()),
+        vram_confidence: Some("detected".to_string()),
         benchmark_verified: true,
         signature_verified: true,
         challenge_verified: false,
@@ -224,6 +242,16 @@ pub(crate) fn provider_verification() -> ProviderVerification {
         audit_status: "self_verified".to_string(),
         warnings: vec![],
         failed_checks: vec![],
+    }
+}
+
+pub(crate) fn fixture_evidence() -> EvidenceFreshness {
+    EvidenceFreshness {
+        issued_at: FIXTURE_TIMESTAMP.to_string(),
+        expires_at: "2026-06-15T00:00:00+00:00".to_string(),
+        is_expired: false,
+        age_seconds: 0,
+        ttl_seconds: 604_800,
     }
 }
 

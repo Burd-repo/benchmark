@@ -48,6 +48,7 @@ does not run heavy benchmarks.
 
 ```sh
 burd-agent system --json
+burd-agent fingerprint --json
 burd-agent fit --json
 burd-agent bench llm --provider ollama --model llama3.2:1b --runs 3 --json
 burd-agent bench llm --provider vllm --url http://localhost:8000 --model Qwen/Qwen2.5-7B-Instruct --runs 3 --json
@@ -113,6 +114,41 @@ or ambiguous GPUs are not promoted to `detected` from a name-based estimate.
 Estimated VRAM remains acceptable for MVP/local validation, but future
 marketplace eligibility and pricing policy should require or prioritize
 `detected` high-confidence VRAM.
+
+## Hardware Fingerprint And Marketplace Policy
+
+Run:
+
+```sh
+burd-agent fingerprint --json
+```
+
+The command builds a stable SHA-256 fingerprint from relevant hardware,
+backend, VRAM confidence, and driver signals. New signed reports, provider
+details, challenge responses, and registration payloads carry the fingerprint.
+Provider verification and readiness surface a mismatch with prior signed
+evidence.
+
+The local marketplace policy is `nvidia_cuda_only_mvp`: paid marketplace
+eligibility requires a supported NVIDIA RTX 30xx+ or compatible datacenter GPU,
+CUDA, and detected VRAM with reliable source/confidence. AMD, ROCm, Vulkan-only,
+Apple Silicon, Intel, and CPU-only systems remain available for local
+diagnostics where supported, but are not eligible for the paid marketplace MVP.
+
+See `docs/hardware-fingerprint.md` and `docs/marketplace-gpu-policy.md`.
+
+## Evidence Expiration
+
+Full and signed reports expire after 7 days. Local challenges and challenge
+responses expire after 24 hours. Readiness distinguishes evidence that is
+`missing`, `invalid`, `expired`, or `valid`; expired evidence receives no
+readiness points but is not confused with an invalid signature.
+
+Freshness JSON exposes `issued_at`, `expires_at`, `is_expired`, `age_seconds`,
+and `ttl_seconds`. Verification recalculates time-sensitive values rather than
+trusting persisted flags.
+
+See `docs/evidence-expiration.md`.
 
 ## Score
 
@@ -394,6 +430,10 @@ records output under `tmp/test-output/`, and stops the server by PID in a
 - `docs/local-api.md`
 - `docs/provider-registration.md`
 - `docs/provider-readiness.md`
+- `docs/provider-trust-layer.md`
+- `docs/hardware-fingerprint.md`
+- `docs/marketplace-gpu-policy.md`
+- `docs/evidence-expiration.md`
 - `docs/provider-console-ui.md`
 - `docs/llmfit-adaptation.md`
 - `docs/benchmark-profiles.md`
