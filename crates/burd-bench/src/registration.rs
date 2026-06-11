@@ -1,7 +1,9 @@
 use crate::provider::build_provider_details;
 use crate::report::load_latest_signed_report;
 use burd_hardware::{BENCHMARK_VERSION, MarketplaceGpuPolicy};
-use burd_protocol::{AgentConfig, SignedReport, load_identity};
+use burd_protocol::{
+    AgentConfig, ProviderSession, SignedReport, load_identity, load_provider_session,
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -26,6 +28,8 @@ pub struct ProviderRegistrationPayload {
     pub pricing: serde_json::Value,
     pub verification: serde_json::Value,
     pub evidence: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<ProviderSession>,
     pub created_at: String,
     pub secrets_included: bool,
 }
@@ -128,6 +132,7 @@ pub(crate) fn build_registration_payload_from(
             "signed_report": verification.signed_report_evidence.clone(),
             "challenge": verification.challenge_evidence.clone(),
         }),
+        session: load_provider_session().ok().flatten(),
         created_at,
         secrets_included: false,
     }
@@ -187,6 +192,7 @@ mod tests {
             pricing: serde_json::json!({}),
             verification: serde_json::json!({}),
             evidence: serde_json::json!({}),
+            session: None,
             created_at: "2026-06-08T00:00:00Z".to_string(),
             secrets_included: false,
         };

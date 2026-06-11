@@ -35,6 +35,9 @@ after the June 2026 reliability pass.
 - `challenge run-local --json`
 - `challenge run --file <path> --json`
 - `challenge verify --file <path> --json`
+- `session start --json`
+- `session status --json`
+- `session stop --json`
 - `health --json`
 - `heartbeat --once --json`
 - `provider --json`
@@ -118,6 +121,10 @@ after the June 2026 reliability pass.
 - AMD, Intel, Apple Silicon, ROCm, Vulkan-only, CPU-only, unsupported NVIDIA,
   and unreliable-VRAM systems remain diagnostic-only or not eligible for the
   future paid marketplace.
+- Provider Session persists a local expirational session snapshot with
+  `active`, `expired`, `invalidated`, `stopped`, `failed`, and `inactive`
+  states. It records the readiness snapshot, report hash, challenge id,
+  hardware fingerprint, and marketplace policy snapshot at start time.
 - Full and signed reports have a 7-day local TTL. Challenges and challenge
   responses have a 24-hour local TTL.
 - Freshness contracts expose issuance, expiry, age, TTL, and current expiry
@@ -154,8 +161,8 @@ after the June 2026 reliability pass.
 - Hardware attestation through TPM/HSM/OS keychain.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
-- Provider sessions, heartbeat-bound availability, reliability/network/trust
-  scores, spot verification, and workload eligibility.
+- Heartbeat-bound availability, reliability/network/trust scores, spot
+  verification, and workload eligibility.
 
 ## Known Build Warnings
 
@@ -173,6 +180,7 @@ after the June 2026 reliability pass.
 - `~/.burd/latest-signed-report.json`: latest signed report envelope.
 - `~/.burd/latest-challenge-response.json`: latest complete local challenge
   response and verification bundle.
+- `~/.burd/provider-session.json`: local provider session snapshot.
 - `~/.burd/benchmark-history.json`: benchmark history summaries.
 - `~/.burd/uptime.json`: heartbeat history.
 - `~/.burd/actions.json`: action records.

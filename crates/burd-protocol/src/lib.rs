@@ -2,6 +2,7 @@ pub mod challenge;
 pub mod evidence;
 pub mod identity;
 pub mod report;
+pub mod session;
 pub mod signature;
 
 pub use challenge::{
@@ -23,6 +24,11 @@ pub use identity::{
     show_api_token_status, show_identity, verify_api_token,
 };
 pub use report::{FullReport, ReportSignature, SignedReport, VerifyReportResult};
+pub use session::{
+    ProviderSession, ProviderSessionMode, ProviderSessionStatus, ProviderSessionStatusReport,
+    active_provider_session, load_provider_session, new_provider_session_id, provider_session_path,
+    save_provider_session, session_status_from_session,
+};
 pub use signature::{
     KEY_ALGORITHM, canonical_json, canonical_json_value, hash_canonical, placeholder_signature,
     sha256_hex, sign_message, verify_message,

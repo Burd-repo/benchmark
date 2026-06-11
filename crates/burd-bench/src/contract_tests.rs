@@ -1,3 +1,4 @@
+use crate::provider::build_provider_details;
 use crate::raw::build_raw_data_from_provider;
 use crate::readiness::{
     ProviderReadinessInputs, ProviderReadinessStatus, ReadinessCheckStatus,
@@ -5,6 +6,9 @@ use crate::readiness::{
 };
 use crate::registration::build_registration_payload_from;
 use crate::report::verify_signed_report_at;
+use crate::session::{
+    build_provider_session_start, build_provider_session_status, stop_provider_session,
+};
 use crate::test_fixtures;
 use crate::verification::verify_provider_from_reports_at;
 use crate::{
@@ -12,11 +16,11 @@ use crate::{
     load_latest_signed_report, save_latest_signed_report,
 };
 use burd_protocol::{
-    Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, RequiredTest, SignedReport,
-    create_api_token, default_config_path, default_state_dir, load_identity,
-    load_latest_challenge_output, load_private_key, redacted_config_value,
-    save_latest_challenge_output, sha256_hex, show_api_token_status, sign_message,
-    verify_api_token, verify_challenge_response,
+    Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, ProviderSessionStatus,
+    RequiredTest, SignedReport, create_api_token, default_config_path, default_state_dir,
+    load_identity, load_latest_challenge_output, load_private_key, load_provider_session,
+    redacted_config_value, save_latest_challenge_output, save_provider_session, sha256_hex,
+    show_api_token_status, sign_message, verify_api_token, verify_challenge_response,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
@@ -29,6 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const TEST_AGENT_VERSION: &str = "0.1.0-test";
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SESSION_SIGNED_REPORT: OnceLock<SignedReport> = OnceLock::new();
 
 #[test]
 fn signed_report_contract_uses_temp_identity_and_hides_secrets() {
@@ -214,6 +219,208 @@ fn challenge_local_contract_validates_success_expiry_required_tests_and_nonce() 
             .iter()
             .any(|error| error.contains("hardware_fingerprint"))
     );
+}
+
+#[test]
+fn provider_session_contract_starts_reads_and_stops_without_secrets() {
+    let _guard = env_lock();
+    let env = TestEnv::new("provider-session");
+    env.assert_active();
+    env.install_identity();
+
+    let signed = current_system_signed_report();
+    let challenge = light_challenge();
+    let (response, verification) = response_for_signed_report(&challenge, signed.clone());
+    save_latest_signed_report(&signed).unwrap();
+    append_signed_report_history(&signed).unwrap();
+    save_latest_challenge_output(&ChallengeRunOutput {
+        challenge: challenge.clone(),
+        signed_report: signed.clone(),
+        response,
+        verification,
+    })
+    .unwrap();
+    let _token = create_api_token().unwrap();
+
+    let started =
+        build_provider_session_start(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap();
+    assert_eq!(started.status, ProviderSessionStatus::Active);
+    assert!(started.online_locally);
+    assert!(started.session.is_some());
+    assert_no_secret_fields(&serde_json::to_value(&started).unwrap(), None);
+    assert_no_secret_values(&serde_json::to_value(&started).unwrap(), None);
+
+    let status =
+        build_provider_session_status(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap();
+    assert_eq!(status.status, ProviderSessionStatus::Active);
+    assert!(status.online_locally);
+    assert!(status.session.is_some());
+
+    let provider = build_provider_details(TEST_AGENT_VERSION, "http://127.0.0.1:8787");
+    assert!(provider.session.is_some());
+    let verification = test_fixtures::provider_verification();
+    let raw = build_raw_data_from_provider(&provider, &verification);
+    assert!(raw.session.is_some());
+    let provider_value = serde_json::to_value(&provider).unwrap();
+    let raw_value = serde_json::to_value(&raw).unwrap();
+    assert_no_secret_values(&provider_value, None);
+    assert_no_secret_values(&raw_value, None);
+
+    let identity = load_identity().unwrap();
+    let payload = build_registration_payload_from(
+        TEST_AGENT_VERSION,
+        &provider,
+        Some(&identity),
+        Some(&signed),
+        &verification,
+        test_fixtures::FIXTURE_TIMESTAMP.to_string(),
+    );
+    assert!(payload.session.is_some());
+    let payload_value = serde_json::to_value(&payload).unwrap();
+    assert_no_secret_values(&payload_value, None);
+
+    let stopped = stop_provider_session().unwrap();
+    assert_eq!(stopped.status, ProviderSessionStatus::Stopped);
+    assert!(!stopped.online_locally);
+    let stopped_status =
+        build_provider_session_status(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap();
+    assert_eq!(stopped_status.status, ProviderSessionStatus::Stopped);
+    assert!(!stopped_status.online_locally);
+}
+
+#[test]
+fn provider_session_status_reports_inactive_and_expired_states() {
+    let _guard = env_lock();
+    let env = TestEnv::new("provider-session-status");
+    env.assert_active();
+    let inactive =
+        build_provider_session_status(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap();
+    assert_eq!(inactive.status, ProviderSessionStatus::Inactive);
+    assert!(inactive.session.is_none());
+
+    env.install_identity();
+    let signed = current_system_signed_report();
+    let challenge = light_challenge();
+    let (response, verification) = response_for_signed_report(&challenge, signed.clone());
+    save_latest_signed_report(&signed).unwrap();
+    append_signed_report_history(&signed).unwrap();
+    save_latest_challenge_output(&ChallengeRunOutput {
+        challenge: challenge.clone(),
+        signed_report: signed.clone(),
+        response,
+        verification,
+    })
+    .unwrap();
+    let _token = create_api_token().unwrap();
+    build_provider_session_start(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap();
+
+    let mut session = load_provider_session().unwrap().unwrap();
+    session.expires_at = "2026-01-01T00:00:00Z".to_string();
+    session.status = ProviderSessionStatus::Active;
+    save_provider_session(&session).unwrap();
+    let expired =
+        build_provider_session_status(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap();
+    assert_eq!(expired.status, ProviderSessionStatus::Expired);
+    assert!(expired.session.as_ref().unwrap().is_expired);
+}
+
+#[test]
+fn provider_session_start_rejects_missing_and_invalid_evidence() {
+    let _guard = env_lock();
+
+    {
+        let env = TestEnv::new("provider-session-no-identity");
+        env.assert_active();
+        let err =
+            build_provider_session_start(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap_err();
+        assert!(err.to_ascii_lowercase().contains("identity"));
+    }
+
+    {
+        let env = TestEnv::new("provider-session-no-report");
+        env.assert_active();
+        env.install_identity();
+        let err =
+            build_provider_session_start(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap_err();
+        assert!(err.to_ascii_lowercase().contains("signed report"));
+    }
+
+    {
+        let env = TestEnv::new("provider-session-expired-report");
+        env.assert_active();
+        env.install_identity();
+        let challenge = light_challenge();
+        let mut signed = signed_report_for_challenge(&challenge);
+        signed.signed_at = "2026-01-01T00:00:00Z".to_string();
+        save_latest_signed_report(&signed).unwrap();
+        let (response, verification) = response_for_signed_report(&challenge, signed.clone());
+        save_latest_challenge_output(&ChallengeRunOutput {
+            challenge: challenge.clone(),
+            signed_report: signed.clone(),
+            response,
+            verification,
+        })
+        .unwrap();
+        let err =
+            build_provider_session_start(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap_err();
+        assert!(err.to_ascii_lowercase().contains("expired"));
+    }
+
+    {
+        let env = TestEnv::new("provider-session-no-challenge");
+        env.assert_active();
+        env.install_identity();
+        let signed = test_fixtures::signed_report(None).unwrap();
+        save_latest_signed_report(&signed).unwrap();
+        let err =
+            build_provider_session_start(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap_err();
+        assert!(err.to_ascii_lowercase().contains("challenge"));
+    }
+
+    {
+        let env = TestEnv::new("provider-session-expired-challenge");
+        env.assert_active();
+        env.install_identity();
+        let challenge = light_challenge();
+        let signed = signed_report_for_challenge(&challenge);
+        let (response, verification) = response_for_signed_report(&challenge, signed.clone());
+        save_latest_signed_report(&signed).unwrap();
+        let mut output = ChallengeRunOutput {
+            challenge: challenge.clone(),
+            signed_report: signed.clone(),
+            response,
+            verification,
+        };
+        output.challenge.expires_at = "2026-01-01T00:00:00Z".to_string();
+        output.response.expires_at = "2026-01-01T00:00:00Z".to_string();
+        save_latest_challenge_output(&output).unwrap();
+        let err =
+            build_provider_session_start(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap_err();
+        let err_lower = err.to_ascii_lowercase();
+        assert!(err_lower.contains("expired") || err_lower.contains("invalid"));
+    }
+
+    {
+        let env = TestEnv::new("provider-session-fingerprint-mismatch");
+        env.assert_active();
+        env.install_identity();
+        let challenge = light_challenge();
+        let mut signed = signed_report_for_challenge(&challenge);
+        signed.report.hardware_fingerprint = Some("sha256:changed".to_string());
+        save_latest_signed_report(&signed).unwrap();
+        let (response, verification) = response_for_signed_report(&challenge, signed.clone());
+        save_latest_challenge_output(&ChallengeRunOutput {
+            challenge,
+            signed_report: signed,
+            response,
+            verification,
+        })
+        .unwrap();
+        let err =
+            build_provider_session_start(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap_err();
+        let err_lower = err.to_ascii_lowercase();
+        assert!(err_lower.contains("fingerprint") || err_lower.contains("invalid"));
+    }
 }
 
 #[test]
@@ -753,6 +960,12 @@ fn signed_report_for_challenge(challenge: &Challenge) -> SignedReport {
     test_fixtures::signed_report(Some(challenge.clone())).unwrap()
 }
 
+fn current_system_signed_report() -> SignedReport {
+    SESSION_SIGNED_REPORT
+        .get_or_init(|| test_fixtures::signed_report(None).unwrap())
+        .clone()
+}
+
 fn response_for_signed_report(
     challenge: &Challenge,
     signed_report: SignedReport,
@@ -850,17 +1063,11 @@ fn fixture_now() -> DateTime<Utc> {
 }
 
 fn assert_no_secret_fields(value: &Value, token: Option<&str>) {
-    let json = serde_json::to_string(value).unwrap();
-    for field in [
-        "secret_key_base64",
-        "private_key_path",
-        "api_token_hash",
-        "api_token",
-        "credentials",
-    ] {
-        assert!(!json.contains(field), "unexpected secret field {field}");
+    if let Some(path) = find_secret_field(value, "$") {
+        panic!("unexpected secret field found in JSON value at {path}");
     }
     if let Some(token) = token {
+        let json = serde_json::to_string(value).unwrap();
         assert!(!json.contains(token), "unexpected API token value");
     }
 }
@@ -882,6 +1089,31 @@ fn assert_no_secret_values(value: &Value, token: Option<&str>) {
     }
     if let Some(token) = token {
         assert!(!json.contains(token), "unexpected API token value");
+    }
+}
+
+fn find_secret_field(value: &Value, path: &str) -> Option<String> {
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| find_secret_field(item, &format!("{path}[{index}]"))),
+        Value::Object(map) => map.iter().find_map(|(key, value)| {
+            let next_path = format!("{path}.{key}");
+            if matches!(
+                key.as_str(),
+                "secret_key_base64"
+                    | "private_key_path"
+                    | "api_token_hash"
+                    | "api_token"
+                    | "credentials"
+            ) {
+                Some(next_path)
+            } else {
+                find_secret_field(value, &next_path)
+            }
+        }),
+        _ => None,
     }
 }
 

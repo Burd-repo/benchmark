@@ -167,6 +167,7 @@ pub(crate) fn provider_details() -> BurdProviderDetails {
         },
         hardware_fingerprint: fingerprint.hardware_fingerprint,
         marketplace_policy: fingerprint.marketplace_policy,
+        session: None,
         hardware: ProviderHardware {
             cpu: system.cpu.clone(),
             architecture: system.architecture.clone(),

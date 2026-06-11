@@ -4,13 +4,14 @@ use anyhow::Result;
 use burd_bench::{
     DiskBenchmarkOptions, LlmBenchmarkOptions, NetworkBenchmarkOptions, ReportRunOptions,
     append_report_history, append_signed_report_history, build_provider_details,
-    build_provider_readiness, build_raw_data, build_registration_payload, calculate_pricing,
-    calculate_score, clear_history, clear_uptime_history, detect_health, estimate_earnings,
-    export_history, export_registration_payload, generate_full_report, generate_signed_report,
-    heartbeat_once, load_actions, load_history_list, load_latest_history, load_logs,
-    load_logs_for_task, load_signed_report_file, load_uptime_summary, profile_for_vram,
-    record_action, run_disk_benchmark, run_llm_benchmark, run_network_benchmark,
-    run_stability_benchmark, save_latest_report, verify_provider, verify_signed_report,
+    build_provider_readiness, build_provider_session_start, build_provider_session_status,
+    build_raw_data, build_registration_payload, calculate_pricing, calculate_score, clear_history,
+    clear_uptime_history, detect_health, estimate_earnings, export_history,
+    export_registration_payload, generate_full_report, generate_signed_report, heartbeat_once,
+    load_actions, load_history_list, load_latest_history, load_logs, load_logs_for_task,
+    load_signed_report_file, load_uptime_summary, profile_for_vram, record_action,
+    run_disk_benchmark, run_llm_benchmark, run_network_benchmark, run_stability_benchmark,
+    save_latest_report, stop_provider_session, verify_provider, verify_signed_report,
 };
 use burd_hardware::{
     build_hardware_fingerprint_report, build_system_report, detect_specs, detect_system_report,
@@ -320,6 +321,36 @@ fn run() -> Result<()> {
                 let output = read_json_file::<ChallengeRunOutput>(&file)?;
                 let verification = verify_challenge_response(&output.challenge, &output.response);
                 print_json(&verification)?;
+            }
+        },
+        Commands::Session { command } => match command {
+            cli::SessionCommands::Start { json: _ } => {
+                let report = build_provider_session_start(AGENT_VERSION, "http://127.0.0.1:8787")
+                    .map_err(anyhow::Error::msg)?;
+                let _ = record_action(
+                    "provider session",
+                    "completed",
+                    "Start provider session",
+                    "Created a local provider session snapshot.",
+                    report.warnings.clone(),
+                );
+                print_json(&report)?;
+            }
+            cli::SessionCommands::Status { json: _ } => {
+                let report = build_provider_session_status(AGENT_VERSION, "http://127.0.0.1:8787")
+                    .map_err(anyhow::Error::msg)?;
+                print_json(&report)?;
+            }
+            cli::SessionCommands::Stop { json: _ } => {
+                let report = stop_provider_session().map_err(anyhow::Error::msg)?;
+                let _ = record_action(
+                    "provider session",
+                    "completed",
+                    "Stop provider session",
+                    "Stopped the local provider session snapshot.",
+                    report.warnings.clone(),
+                );
+                print_json(&report)?;
             }
         },
         Commands::Health { json: _ } => {

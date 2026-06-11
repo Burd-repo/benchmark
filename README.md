@@ -72,6 +72,9 @@ burd-agent challenge create-mock --json
 burd-agent challenge run-local --json
 burd-agent challenge run --file docs/examples/challenge.json --json
 burd-agent challenge verify --file signed-response.json --json
+burd-agent session start --json
+burd-agent session status --json
+burd-agent session stop --json
 burd-agent health --json
 burd-agent heartbeat --once --json
 burd-agent uptime --json
@@ -287,6 +290,27 @@ intermediate file. The MVP challenge flow is local and mock-backed.
 Local verification now checks expiry, nonce, required tests, minimum agent and
 benchmark versions, signed report hash, signed report signature, and challenge
 response signature.
+
+## Provider Session
+
+Run:
+
+```sh
+burd-agent session start --json
+burd-agent session status --json
+burd-agent session stop --json
+```
+
+`session start` persists a local provider-session snapshot with the current
+hardware fingerprint, signed-report hash, challenge id, readiness snapshot,
+marketplace policy snapshot, and evidence summary. Supported NVIDIA/CUDA
+hardware starts a marketplace-local session; unsupported hardware can still
+start a local diagnostic session when local readiness is valid, but it is not
+promoted to the paid marketplace.
+
+`session status` re-evaluates whether the current local session is active,
+expired, invalidated, or stopped. `session stop` marks the local session as
+stopped without starting any long-running background work.
 
 ## Benchmark History
 
