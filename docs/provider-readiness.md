@@ -24,6 +24,7 @@ The result contains:
 - `status`: machine-readable readiness state;
 - `readiness_score`: weighted local score from `0` to `100`;
 - `readiness_level`: `Not Ready`, `Partial`, or `Ready Locally`;
+- `evidence`: signed-report and challenge status plus freshness details;
 - `checks`: individual weighted local checks;
 - `warnings`: current gaps or failures;
 - `recommendations`: actionable local next steps.
@@ -62,6 +63,21 @@ unified-memory fallbacks are marked `estimated`; explicit overrides are marked
 `provided`. Estimated VRAM is acceptable for MVP local readiness when capacity
 is otherwise available, but it is not production hardware attestation. Future
 marketplace policy should prioritize or require detected/high-confidence VRAM.
+
+Provider verification also compares the current versioned hardware fingerprint
+with the latest signed report and persisted challenge response. A missing or
+different fingerprint prevents full self-verification. A mismatch is treated as
+a critical provider-verification failure and readiness recommends generating
+fresh signed/challenge evidence after the hardware change is reviewed.
+
+Marketplace GPU eligibility remains separate from readiness. An AMD/Vulkan
+machine may be ready for local diagnostics while the
+`nvidia_cuda_only_mvp` policy keeps it out of the future paid marketplace.
+
+The `evidence` summary distinguishes `missing`, `invalid`, `expired`, and
+`valid`. Signed reports expire after 7 days; local challenge evidence expires
+after 24 hours. Expired evidence receives no points and produces a renewal
+recommendation, but expiration alone is not classified as signature tampering.
 
 ## Collection Behavior
 

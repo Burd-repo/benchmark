@@ -4,14 +4,18 @@ use crate::network::{NetworkBenchmarkOptions, run_network_benchmark};
 use crate::profiles::profile_for_vram;
 use crate::score::calculate_score;
 use crate::stability::{StabilityBenchmarkReport, run_stability_benchmark};
-use burd_hardware::{BENCHMARK_VERSION, SystemReport, build_system_report, detect_specs};
+use burd_hardware::{
+    BENCHMARK_VERSION, SystemReport, build_hardware_fingerprint_report, build_system_report,
+    detect_specs,
+};
 use burd_llmfit::{FitReport, build_fit_report};
 use burd_protocol::{
-    AgentConfig, Challenge, FullReport, KEY_ALGORITHM, PrivateKeyFile, ReportSignature,
-    SignedReport, VerifyReportResult, default_state_dir, hash_canonical, load_identity,
+    AgentConfig, Challenge, FULL_REPORT_TTL_SECONDS, FullReport, KEY_ALGORITHM, PrivateKeyFile,
+    ReportSignature, SIGNED_REPORT_TTL_SECONDS, SignedReport, VerifyReportResult,
+    default_state_dir, evidence_freshness, evidence_freshness_at, hash_canonical, load_identity,
     load_private_key, placeholder_signature, sign_message, verify_message,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use std::fs;
 use std::path::Path;
 
@@ -92,8 +96,16 @@ pub(crate) fn generate_full_report_from_snapshot(
         .challenge
         .as_ref()
         .map(|value| value.challenge_id.clone());
+    let fingerprint = build_hardware_fingerprint_report(system);
+    let timestamp = Utc::now().to_rfc3339();
     FullReport {
         identity,
+        evidence: evidence_freshness(&timestamp, FULL_REPORT_TTL_SECONDS).ok(),
+        hardware_fingerprint: Some(fingerprint.hardware_fingerprint),
+        marketplace_policy: Some(
+            serde_json::to_value(fingerprint.marketplace_policy)
+                .expect("marketplace policy serializes"),
+        ),
         system: serde_json::to_value(system).expect("system report serializes"),
         fit: Some(serde_json::to_value(fit).expect("fit report serializes")),
         llm_benchmark: if let Some(value) = &llm_benchmark {
@@ -117,7 +129,7 @@ pub(crate) fn generate_full_report_from_snapshot(
             Some(skipped("not run; use report --run-all or bench disk"))
         },
         score: serde_json::to_value(score).expect("score serializes"),
-        timestamp: Utc::now().to_rfc3339(),
+        timestamp,
         agent_version: options.agent_version,
         benchmark_version: BENCHMARK_VERSION.to_string(),
         benchmark_profile: profile.id,
@@ -169,6 +181,7 @@ fn sign_full_report_with_identity_at(
         signature,
         public_key: config.public_key,
         key_algorithm: config.key_algorithm,
+        evidence: evidence_freshness(&signed_at, SIGNED_REPORT_TTL_SECONDS).ok(),
         signed_at,
         signature_valid_locally,
         canonicalization_version: "burd-json-c14n-v1".to_string(),
@@ -177,6 +190,13 @@ fn sign_full_report_with_identity_at(
 }
 
 pub fn verify_signed_report(report: &SignedReport) -> VerifyReportResult {
+    verify_signed_report_at(report, Utc::now())
+}
+
+pub(crate) fn verify_signed_report_at(
+    report: &SignedReport,
+    now: DateTime<Utc>,
+) -> VerifyReportResult {
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     if report.key_algorithm != KEY_ALGORITHM {
@@ -206,6 +226,20 @@ pub fn verify_signed_report(report: &SignedReport) -> VerifyReportResult {
     if report.report.identity.is_none() {
         warnings.push("report does not include provider identity".to_string());
     }
+    if report.report.hardware_fingerprint.is_none() {
+        warnings.push("report does not include hardware fingerprint".to_string());
+    }
+    let evidence = evidence_freshness_at(&report.signed_at, SIGNED_REPORT_TTL_SECONDS, now)
+        .map_err(|error| {
+            errors.push(error);
+        })
+        .ok();
+    if evidence
+        .as_ref()
+        .is_some_and(|evidence| evidence.is_expired)
+    {
+        warnings.push("signed report expired".to_string());
+    }
 
     VerifyReportResult {
         report_hash: computed_hash,
@@ -213,7 +247,8 @@ pub fn verify_signed_report(report: &SignedReport) -> VerifyReportResult {
         key_algorithm: Some(report.key_algorithm.clone()),
         provider_id: Some(report.provider_id.clone()),
         machine_id: Some(report.machine_id.clone()),
-        checked_at: Utc::now().to_rfc3339(),
+        evidence,
+        checked_at: now.to_rfc3339(),
         warnings,
         errors,
     }
@@ -249,7 +284,10 @@ pub fn load_latest_signed_report() -> Result<SignedReport, String> {
 pub fn load_signed_report_file(path: &Path) -> Result<SignedReport, String> {
     let raw = fs::read_to_string(path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    serde_json::from_str(&raw).map_err(|error| format!("invalid signed report JSON: {error}"))
+    let mut report: SignedReport = serde_json::from_str(&raw)
+        .map_err(|error| format!("invalid signed report JSON: {error}"))?;
+    report.evidence = evidence_freshness(&report.signed_at, SIGNED_REPORT_TTL_SECONDS).ok();
+    Ok(report)
 }
 
 fn skipped(reason: &str) -> serde_json::Value {
@@ -299,6 +337,9 @@ mod tests {
             machine_id: "machine".to_string(),
             report: FullReport {
                 identity: None,
+                evidence: None,
+                hardware_fingerprint: None,
+                marketplace_policy: None,
                 system: serde_json::json!({"os": "linux"}),
                 fit: None,
                 llm_benchmark: None,
@@ -322,6 +363,7 @@ mod tests {
             public_key: "bad".to_string(),
             key_algorithm: KEY_ALGORITHM.to_string(),
             signed_at: "2026-06-08T00:00:00Z".to_string(),
+            evidence: None,
             signature_valid_locally: false,
             canonicalization_version: "burd-json-c14n-v1".to_string(),
         };

@@ -397,6 +397,9 @@ mod tests {
     fn history_entry_does_not_include_private_key() {
         let report = FullReport {
             identity: None,
+            evidence: None,
+            hardware_fingerprint: None,
+            marketplace_policy: None,
             system: serde_json::json!({
                 "os": "linux",
                 "architecture": "x86_64",

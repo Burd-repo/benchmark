@@ -1,12 +1,19 @@
 pub mod challenge;
+pub mod evidence;
 pub mod identity;
 pub mod report;
 pub mod signature;
 
 pub use challenge::{
     Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, ChallengeVerification,
-    RequiredTest, challenge_expired, challenge_response_message, load_latest_challenge_output,
-    mock_challenge, save_latest_challenge_output, verify_challenge_response,
+    RequiredTest, challenge_expired, challenge_response_message,
+    challenge_response_message_with_fingerprint, load_latest_challenge_output, mock_challenge,
+    save_latest_challenge_output, verify_challenge_response,
+};
+pub use evidence::{
+    CHALLENGE_TTL_SECONDS, EvidenceFreshness, FULL_REPORT_TTL_SECONDS, SIGNED_REPORT_TTL_SECONDS,
+    evidence_freshness, evidence_freshness_at, evidence_freshness_from_window,
+    evidence_freshness_from_window_at,
 };
 pub use identity::{
     AgentConfig, AgentIdentityPublic, AgentStatePaths, ApiTokenStatus, IdentityInitResult,

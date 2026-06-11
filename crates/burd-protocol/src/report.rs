@@ -1,4 +1,5 @@
 use crate::challenge::Challenge;
+use crate::evidence::EvidenceFreshness;
 use crate::identity::AgentIdentityPublic;
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,12 @@ pub struct ReportSignature {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FullReport {
     pub identity: Option<AgentIdentityPublic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<EvidenceFreshness>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace_policy: Option<serde_json::Value>,
     pub system: serde_json::Value,
     pub fit: Option<serde_json::Value>,
     pub llm_benchmark: Option<serde_json::Value>,
@@ -37,6 +44,8 @@ pub struct SignedReport {
     pub public_key: String,
     pub key_algorithm: String,
     pub signed_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<EvidenceFreshness>,
     pub signature_valid_locally: bool,
     #[serde(default = "default_canonicalization_version")]
     pub canonicalization_version: String,
@@ -53,6 +62,8 @@ pub struct VerifyReportResult {
     pub key_algorithm: Option<String>,
     pub provider_id: Option<String>,
     pub machine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<EvidenceFreshness>,
     pub checked_at: String,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
@@ -66,6 +77,9 @@ mod tests {
     fn signed_report_serializes() {
         let report = FullReport {
             identity: None,
+            evidence: None,
+            hardware_fingerprint: None,
+            marketplace_policy: None,
             system: serde_json::json!({"os": "linux"}),
             fit: None,
             llm_benchmark: None,
@@ -93,6 +107,7 @@ mod tests {
             public_key: "pub".to_string(),
             key_algorithm: "ed25519".to_string(),
             signed_at: "2026-06-08T00:00:00Z".to_string(),
+            evidence: None,
             signature_valid_locally: true,
             canonicalization_version: "burd-json-c14n-v1".to_string(),
         };

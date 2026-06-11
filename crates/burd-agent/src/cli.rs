@@ -17,6 +17,11 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Build the stable hardware fingerprint and marketplace GPU policy snapshot.
+    Fingerprint {
+        #[arg(long)]
+        json: bool,
+    },
     /// Analyze which models fit this hardware using the llmfit adapter.
     Fit {
         #[arg(long)]

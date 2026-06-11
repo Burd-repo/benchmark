@@ -15,6 +15,7 @@ after the June 2026 reliability pass.
 ## Existing Commands
 
 - `system --json`
+- `fingerprint --json`
 - `fit --json`
 - `bench llm --provider <provider> --model <model> --runs <n> --json`
 - `bench stability --minutes <n> --json`
@@ -106,6 +107,26 @@ after the June 2026 reliability pass.
 - Provider Readiness consolidates identity, signed report, challenge evidence,
   verification, history, API token status, and raw redaction into a local
   score, checks, warnings, and recommendations.
+- A versioned SHA-256 hardware fingerprint is generated from stable hardware,
+  backend, VRAM evidence, and driver signals. It is propagated through signed
+  reports, provider details, challenge responses, and registration payloads.
+- Provider verification and readiness surface a mismatch between current
+  hardware and the latest signed report or challenge response.
+- The local `nvidia_cuda_only_mvp` policy marks supported NVIDIA RTX 30xx+ and
+  compatible datacenter GPUs as potentially marketplace eligible only when
+  CUDA and detected/reliable VRAM evidence are present.
+- AMD, Intel, Apple Silicon, ROCm, Vulkan-only, CPU-only, unsupported NVIDIA,
+  and unreliable-VRAM systems remain diagnostic-only or not eligible for the
+  future paid marketplace.
+- Full and signed reports have a 7-day local TTL. Challenges and challenge
+  responses have a 24-hour local TTL.
+- Freshness contracts expose issuance, expiry, age, TTL, and current expiry
+  state. Verifiers recalculate dynamic freshness instead of trusting persisted
+  flags.
+- Readiness distinguishes missing, invalid, expired, and valid report/challenge
+  evidence. Expired evidence receives no readiness points.
+- Provider verification and registration payloads expose current evidence
+  freshness. Expired signed benchmarks do not count as verified benchmarks.
 - VRAM detection records optional source and confidence metadata and prioritizes
   real driver/system/device measurements over llmfit known-GPU estimates.
 - Vulkan fallback reads device-local memory heaps for discrete GPUs when
@@ -131,8 +152,10 @@ after the June 2026 reliability pass.
 - Remote database or production cloud backend.
 - Reputation and provider marketplace ranking.
 - Hardware attestation through TPM/HSM/OS keychain.
-- Production marketplace policy that requires detected/high-confidence VRAM and
-  rejects or limits estimated capacity.
+- Production marketplace policy that evolves beyond the initial local
+  `nvidia_cuda_only_mvp` classification.
+- Provider sessions, heartbeat-bound availability, reliability/network/trust
+  scores, spot verification, and workload eligibility.
 
 ## Known Build Warnings
 

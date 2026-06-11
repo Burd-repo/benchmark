@@ -15,6 +15,7 @@ Before comparison, the test replaces:
 - filesystem paths with `<path>`;
 - timestamps with `<timestamp>`;
 - public keys, signatures, and report hashes with `<cryptographic-value>`.
+- dynamic `age_seconds` and `is_expired` values with stable fixture values.
 
 This keeps the public JSON shape reviewable without storing machine-specific
 paths, real agent state, or reusable cryptographic material.

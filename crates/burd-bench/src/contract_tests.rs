@@ -4,20 +4,21 @@ use crate::readiness::{
     evaluate_provider_readiness,
 };
 use crate::registration::build_registration_payload_from;
+use crate::report::verify_signed_report_at;
 use crate::test_fixtures;
-use crate::verification::verify_provider_from_reports;
+use crate::verification::verify_provider_from_reports_at;
 use crate::{
     append_signed_report_history, export_history, load_history_list, load_latest_history,
-    load_latest_signed_report, save_latest_signed_report, verify_signed_report,
+    load_latest_signed_report, save_latest_signed_report,
 };
 use burd_protocol::{
     Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, RequiredTest, SignedReport,
-    challenge_response_message, create_api_token, default_config_path, default_state_dir,
-    load_identity, load_latest_challenge_output, load_private_key, redacted_config_value,
+    create_api_token, default_config_path, default_state_dir, load_identity,
+    load_latest_challenge_output, load_private_key, redacted_config_value,
     save_latest_challenge_output, sha256_hex, show_api_token_status, sign_message,
     verify_api_token, verify_challenge_response,
 };
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 use std::ffi::OsString;
 use std::fs;
@@ -39,18 +40,31 @@ fn signed_report_contract_uses_temp_identity_and_hides_secrets() {
 
     let signed = test_fixtures::signed_report(None).unwrap();
     save_latest_signed_report(&signed).unwrap();
-    let verification = verify_signed_report(&signed);
+    let verification = verify_signed_report_at(&signed, fixture_now());
 
     assert!(!signed.report_hash.is_empty());
     assert!(!signed.signature.is_empty());
     assert!(!signed.public_key.is_empty());
     assert_eq!(signed.key_algorithm, "ed25519");
     assert!(!signed.signed_at.is_empty());
+    assert!(signed.evidence.is_some());
+    assert!(signed.report.evidence.is_some());
     assert!(signed.signature_valid_locally);
+    assert!(signed.report.hardware_fingerprint.is_some());
+    assert!(signed.report.marketplace_policy.is_some());
     assert!(verification.signature_valid);
     assert!(verification.errors.is_empty());
+    assert!(!verification.evidence.as_ref().unwrap().is_expired);
     assert_no_secret_fields(&serde_json::to_value(&signed).unwrap(), Some(&api_token));
     assert_no_secret_values(&serde_json::to_value(&signed).unwrap(), Some(&api_token));
+
+    let expired_at = DateTime::parse_from_rfc3339("2026-06-16T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let expired = verify_signed_report_at(&signed, expired_at);
+    assert!(expired.signature_valid);
+    assert!(expired.errors.is_empty());
+    assert!(expired.evidence.as_ref().unwrap().is_expired);
 }
 
 #[test]
@@ -139,7 +153,15 @@ fn challenge_local_contract_validates_success_expiry_required_tests_and_nonce() 
     assert!(!response.provider_id.is_empty());
     assert!(!response.machine_id.is_empty());
     assert!(!response.report_hash.is_empty());
+    assert_eq!(
+        response.hardware_fingerprint,
+        signed_report.report.hardware_fingerprint
+    );
     assert!(!response.signature.is_empty());
+    assert!(!response.issued_at.is_empty());
+    assert!(!response.expires_at.is_empty());
+    assert!(response.ttl_seconds > 0);
+    assert!(verification.evidence.is_some());
     assert!(response.signed_report.is_some());
     assert!(!response.completed_at.is_empty());
     assert_no_secret_values(&serde_json::to_value(&response).unwrap(), Some(&api_token));
@@ -178,6 +200,20 @@ fn challenge_local_contract_validates_success_expiry_required_tests_and_nonce() 
             .iter()
             .any(|error| error == "nonce mismatch")
     );
+
+    let fingerprint_challenge = light_challenge();
+    let signed_report = signed_report_for_challenge(&fingerprint_challenge);
+    let (mut response, _verification) =
+        response_for_signed_report(&fingerprint_challenge, signed_report);
+    response.hardware_fingerprint = Some("sha256:changed".to_string());
+    let verification = verify_challenge_response(&fingerprint_challenge, &response);
+    assert!(!verification.valid);
+    assert!(
+        verification
+            .errors
+            .iter()
+            .any(|error| error.contains("hardware_fingerprint"))
+    );
 }
 
 #[test]
@@ -212,6 +248,8 @@ fn registration_payload_contract_uses_latest_signed_report_without_secrets() {
     assert_eq!(payload.agent_version, TEST_AGENT_VERSION);
     assert!(!payload.benchmark_version.is_empty());
     assert!(value.get("provider_details").is_some());
+    assert_eq!(payload.hardware_fingerprint, provider.hardware_fingerprint);
+    assert!(payload.marketplace_policy.marketplace_eligible);
     assert_eq!(
         payload.latest_signed_report_hash.as_deref(),
         Some(signed.report_hash.as_str())
@@ -221,6 +259,7 @@ fn registration_payload_contract_uses_latest_signed_report_without_secrets() {
     assert!(value.get("capabilities").is_some());
     assert!(value.get("pricing").is_some());
     assert!(value.get("verification").is_some());
+    assert_eq!(payload.evidence["signed_report"]["is_expired"], false);
     assert!(!payload.created_at.is_empty());
     assert!(!payload.secrets_included);
     assert_no_secret_fields(&value, Some(&api_token));
@@ -351,6 +390,14 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
     assert_eq!(fresh.status, ProviderReadinessStatus::Uninitialized);
     assert_eq!(fresh.readiness_score, 0);
     assert_eq!(fresh.readiness_level, "Not Ready");
+    assert_eq!(
+        fresh.evidence.signed_report,
+        crate::ReadinessEvidenceStatus::Missing
+    );
+    assert_eq!(
+        fresh.evidence.challenge,
+        crate::ReadinessEvidenceStatus::Missing
+    );
     assert_eq!(fresh.checks.len(), 7);
     assert!(
         fresh
@@ -384,6 +431,14 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
     ));
     assert_eq!(partial.status, ProviderReadinessStatus::Partial);
     assert_eq!(partial.readiness_score, 75);
+    assert_eq!(
+        partial.evidence.signed_report,
+        crate::ReadinessEvidenceStatus::Valid
+    );
+    assert_eq!(
+        partial.evidence.challenge,
+        crate::ReadinessEvidenceStatus::Missing
+    );
     assert!(
         partial
             .warnings
@@ -416,12 +471,13 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
         verification: challenge_verification,
     };
     save_latest_challenge_output(&challenge_output).unwrap();
-    let provider_challenge_verification = verify_provider_from_reports(
+    let provider_challenge_verification = verify_provider_from_reports_at(
         Ok(()),
         &test_fixtures::system_report(),
         &test_fixtures::score_report(),
         Ok(challenged_signed.clone()),
         Ok(challenge_output),
+        fixture_now(),
     );
     assert!(provider_challenge_verification.challenge_verified);
     let _token = create_api_token().unwrap();
@@ -471,6 +527,10 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
     assert!(expired_challenge_readiness.checks.iter().any(|check| {
         check.id == "challenge" && check.status == ReadinessCheckStatus::Warning && check.score == 0
     }));
+    assert_eq!(
+        expired_challenge_readiness.evidence.challenge,
+        crate::ReadinessEvidenceStatus::Expired
+    );
     save_latest_challenge_output(&valid_challenge_output).unwrap();
 
     let mut unsafe_raw = raw.clone();
@@ -491,12 +551,116 @@ fn provider_readiness_flow_contract_distinguishes_local_states() {
     save_latest_signed_report(&tampered).unwrap();
     let failed = evaluate_provider_readiness(readiness_inputs(Some(verification), Some(raw)));
     assert_eq!(failed.status, ProviderReadinessStatus::Failed);
+    assert_eq!(
+        failed.evidence.signed_report,
+        crate::ReadinessEvidenceStatus::Invalid
+    );
     assert!(
         failed
             .warnings
             .iter()
             .any(|item| item == "Latest signed report failed local verification.")
     );
+}
+
+#[test]
+fn expired_signed_report_does_not_score_for_verification_or_readiness() {
+    let _guard = env_lock();
+    let env = TestEnv::new("expired-signed-report");
+    env.assert_active();
+    env.install_identity();
+
+    let signed = test_fixtures::signed_report(None).unwrap();
+    save_latest_signed_report(&signed).unwrap();
+    append_signed_report_history(&signed).unwrap();
+    let expired_at = DateTime::parse_from_rfc3339("2026-06-16T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let verification = verify_provider_from_reports_at(
+        Ok(()),
+        &test_fixtures::system_report(),
+        &test_fixtures::score_report(),
+        Ok(signed.clone()),
+        Err("challenge unavailable".to_string()),
+        expired_at,
+    );
+
+    assert!(verification.signature_verified);
+    assert!(!verification.signed_report_current);
+    assert!(!verification.benchmark_verified);
+    assert!(
+        verification
+            .failed_checks
+            .iter()
+            .any(|check| check == "signed_report_expired")
+    );
+
+    let provider = test_fixtures::provider_details();
+    let raw = build_raw_data_from_provider(&provider, &verification);
+    let mut inputs = readiness_inputs(Some(verification.clone()), Some(raw));
+    inputs.now = expired_at;
+    let readiness = evaluate_provider_readiness(inputs);
+    assert_ne!(readiness.status, ProviderReadinessStatus::Failed);
+    assert_eq!(
+        readiness.evidence.signed_report,
+        crate::ReadinessEvidenceStatus::Expired
+    );
+    assert!(
+        readiness
+            .recommendations
+            .iter()
+            .any(|item| item.contains("Renew the signed report"))
+    );
+
+    let identity = load_identity().unwrap();
+    let provider = test_fixtures::provider_details();
+    let payload = build_registration_payload_from(
+        TEST_AGENT_VERSION,
+        &provider,
+        Some(&identity),
+        Some(&signed),
+        &verification,
+        test_fixtures::FIXTURE_TIMESTAMP.to_string(),
+    );
+    assert_eq!(payload.evidence["signed_report"]["is_expired"], true);
+}
+
+#[test]
+fn provider_readiness_surfaces_hardware_fingerprint_mismatch() {
+    let _guard = env_lock();
+    let env = TestEnv::new("provider-readiness-fingerprint");
+    env.assert_active();
+    env.install_identity();
+
+    let signed = test_fixtures::signed_report(None).unwrap();
+    save_latest_signed_report(&signed).unwrap();
+    append_signed_report_history(&signed).unwrap();
+
+    let mut changed_system = test_fixtures::system_report();
+    changed_system.primary_gpu_name = Some("NVIDIA GeForce RTX 3060".to_string());
+    changed_system.gpus[0].name = "NVIDIA GeForce RTX 3060".to_string();
+    let verification = verify_provider_from_reports_at(
+        Ok(()),
+        &changed_system,
+        &test_fixtures::score_report(),
+        Ok(signed),
+        Err("challenge unavailable".to_string()),
+        fixture_now(),
+    );
+    let provider = test_fixtures::provider_details();
+    let raw = build_raw_data_from_provider(&provider, &verification);
+    let readiness = evaluate_provider_readiness(readiness_inputs(Some(verification), Some(raw)));
+
+    assert_eq!(readiness.status, ProviderReadinessStatus::Failed);
+    assert!(
+        readiness
+            .warnings
+            .iter()
+            .any(|warning| warning.to_ascii_lowercase().contains("fingerprint"))
+    );
+    assert!(readiness.checks.iter().any(|check| {
+        check.id == "provider_verification" && check.status == ReadinessCheckStatus::Failed
+    }));
 }
 
 #[test]
@@ -569,6 +733,9 @@ fn strict_challenge() -> Challenge {
         ],
         issued_at: test_fixtures::FIXTURE_TIMESTAMP.to_string(),
         expires_at: "2099-01-01T00:00:00Z".to_string(),
+        is_expired: false,
+        age_seconds: 0,
+        ttl_seconds: 2_290_608_000,
         backend_url: Some("https://api.burd.cloud".to_string()),
         min_agent_version: "0.1.0".to_string(),
         min_benchmark_version: burd_hardware::BENCHMARK_VERSION.to_string(),
@@ -592,25 +759,43 @@ fn response_for_signed_report(
 ) -> (ChallengeResponse, burd_protocol::ChallengeVerification) {
     let config = load_identity().unwrap();
     let private_key = load_private_key(&config).unwrap();
-    let message = challenge_response_message(
+    let hardware_fingerprint = signed_report
+        .report
+        .hardware_fingerprint
+        .clone()
+        .expect("fixture signed report contains hardware fingerprint");
+    let message = burd_protocol::challenge_response_message_with_fingerprint(
         &challenge.challenge_id,
         &challenge.nonce,
         &config.provider_id,
         &config.machine_id,
         &signed_report.report_hash,
+        &hardware_fingerprint,
     )
     .unwrap();
     let signature = sign_message(&private_key.secret_key_base64, message.as_bytes()).unwrap();
+    let response_evidence = burd_protocol::evidence_freshness_from_window_at(
+        &challenge.issued_at,
+        &challenge.expires_at,
+        fixture_now(),
+    )
+    .unwrap();
     let mut response = ChallengeResponse {
         challenge_id: challenge.challenge_id.clone(),
         nonce: challenge.nonce.clone(),
         provider_id: config.provider_id,
         machine_id: config.machine_id,
         report_hash: signed_report.report_hash.clone(),
+        hardware_fingerprint: Some(hardware_fingerprint),
         signed_report: Some(signed_report.clone()),
         signature,
         public_key: signed_report.public_key.clone(),
         completed_at: test_fixtures::FIXTURE_TIMESTAMP.to_string(),
+        issued_at: response_evidence.issued_at,
+        expires_at: response_evidence.expires_at,
+        is_expired: response_evidence.is_expired,
+        age_seconds: response_evidence.age_seconds,
+        ttl_seconds: response_evidence.ttl_seconds,
         status: "partial".to_string(),
         failed_requirements: Vec::new(),
         verification_result: None,
@@ -628,6 +813,7 @@ fn response_for_signed_report(
         "valid": verification.valid,
         "signature_valid": verification.signature_valid,
         "expired": verification.expired,
+        "evidence": verification.evidence,
         "checked_at": verification.checked_at,
         "warnings": verification.warnings,
         "errors": verification.errors,
@@ -653,7 +839,14 @@ fn readiness_inputs(
         challenge: load_latest_challenge_output(),
         api_token: show_api_token_status(),
         raw,
+        now: fixture_now(),
     }
+}
+
+fn fixture_now() -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339("2026-06-09T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc)
 }
 
 fn assert_no_secret_fields(value: &Value, token: Option<&str>) {
@@ -738,6 +931,10 @@ fn sanitize_contract_value(value: &mut Value) {
                     *item = Value::String("<timestamp>".to_string());
                 } else if item.is_string() && is_cryptographic_field(key) {
                     *item = Value::String("<cryptographic-value>".to_string());
+                } else if key == "age_seconds" && item.is_number() {
+                    *item = Value::Number(0.into());
+                } else if key == "is_expired" && item.is_boolean() {
+                    *item = Value::Bool(false);
                 } else {
                     sanitize_contract_value(item);
                 }

@@ -1,7 +1,8 @@
 use crate::identity::default_state_dir;
 use crate::report::SignedReport;
 use crate::signature::{KEY_ALGORITHM, canonical_json, hash_canonical, verify_message};
-use chrono::{DateTime, Duration, Utc};
+use crate::{CHALLENGE_TTL_SECONDS, EvidenceFreshness, evidence_freshness_from_window};
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use uuid::Uuid;
@@ -14,6 +15,12 @@ pub struct Challenge {
     pub required_tests: Vec<RequiredTest>,
     pub issued_at: String,
     pub expires_at: String,
+    #[serde(default)]
+    pub is_expired: bool,
+    #[serde(default)]
+    pub age_seconds: u64,
+    #[serde(default)]
+    pub ttl_seconds: u64,
     #[serde(default)]
     pub backend_url: Option<String>,
     pub min_agent_version: String,
@@ -56,11 +63,18 @@ pub struct ChallengeResponse {
     pub provider_id: String,
     pub machine_id: String,
     pub report_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_fingerprint: Option<String>,
     #[serde(default)]
     pub signed_report: Option<SignedReport>,
     pub signature: String,
     pub public_key: String,
     pub completed_at: String,
+    pub issued_at: String,
+    pub expires_at: String,
+    pub is_expired: bool,
+    pub age_seconds: u64,
+    pub ttl_seconds: u64,
     pub status: String,
     #[serde(default)]
     pub failed_requirements: Vec<String>,
@@ -74,6 +88,8 @@ pub struct ChallengeVerification {
     pub valid: bool,
     pub signature_valid: bool,
     pub expired: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<EvidenceFreshness>,
     pub checked_at: String,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
@@ -94,6 +110,16 @@ struct ChallengeResponsePayload<'a> {
     provider_id: &'a str,
     machine_id: &'a str,
     report_hash: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ChallengeResponsePayloadWithFingerprint<'a> {
+    challenge_id: &'a str,
+    nonce: &'a str,
+    provider_id: &'a str,
+    machine_id: &'a str,
+    report_hash: &'a str,
+    hardware_fingerprint: &'a str,
 }
 
 pub fn mock_challenge(profile: &str) -> Challenge {
@@ -129,7 +155,10 @@ pub fn mock_challenge(profile: &str) -> Challenge {
             },
         ],
         issued_at: issued.to_rfc3339(),
-        expires_at: (issued + Duration::minutes(30)).to_rfc3339(),
+        expires_at: (issued + Duration::seconds(CHALLENGE_TTL_SECONDS as i64)).to_rfc3339(),
+        is_expired: false,
+        age_seconds: 0,
+        ttl_seconds: CHALLENGE_TTL_SECONDS,
         backend_url: Some("https://api.burd.cloud".to_string()),
         min_agent_version: "0.1.0".to_string(),
         min_benchmark_version: "2026.06-mvp".to_string(),
@@ -153,6 +182,24 @@ pub fn challenge_response_message(
     })
 }
 
+pub fn challenge_response_message_with_fingerprint(
+    challenge_id: &str,
+    nonce: &str,
+    provider_id: &str,
+    machine_id: &str,
+    report_hash: &str,
+    hardware_fingerprint: &str,
+) -> Result<String, String> {
+    canonical_json(&ChallengeResponsePayloadWithFingerprint {
+        challenge_id,
+        nonce,
+        provider_id,
+        machine_id,
+        report_hash,
+        hardware_fingerprint,
+    })
+}
+
 pub fn verify_challenge_response(
     challenge: &Challenge,
     response: &ChallengeResponse,
@@ -167,10 +214,12 @@ pub fn verify_challenge_response(
         errors.push("nonce mismatch".to_string());
     }
 
-    let expired = challenge_expired(challenge).unwrap_or_else(|error| {
-        errors.push(error);
-        true
-    });
+    let evidence = evidence_freshness_from_window(&challenge.issued_at, &challenge.expires_at)
+        .map_err(|error| {
+            errors.push(error);
+        })
+        .ok();
+    let expired = evidence.as_ref().is_none_or(|evidence| evidence.is_expired);
     if expired {
         errors.push("challenge expired".to_string());
     }
@@ -182,24 +231,35 @@ pub fn verify_challenge_response(
         warnings.push(format!("challenge response status is {}", response.status));
     }
 
-    let signature_valid = challenge_response_message(
-        &response.challenge_id,
-        &response.nonce,
-        &response.provider_id,
-        &response.machine_id,
-        &response.report_hash,
-    )
-    .and_then(|message| {
-        verify_message(
-            &response.public_key,
-            message.as_bytes(),
-            &response.signature,
-        )
-    })
-    .unwrap_or_else(|error| {
-        errors.push(error);
-        false
-    });
+    let signature_message = match response.hardware_fingerprint.as_deref() {
+        Some(fingerprint) => challenge_response_message_with_fingerprint(
+            &response.challenge_id,
+            &response.nonce,
+            &response.provider_id,
+            &response.machine_id,
+            &response.report_hash,
+            fingerprint,
+        ),
+        None => challenge_response_message(
+            &response.challenge_id,
+            &response.nonce,
+            &response.provider_id,
+            &response.machine_id,
+            &response.report_hash,
+        ),
+    };
+    let signature_valid = signature_message
+        .and_then(|message| {
+            verify_message(
+                &response.public_key,
+                message.as_bytes(),
+                &response.signature,
+            )
+        })
+        .unwrap_or_else(|error| {
+            errors.push(error);
+            false
+        });
     if !signature_valid {
         errors.push("challenge response signature invalid".to_string());
     }
@@ -212,6 +272,7 @@ pub fn verify_challenge_response(
         valid: errors.is_empty(),
         signature_valid,
         expired,
+        evidence,
         checked_at: Utc::now().to_rfc3339(),
         warnings,
         errors,
@@ -257,6 +318,26 @@ fn validate_required_tests(
     }
     if signed_report.machine_id != response.machine_id {
         errors.push("response machine_id does not match signed report".to_string());
+    }
+    match (
+        response.hardware_fingerprint.as_deref(),
+        signed_report.report.hardware_fingerprint.as_deref(),
+    ) {
+        (Some(response_fingerprint), Some(report_fingerprint))
+            if response_fingerprint != report_fingerprint =>
+        {
+            errors.push("response hardware_fingerprint does not match signed report".to_string());
+        }
+        (None, Some(_)) => {
+            errors.push("response hardware_fingerprint missing".to_string());
+        }
+        (Some(_), None) => {
+            errors.push("signed report hardware_fingerprint missing".to_string());
+        }
+        (None, None) => warnings.push(
+            "challenge response and signed report do not include hardware fingerprint".to_string(),
+        ),
+        _ => {}
     }
     if signed_report.key_algorithm != KEY_ALGORITHM {
         errors.push(format!(
@@ -362,10 +443,7 @@ fn not_skipped(value: &serde_json::Value) -> bool {
 }
 
 pub fn challenge_expired(challenge: &Challenge) -> Result<bool, String> {
-    let expires = DateTime::parse_from_rfc3339(&challenge.expires_at)
-        .map_err(|error| format!("invalid challenge expires_at: {error}"))?
-        .with_timezone(&Utc);
-    Ok(Utc::now() > expires)
+    Ok(evidence_freshness_from_window(&challenge.issued_at, &challenge.expires_at)?.is_expired)
 }
 
 #[cfg(test)]
@@ -387,6 +465,7 @@ mod tests {
     fn expired_challenge_is_detected() {
         let mut challenge = mock_challenge("profile_8gb");
         challenge.expires_at = (Utc::now() - Duration::seconds(1)).to_rfc3339();
+        challenge.issued_at = (Utc::now() - Duration::hours(25)).to_rfc3339();
         assert!(challenge_expired(&challenge).unwrap());
     }
 
@@ -409,6 +488,9 @@ mod tests {
         };
         let mut report = FullReport {
             identity: None,
+            evidence: None,
+            hardware_fingerprint: None,
+            marketplace_policy: None,
             system: serde_json::json!({"os": "linux"}),
             fit: Some(serde_json::json!({"status": "ok"})),
             llm_benchmark: Some(serde_json::json!({"status": "skipped"})),
@@ -439,6 +521,7 @@ mod tests {
             public_key: keys.public_key_base64.clone(),
             key_algorithm: KEY_ALGORITHM.to_string(),
             signed_at: Utc::now().to_rfc3339(),
+            evidence: None,
             signature_valid_locally: true,
             canonicalization_version: "burd-json-c14n-v1".to_string(),
         };
@@ -456,10 +539,16 @@ mod tests {
             provider_id: "provider".to_string(),
             machine_id: "machine".to_string(),
             report_hash,
+            hardware_fingerprint: None,
             signed_report: Some(signed_report),
             signature: sign_message(&keys.secret_key_base64, message.as_bytes()).unwrap(),
             public_key: keys.public_key_base64,
             completed_at: Utc::now().to_rfc3339(),
+            issued_at: Utc::now().to_rfc3339(),
+            expires_at: challenge.expires_at.clone(),
+            is_expired: false,
+            age_seconds: 0,
+            ttl_seconds: challenge.ttl_seconds,
             status: "partial".to_string(),
             failed_requirements: Vec::new(),
             verification_result: None,

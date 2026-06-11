@@ -45,7 +45,7 @@ pub use provider::{BurdProviderDetails, build_provider_details};
 pub use raw::{RawData, build_raw_data};
 pub use readiness::{
     ProviderReadiness, ProviderReadinessStatus, ReadinessCheck, ReadinessCheckStatus,
-    build_provider_readiness,
+    ReadinessEvidenceStatus, ReadinessEvidenceSummary, build_provider_readiness,
 };
 pub use registration::{
     ProviderRegistrationExport, ProviderRegistrationPayload, build_registration_payload,
