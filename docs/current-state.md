@@ -125,6 +125,9 @@ after the June 2026 reliability pass.
   `active`, `expired`, `invalidated`, `stopped`, `failed`, and `inactive`
   states. It records the readiness snapshot, report hash, challenge id,
   hardware fingerprint, and marketplace policy snapshot at start time.
+- Heartbeat once records a one-shot local liveness snapshot for an active
+  session, appends uptime history, and propagates a heartbeat summary into
+  provider details, raw data, registration payloads, and readiness.
 - Full and signed reports have a 7-day local TTL. Challenges and challenge
   responses have a 24-hour local TTL.
 - Freshness contracts expose issuance, expiry, age, TTL, and current expiry
@@ -161,8 +164,8 @@ after the June 2026 reliability pass.
 - Hardware attestation through TPM/HSM/OS keychain.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
-- Heartbeat-bound availability, reliability/network/trust scores, spot
-  verification, and workload eligibility.
+- Continuous heartbeat loops, backend-bound availability, reliability/network/
+  trust scores, spot verification, and workload eligibility.
 
 ## Known Build Warnings
 
@@ -204,3 +207,5 @@ starting the API server or depending on host state:
   valid/invalid token behavior, and redacted config/raw payloads;
 - local provider readiness classifications for `uninitialized`,
   `not_verified`, `ready_locally`, and `failed` states.
+- one-shot heartbeat behavior, local uptime history updates, active-session
+  liveness checks, and session invalidation on fingerprint mismatch.

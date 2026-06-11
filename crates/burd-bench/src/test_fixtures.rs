@@ -195,6 +195,7 @@ pub(crate) fn provider_details() -> BurdProviderDetails {
         pricing: pricing.clone(),
         tier: score.tier.clone(),
         score,
+        heartbeat: None,
         active_jobs_future: 0,
         total_jobs_future: 0,
         estimated_earnings: estimate_earnings(&pricing),

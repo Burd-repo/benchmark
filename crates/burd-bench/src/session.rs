@@ -2,8 +2,9 @@ use crate::report::{load_latest_signed_report, verify_signed_report_at};
 use burd_hardware::build_hardware_fingerprint_report;
 use burd_protocol::{
     ProviderSessionMode, ProviderSessionStatus, ProviderSessionStatusReport,
-    active_provider_session, load_identity, load_latest_challenge_output, load_provider_session,
-    save_provider_session, session_status_from_session,
+    active_provider_session, heartbeat_summary_from_session, load_identity,
+    load_latest_challenge_output, load_provider_session, save_provider_session,
+    session_status_from_session,
 };
 use chrono::{DateTime, Utc};
 
@@ -135,6 +136,7 @@ pub fn build_provider_session_start(
     Ok(ProviderSessionStatusReport {
         status: ProviderSessionStatus::Active,
         session: Some(session),
+        heartbeat: None,
         online_locally: true,
         warnings: Vec::new(),
     })
@@ -148,6 +150,7 @@ pub fn build_provider_session_status(
         return Ok(ProviderSessionStatusReport {
             status: ProviderSessionStatus::Inactive,
             session: None,
+            heartbeat: None,
             online_locally: false,
             warnings: Vec::new(),
         });
@@ -222,11 +225,13 @@ pub fn build_provider_session_status(
     let online_locally = matches!(status, ProviderSessionStatus::Active);
 
     let session = session_status_from_session(session, status, online_locally);
+    let heartbeat = heartbeat_summary_from_session(Some(&session));
     save_provider_session(&session)?;
 
     Ok(ProviderSessionStatusReport {
         status,
         session: Some(session),
+        heartbeat,
         online_locally,
         warnings,
     })
@@ -237,6 +242,7 @@ pub fn stop_provider_session() -> Result<ProviderSessionStatusReport, String> {
         return Ok(ProviderSessionStatusReport {
             status: ProviderSessionStatus::Inactive,
             session: None,
+            heartbeat: None,
             online_locally: false,
             warnings: Vec::new(),
         });
@@ -245,9 +251,11 @@ pub fn stop_provider_session() -> Result<ProviderSessionStatusReport, String> {
     session.online_locally = false;
     session.is_expired = false;
     save_provider_session(&session)?;
+    let heartbeat = heartbeat_summary_from_session(Some(&session));
     Ok(ProviderSessionStatusReport {
         status: ProviderSessionStatus::Stopped,
         session: Some(session),
+        heartbeat,
         online_locally: false,
         warnings: Vec::new(),
     })
@@ -358,6 +366,7 @@ mod tests {
         let status = ProviderSessionStatusReport {
             status: ProviderSessionStatus::Inactive,
             session: None,
+            heartbeat: None,
             online_locally: false,
             warnings: vec![],
         };
