@@ -12,15 +12,16 @@ use crate::session::{
 use crate::test_fixtures;
 use crate::verification::verify_provider_from_reports_at;
 use crate::{
-    append_signed_report_history, export_history, load_history_list, load_latest_history,
-    load_latest_signed_report, save_latest_signed_report,
+    append_signed_report_history, export_history, heartbeat_once, load_history_list,
+    load_latest_history, load_latest_signed_report, load_uptime_summary, save_latest_signed_report,
 };
 use burd_protocol::{
-    Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, ProviderSessionStatus,
-    RequiredTest, SignedReport, create_api_token, default_config_path, default_state_dir,
-    load_identity, load_latest_challenge_output, load_private_key, load_provider_session,
-    redacted_config_value, save_latest_challenge_output, save_provider_session, sha256_hex,
-    show_api_token_status, sign_message, verify_api_token, verify_challenge_response,
+    Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, ProviderSessionMode,
+    ProviderSessionStatus, RequiredTest, SignedReport, active_provider_session, create_api_token,
+    default_config_path, default_state_dir, load_identity, load_latest_challenge_output,
+    load_private_key, load_provider_session, redacted_config_value, save_latest_challenge_output,
+    save_provider_session, sha256_hex, show_api_token_status, sign_message, verify_api_token,
+    verify_challenge_response,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
@@ -286,6 +287,188 @@ fn provider_session_contract_starts_reads_and_stops_without_secrets() {
         build_provider_session_status(TEST_AGENT_VERSION, "http://127.0.0.1:8787").unwrap();
     assert_eq!(stopped_status.status, ProviderSessionStatus::Stopped);
     assert!(!stopped_status.online_locally);
+}
+
+#[test]
+fn heartbeat_once_contract_records_session_and_updates_local_history() {
+    let _guard = env_lock();
+    let env = TestEnv::new("heartbeat-success");
+    env.assert_active();
+    env.install_identity();
+
+    let signed = current_system_signed_report();
+    let challenge = light_challenge();
+    let (response, verification) = response_for_signed_report(&challenge, signed.clone());
+    save_latest_signed_report(&signed).unwrap();
+    append_signed_report_history(&signed).unwrap();
+    save_latest_challenge_output(&ChallengeRunOutput {
+        challenge: challenge.clone(),
+        signed_report: signed.clone(),
+        response,
+        verification,
+    })
+    .unwrap();
+    let _token = create_api_token().unwrap();
+    let initial_session = seed_fixture_provider_session(&signed, &challenge);
+    let heartbeat = heartbeat_once(TEST_AGENT_VERSION).unwrap();
+    let stored_session = load_provider_session().unwrap().unwrap();
+    let uptime = load_uptime_summary().unwrap();
+    let provider = build_provider_details(TEST_AGENT_VERSION, "http://127.0.0.1:8787");
+    let verification = test_fixtures::provider_verification();
+    let raw = build_raw_data_from_provider(&provider, &verification);
+    let identity = load_identity().unwrap();
+    let payload = build_registration_payload_from(
+        TEST_AGENT_VERSION,
+        &provider,
+        Some(&identity),
+        Some(&signed),
+        &verification,
+        test_fixtures::FIXTURE_TIMESTAMP.to_string(),
+    );
+
+    assert!(heartbeat.recorded);
+    assert_eq!(
+        heartbeat.session_status,
+        Some(ProviderSessionStatus::Active)
+    );
+    assert!(heartbeat.online_locally);
+    assert!(heartbeat.fingerprint_matches_session);
+    assert_eq!(
+        heartbeat.provider_session_id.as_deref(),
+        Some(initial_session.provider_session_id.as_str())
+    );
+    assert_eq!(
+        heartbeat.provider_id.as_deref(),
+        Some(initial_session.provider_id.as_str())
+    );
+    assert_eq!(
+        heartbeat.machine_id.as_deref(),
+        Some(initial_session.machine_id.as_str())
+    );
+    assert_eq!(
+        heartbeat.heartbeat_count,
+        initial_session.heartbeat_count + 1
+    );
+    assert_eq!(stored_session.last_heartbeat_status.as_deref(), Some("ok"));
+    assert_eq!(stored_session.heartbeat_count, 1);
+    assert_eq!(
+        stored_session.last_heartbeat_fingerprint_matches_session,
+        Some(true)
+    );
+    assert_eq!(stored_session.last_heartbeat_at, heartbeat.timestamp);
+    assert!(uptime.checks_total >= 1);
+    assert_eq!(uptime.current_status, "heartbeat_ok");
+    assert!(provider.session.is_some());
+    assert!(provider.heartbeat.is_some());
+    assert!(raw.session.is_some());
+    assert!(raw.heartbeat.is_some());
+    assert!(payload.session.is_some());
+    assert!(payload.heartbeat.is_some());
+
+    let heartbeat_value = serde_json::to_value(&heartbeat).unwrap();
+    let provider_value = serde_json::to_value(&provider).unwrap();
+    let raw_value = serde_json::to_value(&raw).unwrap();
+    let payload_value = serde_json::to_value(&payload).unwrap();
+    assert_no_secret_fields(&heartbeat_value, None);
+    assert_no_secret_fields(&provider_value, None);
+    assert_no_secret_values(&heartbeat_value, None);
+    assert_no_secret_values(&provider_value, None);
+    assert_no_secret_values(&raw_value, None);
+    assert_no_secret_values(&payload_value, None);
+}
+
+#[test]
+fn heartbeat_once_contract_rejects_missing_stopped_expired_and_fingerprint_mismatch() {
+    let _guard = env_lock();
+
+    {
+        let env = TestEnv::new("heartbeat-missing-session");
+        env.assert_active();
+        let err = heartbeat_once(TEST_AGENT_VERSION).unwrap_err();
+        let err_lower = err.to_ascii_lowercase();
+        assert!(err_lower.contains("session"));
+    }
+
+    {
+        let env = TestEnv::new("heartbeat-stopped-session");
+        env.assert_active();
+        env.install_identity();
+        let signed = current_system_signed_report();
+        let challenge = light_challenge();
+        let (response, verification) = response_for_signed_report(&challenge, signed.clone());
+        save_latest_signed_report(&signed).unwrap();
+        append_signed_report_history(&signed).unwrap();
+        save_latest_challenge_output(&ChallengeRunOutput {
+            challenge: challenge.clone(),
+            signed_report: signed.clone(),
+            response,
+            verification,
+        })
+        .unwrap();
+        let _token = create_api_token().unwrap();
+        let mut session = seed_fixture_provider_session(&signed, &challenge);
+        session.status = ProviderSessionStatus::Stopped;
+        session.online_locally = false;
+        save_provider_session(&session).unwrap();
+        stop_provider_session().unwrap();
+        let err = heartbeat_once(TEST_AGENT_VERSION).unwrap_err();
+        let err_lower = err.to_ascii_lowercase();
+        assert!(err_lower.contains("stopped") || err_lower.contains("active local session"));
+    }
+
+    {
+        let env = TestEnv::new("heartbeat-expired-session");
+        env.assert_active();
+        env.install_identity();
+        let signed = current_system_signed_report();
+        let challenge = light_challenge();
+        let (response, verification) = response_for_signed_report(&challenge, signed.clone());
+        save_latest_signed_report(&signed).unwrap();
+        append_signed_report_history(&signed).unwrap();
+        save_latest_challenge_output(&ChallengeRunOutput {
+            challenge: challenge.clone(),
+            signed_report: signed.clone(),
+            response,
+            verification,
+        })
+        .unwrap();
+        let _token = create_api_token().unwrap();
+        let mut session = seed_fixture_provider_session(&signed, &challenge);
+        session.expires_at = "2000-01-01T00:00:00Z".to_string();
+        session.status = ProviderSessionStatus::Active;
+        save_provider_session(&session).unwrap();
+        let err = heartbeat_once(TEST_AGENT_VERSION).unwrap_err();
+        let err_lower = err.to_ascii_lowercase();
+        assert!(err_lower.contains("expired") || err_lower.contains("active local session"));
+    }
+
+    {
+        let env = TestEnv::new("heartbeat-fingerprint-mismatch");
+        env.assert_active();
+        env.install_identity();
+        let signed = current_system_signed_report();
+        let challenge = light_challenge();
+        let (response, verification) = response_for_signed_report(&challenge, signed.clone());
+        save_latest_signed_report(&signed).unwrap();
+        append_signed_report_history(&signed).unwrap();
+        save_latest_challenge_output(&ChallengeRunOutput {
+            challenge: challenge.clone(),
+            signed_report: signed.clone(),
+            response,
+            verification,
+        })
+        .unwrap();
+        let _token = create_api_token().unwrap();
+        let mut session = seed_fixture_provider_session(&signed, &challenge);
+        session.hardware_fingerprint = "sha256:changed".to_string();
+        save_provider_session(&session).unwrap();
+        let err = heartbeat_once(TEST_AGENT_VERSION).unwrap_err();
+        let err_lower = err.to_ascii_lowercase();
+        assert!(err_lower.contains("fingerprint") || err_lower.contains("invalidated"));
+        let invalidated = load_provider_session().unwrap().unwrap();
+        assert_eq!(invalidated.status, ProviderSessionStatus::Invalidated);
+        assert!(!invalidated.online_locally);
+    }
 }
 
 #[test]
@@ -964,6 +1147,47 @@ fn current_system_signed_report() -> SignedReport {
     SESSION_SIGNED_REPORT
         .get_or_init(|| test_fixtures::signed_report(None).unwrap())
         .clone()
+}
+
+fn seed_fixture_provider_session(
+    signed_report: &SignedReport,
+    challenge: &Challenge,
+) -> burd_protocol::ProviderSession {
+    let identity = load_identity().unwrap();
+    let provider = test_fixtures::provider_details();
+    let session_mode = if provider.marketplace_policy.marketplace_eligible {
+        ProviderSessionMode::MarketplaceLocal
+    } else {
+        ProviderSessionMode::LocalDiagnostic
+    };
+    let session = active_provider_session(
+        identity.provider_id.clone(),
+        identity.machine_id.clone(),
+        provider.hardware_fingerprint.clone(),
+        serde_json::json!({
+            "status": "ready_locally",
+            "readiness_score": 100,
+            "readiness_level": "Ready Locally",
+        }),
+        signed_report.report_hash.clone(),
+        challenge.challenge_id.clone(),
+        "2099-01-01T00:00:00Z".to_string(),
+        serde_json::to_value(&provider.marketplace_policy).unwrap(),
+        serde_json::json!({
+            "signed_report": {
+                "is_expired": false,
+                "report_hash": signed_report.report_hash.clone(),
+            },
+            "challenge": {
+                "challenge_id": challenge.challenge_id.clone(),
+                "is_expired": false,
+            },
+        }),
+        session_mode,
+        Vec::new(),
+    );
+    save_provider_session(&session).unwrap();
+    session
 }
 
 fn response_for_signed_report(

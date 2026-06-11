@@ -41,8 +41,8 @@ policy decision.
 11. Provider Console trust UI.
 12. Documentation consolidation.
 
-PR 1, PR 2, and PR 3 are implemented locally. The remaining PRs are future
-work and should stay small, deterministic, and independent from a real backend.
+PR 1 through PR 4 are implemented locally. The remaining PRs are future work
+and should stay small, deterministic, and independent from a real backend.
 
 ## PR 3 Summary
 
@@ -64,6 +64,24 @@ or heartbeat loop.
 
 See `docs/provider-session.md` for the full contract.
 
+## PR 4 Summary
+
+Heartbeat once adds a local liveness snapshot that is only valid when a local
+session is active. It does not create a daemon, a heartbeat loop, a backend
+availability signal, or marketplace admission.
+
+- `heartbeat --once --json` reads the current session, validates that it is
+  still active, updates `last_heartbeat_at`, increments the local heartbeat
+  count, and appends a local uptime/history entry.
+- The heartbeat payload includes local hardware and utilization snapshots when
+  they are safely available, but unavailable utilization fields remain null.
+- A fingerprint change invalidates the session and prevents the heartbeat from
+  being counted as online locally.
+- Provider details, raw data, registration payloads, and readiness can surface
+  the latest heartbeat summary when one exists.
+
+See `docs/heartbeat.md` for the full contract.
+
 ## Future Boundaries
 
 The future backend may receive signed reports, fingerprint evidence, sessions,
@@ -76,5 +94,5 @@ Initial orchestration priority:
 2. One job to multiple GPUs on the same machine.
 3. Only much later, one job across multiple providers.
 
-Distributed clusters, real leases, jobs, marketplace listing, Pix, billing, and
-payouts are explicitly outside the local MVP.
+Distributed clusters, real leases, jobs, marketplace listing, Pix, billing,
+payouts, and heartbeat loops are explicitly outside the local MVP.

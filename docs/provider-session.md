@@ -1,6 +1,6 @@
 # Provider Session
 
-Provider Session is the local, expirável state that means:
+Provider Session is the local, expirational state that means:
 
 > This provider is trying to be available on the network now.
 
@@ -37,6 +37,14 @@ The local session snapshot stores:
 - `is_expired`
 - `warnings`
 
+When a heartbeat snapshot exists, the session can also carry:
+
+- `heartbeat_count`
+- `last_heartbeat_status`
+- `last_heartbeat_error`
+- `last_heartbeat_fingerprint_matches_session`
+- `last_heartbeat_warnings`
+
 The status set is:
 
 - `inactive`
@@ -57,6 +65,11 @@ The status set is:
 - `session status` re-evaluates expiry and invalidation against the latest
   evidence.
 - `session stop` marks the session as stopped and offline locally.
+- `heartbeat --once --json` updates `last_heartbeat_at`, appends local uptime
+  history, and records a one-shot local liveness snapshot when the session is
+  active.
+- A fingerprint mismatch invalidates the local session and prevents the
+  heartbeat from being treated as online.
 
 ## Persistence
 
@@ -69,5 +82,8 @@ Tests use temporary state directories and never touch the real home folder.
 - The session snapshot is redacted and contains no secret key material.
 - `readiness`, `provider`, `raw`, and `registration` payloads can include a
   session summary when one exists.
-- This is a local contract only. Backend sessions, session leases, heartbeats,
-  and marketplace admission remain future work.
+- `provider`, `raw`, `registration`, and readiness may also surface the most
+  recent heartbeat summary when one exists, but that remains a local-only
+  snapshot.
+- This is a local contract only. Backend sessions, session leases, heartbeat
+  loops, and marketplace admission remain future work.

@@ -77,8 +77,9 @@ machine may be ready for local diagnostics while the
 `nvidia_cuda_only_mvp` policy keeps it out of the future paid marketplace.
 
 When a local provider session exists, readiness reports it and treats active,
-expired, stopped, and invalidated state as informational. It does not turn
-readiness into trust scoring or backend admission.
+expired, stopped, and invalidated state as informational. If a heartbeat has
+been recorded, readiness can surface the latest heartbeat summary as context,
+but it still does not turn readiness into trust scoring or backend admission.
 
 The `evidence` summary distinguishes `missing`, `invalid`, `expired`, and
 `valid`. Signed reports expire after 7 days; local challenge evidence expires

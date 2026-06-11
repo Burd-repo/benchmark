@@ -153,6 +153,25 @@ trusting persisted flags.
 
 See `docs/evidence-expiration.md`.
 
+## Heartbeat Once
+
+Run:
+
+```sh
+burd-agent heartbeat --once --json
+```
+
+The command performs a single local liveness check against the current
+provider session. It updates `last_heartbeat_at`, increments the local
+heartbeat count, and appends an uptime record when the session is active.
+
+This is not a daemon, not a backend availability signal, and not marketplace
+admission. If the hardware fingerprint changes after the session started, the
+session is invalidated and the heartbeat is not counted as online.
+
+Utilization fields such as GPU load and VRAM usage remain null when they are
+not safely available on the current host. See `docs/heartbeat.md`.
+
 ## Score
 
 The Burd Compute Score is a 0-100 score with these MVP weights:

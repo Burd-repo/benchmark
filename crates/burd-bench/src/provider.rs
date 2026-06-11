@@ -13,7 +13,8 @@ use burd_hardware::{
 };
 use burd_llmfit::build_fit_report;
 use burd_protocol::{
-    ProviderSession, load_identity, load_latest_challenge_output, load_provider_session,
+    ProviderHeartbeatSummary, ProviderSession, heartbeat_summary_from_session, load_identity,
+    load_latest_challenge_output, load_provider_session,
 };
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +35,8 @@ pub struct BurdProviderDetails {
     pub marketplace_policy: MarketplaceGpuPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<ProviderSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat: Option<ProviderHeartbeatSummary>,
     pub hardware: ProviderHardware,
     pub gpu_models: Vec<GpuModelDetail>,
     pub uptime_1d: f64,
@@ -136,6 +139,7 @@ pub fn build_provider_details(agent_version: &str, host_uri: &str) -> BurdProvid
         load_latest_challenge_output(),
     );
     let session = load_provider_session().ok().flatten();
+    let heartbeat = heartbeat_summary_from_session(session.as_ref());
     let raw_report = serde_json::to_value(generate_full_report_from_snapshot(
         ReportRunOptions::new(agent_version.to_string()),
         &system,
@@ -174,6 +178,7 @@ pub fn build_provider_details(agent_version: &str, host_uri: &str) -> BurdProvid
         hardware_fingerprint: fingerprint.hardware_fingerprint,
         marketplace_policy: fingerprint.marketplace_policy,
         session,
+        heartbeat,
         hardware: hardware_from_system(&system, health.disk_free_gb),
         gpu_models: gpu_models_from_system(&system),
         uptime_1d: health.uptime.uptime_1d,

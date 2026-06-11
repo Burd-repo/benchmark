@@ -2,7 +2,8 @@ use crate::provider::build_provider_details;
 use crate::report::load_latest_signed_report;
 use burd_hardware::{BENCHMARK_VERSION, MarketplaceGpuPolicy};
 use burd_protocol::{
-    AgentConfig, ProviderSession, SignedReport, load_identity, load_provider_session,
+    AgentConfig, ProviderHeartbeatSummary, ProviderSession, SignedReport,
+    heartbeat_summary_from_session, load_identity, load_provider_session,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,8 @@ pub struct ProviderRegistrationPayload {
     pub evidence: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<ProviderSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat: Option<ProviderHeartbeatSummary>,
     pub created_at: String,
     pub secrets_included: bool,
 }
@@ -73,6 +76,7 @@ pub(crate) fn build_registration_payload_from(
         .and_then(|value| value.as_str())
         .map(ToOwned::to_owned)
         .or(Some(provider.tier.clone()));
+    let heartbeat = heartbeat_summary_from_session(provider.session.as_ref());
     let mut capabilities = serde_json::json!({
         "gpu_count": provider.hardware.gpu_count,
         "vram_gb": provider.hardware.vram_gb,
@@ -133,6 +137,7 @@ pub(crate) fn build_registration_payload_from(
             "challenge": verification.challenge_evidence.clone(),
         }),
         session: load_provider_session().ok().flatten(),
+        heartbeat,
         created_at,
         secrets_included: false,
     }
@@ -193,6 +198,7 @@ mod tests {
             verification: serde_json::json!({}),
             evidence: serde_json::json!({}),
             session: None,
+            heartbeat: None,
             created_at: "2026-06-08T00:00:00Z".to_string(),
             secrets_included: false,
         };

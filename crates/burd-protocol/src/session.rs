@@ -16,11 +16,40 @@ pub enum ProviderSessionStatus {
     Failed,
 }
 
+impl ProviderSessionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inactive => "inactive",
+            Self::Active => "active",
+            Self::Expired => "expired",
+            Self::Invalidated => "invalidated",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderSessionMode {
     MarketplaceLocal,
     LocalDiagnostic,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProviderHeartbeatSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_error: Option<String>,
+    pub heartbeat_count: u64,
+    pub online_locally: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint_matches_session: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +70,15 @@ pub struct ProviderSession {
     pub session_mode: ProviderSessionMode,
     pub online_locally: bool,
     pub is_expired: bool,
+    pub heartbeat_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_fingerprint_matches_session: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub last_heartbeat_warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
@@ -50,6 +88,8 @@ pub struct ProviderSessionStatusReport {
     pub status: ProviderSessionStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<ProviderSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heartbeat: Option<ProviderHeartbeatSummary>,
     pub online_locally: bool,
     pub warnings: Vec<String>,
 }
@@ -98,6 +138,27 @@ pub fn session_status_from_session(
     session
 }
 
+pub fn heartbeat_summary_from_session(
+    session: Option<&ProviderSession>,
+) -> Option<ProviderHeartbeatSummary> {
+    let session = session?;
+    if session.heartbeat_count == 0
+        && session.last_heartbeat_status.is_none()
+        && session.last_heartbeat_error.is_none()
+    {
+        return None;
+    }
+    Some(ProviderHeartbeatSummary {
+        last_heartbeat_at: Some(session.last_heartbeat_at.clone()),
+        last_heartbeat_status: session.last_heartbeat_status.clone(),
+        last_heartbeat_error: session.last_heartbeat_error.clone(),
+        heartbeat_count: session.heartbeat_count,
+        online_locally: session.online_locally,
+        fingerprint_matches_session: session.last_heartbeat_fingerprint_matches_session,
+        warnings: session.last_heartbeat_warnings.clone(),
+    })
+}
+
 pub fn active_provider_session(
     provider_id: String,
     machine_id: String,
@@ -129,6 +190,11 @@ pub fn active_provider_session(
         session_mode,
         online_locally: true,
         is_expired: false,
+        heartbeat_count: 0,
+        last_heartbeat_status: None,
+        last_heartbeat_error: None,
+        last_heartbeat_fingerprint_matches_session: None,
+        last_heartbeat_warnings: Vec::new(),
         warnings,
     }
 }
