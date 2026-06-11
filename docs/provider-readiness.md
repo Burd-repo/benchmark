@@ -25,6 +25,7 @@ The result contains:
 - `readiness_score`: weighted local score from `0` to `100`;
 - `readiness_level`: `Not Ready`, `Partial`, or `Ready Locally`;
 - `evidence`: signed-report and challenge status plus freshness details;
+- `session`: optional local provider session snapshot when one exists;
 - `checks`: individual weighted local checks;
 - `warnings`: current gaps or failures;
 - `recommendations`: actionable local next steps.
@@ -53,6 +54,7 @@ message. Check status is `passed`, `warning`, or `failed`.
 | History | 10 | At least one benchmark history entry is persisted. |
 | API token | 10 | Local API authentication is enabled with a configured token. |
 | Raw redaction | 10 | Raw data declares and applies the required secret redaction contract. |
+| Session | 0 | Optional local provider session state is active, stopped, expired, or invalidated. |
 
 `ready_locally` requires all seven checks to pass and therefore has a score of
 `100`. Warnings do not receive partial weight.
@@ -73,6 +75,10 @@ fresh signed/challenge evidence after the hardware change is reviewed.
 Marketplace GPU eligibility remains separate from readiness. An AMD/Vulkan
 machine may be ready for local diagnostics while the
 `nvidia_cuda_only_mvp` policy keeps it out of the future paid marketplace.
+
+When a local provider session exists, readiness reports it and treats active,
+expired, stopped, and invalidated state as informational. It does not turn
+readiness into trust scoring or backend admission.
 
 The `evidence` summary distinguishes `missing`, `invalid`, `expired`, and
 `valid`. Signed reports expire after 7 days; local challenge evidence expires

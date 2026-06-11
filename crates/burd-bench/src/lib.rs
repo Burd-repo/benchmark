@@ -13,6 +13,7 @@ pub mod readiness;
 pub mod registration;
 pub mod report;
 pub mod score;
+pub mod session;
 pub mod stability;
 pub mod verification;
 
@@ -25,6 +26,7 @@ pub use actions::{
     ActionStatus, Task, TaskLogs, load_actions, load_logs, load_logs_for_task, logs_summary,
     record_action,
 };
+pub use burd_protocol::ProviderSessionStatusReport;
 pub use disk::{DiskBenchmarkOptions, DiskBenchmarkReport, run_disk_benchmark};
 pub use earnings::{EarningsReport, estimate_earnings};
 pub use health::{
@@ -56,5 +58,9 @@ pub use report::{
     load_signed_report_file, save_latest_report, save_latest_signed_report, verify_signed_report,
 };
 pub use score::{ScoreReport, calculate_score, tier_for_score};
+pub use session::{
+    ProviderSessionExport, ProviderSessionStartOptions, build_provider_session_start,
+    build_provider_session_status, export_provider_session_status, stop_provider_session,
+};
 pub use stability::{StabilityBenchmarkReport, run_stability_benchmark};
 pub use verification::{ProviderVerification, verify_provider};

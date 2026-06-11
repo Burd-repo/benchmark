@@ -4,7 +4,8 @@ use crate::history::history_summary;
 use crate::provider::build_provider_details;
 use crate::report::{load_latest_signed_report, verify_signed_report};
 use burd_protocol::{
-    FULL_REPORT_TTL_SECONDS, default_state_dir, evidence_freshness, redacted_config_value,
+    FULL_REPORT_TTL_SECONDS, ProviderSession, default_state_dir, evidence_freshness,
+    load_provider_session, redacted_config_value,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -16,6 +17,8 @@ pub struct RawData {
     pub latest_report: Option<serde_json::Value>,
     pub latest_signed_report_summary: Option<serde_json::Value>,
     pub provider_details: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<ProviderSession>,
     pub identity_redacted: Option<serde_json::Value>,
     pub config_redacted: Option<serde_json::Value>,
     pub history_summary: serde_json::Value,
@@ -51,6 +54,7 @@ pub(crate) fn build_raw_data_from_provider(
         latest_signed_report_summary: signed_report_summary(),
         provider_details: serde_json::to_value(&provider)
             .unwrap_or_else(|_| serde_json::json!({"error": "provider serialization failed"})),
+        session: load_provider_session().ok().flatten(),
         identity_redacted: config_redacted.clone(),
         config_redacted,
         history_summary: history_summary(),
@@ -121,6 +125,7 @@ mod tests {
             latest_report: None,
             latest_signed_report_summary: None,
             provider_details: serde_json::json!({}),
+            session: None,
             identity_redacted: Some(serde_json::json!({"private_key_path": "[redacted]"})),
             config_redacted: Some(serde_json::json!({"private_key_path": "[redacted]"})),
             history_summary: serde_json::json!({}),

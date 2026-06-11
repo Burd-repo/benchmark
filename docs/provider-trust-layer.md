@@ -41,8 +41,28 @@ policy decision.
 11. Provider Console trust UI.
 12. Documentation consolidation.
 
-PR 1 and PR 2 are implemented locally. The remaining PRs are future work and
-should stay small, deterministic, and independent from a real backend.
+PR 1, PR 2, and PR 3 are implemented locally. The remaining PRs are future
+work and should stay small, deterministic, and independent from a real backend.
+
+## PR 3 Summary
+
+Provider Session adds a local, expirational snapshot that records the moment a
+provider tries to become available. It does not create a real backend session
+or heartbeat loop.
+
+- `session start` persists the current fingerprint, readiness snapshot,
+  signed-report hash, challenge id, evidence summary, and marketplace policy
+  snapshot.
+- Supported NVIDIA/CUDA hardware starts a marketplace-local session mode.
+- Unsupported hardware can still start a local diagnostic session mode, but it
+  is not promoted to marketplace eligibility.
+- `session status` re-evaluates expiry and invalidation against the latest
+  evidence.
+- `session stop` marks the local session stopped and offline.
+- Registration, provider details, raw data, and readiness can surface a session
+  summary when one exists.
+
+See `docs/provider-session.md` for the full contract.
 
 ## Future Boundaries
 

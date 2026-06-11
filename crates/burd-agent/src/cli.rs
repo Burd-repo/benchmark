@@ -71,6 +71,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: ChallengeCommands,
     },
+    /// Manage local provider session state.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommands,
+    },
     /// Show local provider health.
     Health {
         #[arg(long)]
@@ -264,6 +269,25 @@ pub enum ChallengeCommands {
     Verify {
         #[arg(long)]
         file: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionCommands {
+    /// Start a local provider session snapshot.
+    Start {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the current local provider session snapshot.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop the current local provider session snapshot.
+    Stop {
         #[arg(long)]
         json: bool,
     },

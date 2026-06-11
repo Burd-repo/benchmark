@@ -5,9 +5,10 @@ use crate::report::{load_latest_signed_report, verify_signed_report_at};
 use crate::verification::ProviderVerification;
 use burd_protocol::{
     AgentConfig, AgentStatePaths, ApiTokenStatus, ChallengeRunOutput, EvidenceFreshness,
-    PrivateKeyFile, SIGNED_REPORT_TTL_SECONDS, SignedReport, agent_state_paths,
-    evidence_freshness_at, load_identity, load_latest_challenge_output, load_private_key,
-    show_api_token_status, verify_challenge_response,
+    PrivateKeyFile, ProviderSession, ProviderSessionStatus, SIGNED_REPORT_TTL_SECONDS,
+    SignedReport, agent_state_paths, evidence_freshness_at, load_identity,
+    load_latest_challenge_output, load_private_key, load_provider_session, show_api_token_status,
+    verify_challenge_response,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -90,13 +91,15 @@ pub struct ReadinessCheck {
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderReadiness {
     pub state: AgentStatePaths,
     pub status: ProviderReadinessStatus,
     pub readiness_score: u8,
     pub readiness_level: String,
     pub evidence: ReadinessEvidenceSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<ProviderSession>,
     pub checks: Vec<ReadinessCheck>,
     pub warnings: Vec<String>,
     pub recommendations: Vec<String>,
@@ -158,6 +161,7 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
     let mut recommendations = Vec::new();
     let mut checks = Vec::new();
     let state = agent_state_paths();
+    let session = load_provider_session().ok().flatten();
     let signed_report_freshness = inputs.signed_report.as_ref().ok().and_then(|report| {
         evidence_freshness_at(&report.signed_at, SIGNED_REPORT_TTL_SECONDS, inputs.now).ok()
     });
@@ -399,6 +403,58 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
         }
     };
 
+    if let Some(session_info) = &session {
+        match session_info.status {
+            ProviderSessionStatus::Active
+                if session_info.online_locally && !session_info.is_expired =>
+            {
+                checks.push(passed(
+                    "session",
+                    "Session",
+                    0,
+                    "A local provider session is active.",
+                ));
+            }
+            ProviderSessionStatus::Expired => {
+                checks.push(warning(
+                    "session",
+                    "Session",
+                    0,
+                    "A local provider session has expired.",
+                ));
+                warnings.push("Local provider session has expired.".to_string());
+            }
+            ProviderSessionStatus::Invalidated => {
+                checks.push(warning(
+                    "session",
+                    "Session",
+                    0,
+                    "A local provider session is invalidated.",
+                ));
+                warnings.push("Local provider session is invalidated.".to_string());
+            }
+            ProviderSessionStatus::Stopped => {
+                checks.push(warning(
+                    "session",
+                    "Session",
+                    0,
+                    "A local provider session has been stopped.",
+                ));
+            }
+            ProviderSessionStatus::Failed => {
+                checks.push(warning(
+                    "session",
+                    "Session",
+                    0,
+                    "A local provider session failed to start.",
+                ));
+                warnings.push("Local provider session failed.".to_string());
+            }
+            ProviderSessionStatus::Inactive => {}
+            ProviderSessionStatus::Active => {}
+        }
+    }
+
     match &inputs.history {
         Ok(history) if history.entries_total > 0 => checks.push(passed(
             "history",
@@ -524,6 +580,7 @@ pub(crate) fn evaluate_provider_readiness(inputs: ProviderReadinessInputs) -> Pr
             challenge_freshness: challenge_verification
                 .and_then(|verification| verification.evidence),
         },
+        session,
         checks,
         warnings,
         recommendations,
