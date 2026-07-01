@@ -1,485 +1,670 @@
-# Burd Benchmark
+<div align="left">
 
-Burd Benchmark is the local validation product for the Burd GPU marketplace. It
-installs as `burd-agent`, detects provider hardware, estimates which AI workloads
-fit, runs real local inference benchmarks when runtimes are available, calculates
-a Burd Compute Score, generates signed reports, tracks local uptime/actions/logs,
-and serves a Provider Console base for future marketplace validation.
+<a href="https://burd.ia">
+  <img src="./public/burd-logo.svg" alt="Logo da Burd" title="Burd Benchmark" height="48" />
+</a>
 
-This is not the Burd institutional landing page.
+<br />
 
-## Relationship with llmfit
+<p>
+  Produto local de validação da Burd para detectar hardware, executar benchmarks, calcular score, gerar relatórios assinados e preparar evidências locais para providers de compute.
+</p>
 
-This repository uses `llmfit` as the technical foundation instead of rewriting
-hardware and model-fit logic from scratch. The current strategy is an adapter
-integration: Burd crates depend on `third_party/llmfit/llmfit-core` and layer
-Burd-specific reporting, scoring, protocol, and API behavior on top.
+[![status](https://img.shields.io/badge/status-active-2C5E8A)](https://github.com/Burd-repo/benchmark)
+[![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+[![agent](https://img.shields.io/badge/agent-burd--agent-blue)](https://github.com/Burd-repo/benchmark)
+[![validation](https://img.shields.io/badge/provider-validation-lightgrey)](https://github.com/Burd-repo/benchmark)
 
-Credits and license details are documented in `NOTICE.md` and
-`docs/llmfit-adaptation.md`.
+</div>
 
-## Build
+---
 
-```sh
+## Sumário
+
+* [Visão geral](#visão-geral)
+* [Início rápido](#início-rápido)
+* [Build](#build)
+* [Comandos principais](#comandos-principais)
+* [API local](#api-local)
+* [Identidade do Provider](#identidade-do-provider)
+* [Relatórios assinados](#relatórios-assinados)
+* [Challenge local](#challenge-local)
+* [Readiness](#readiness)
+* [Score](#score)
+* [Histórico](#histórico)
+* [Payload de registro](#payload-de-registro)
+* [Regras de segurança](#regras-de-segurança)
+* [Diretrizes para Pull Request](#diretrizes-para-pull-request)
+* [Checklist de Pull Request](#checklist-de-pull-request)
+* [Convenção de commits](#convenção-de-commits)
+* [Não commitar](#não-commitar)
+* [Notas para mantenedores](#notas-para-mantenedores)
+* [Licença](#licença)
+
+---
+
+## Visão geral
+
+O **Burd Benchmark** gera o binário `burd-agent`, responsável pela validação local de máquinas que desejam atuar como providers.
+
+O agent é responsável por:
+
+* detectar hardware local;
+* identificar GPU, VRAM, CPU, RAM, disco e drivers;
+* estimar compatibilidade com workloads de IA;
+* executar benchmarks locais;
+* calcular o Burd Compute Score;
+* gerar relatórios assinados;
+* verificar relatórios;
+* criar e validar challenges locais;
+* registrar histórico local;
+* calcular readiness;
+* expor uma API local para integração com interfaces.
+
+Este repositório não é uma landing page institucional.
+O foco aqui é validação local, contratos de dados, score, evidências e API do provider.
+
+---
+
+## Início rápido
+
+```bash
+git clone https://github.com/Burd-repo/benchmark.git
+cd benchmark
 cargo build
 ```
 
-On Windows PowerShell, use the debug binary directly until the agent is
-installed on `PATH`:
+No Windows PowerShell:
 
 ```powershell
 .\target\debug\burd-agent.exe --help
 ```
 
-For a complete safe local command checklist, see
-`docs/local-test-checklist.md`.
-
-Quick local validation:
+Validação local rápida:
 
 ```powershell
 .\scripts\test-local.ps1
 ```
 
-The script runs `cargo fmt`, `cargo test`, `cargo build`, and fast read-only
-agent commands. It does not start `serve`, does not start heartbeat loops, and
-does not run heavy benchmarks.
+Esse script executa verificações seguras e rápidas. Ele não inicia o servidor local, não roda loops de heartbeat e não executa benchmarks pesados.
 
-## Commands
+---
 
-```sh
+## Build
+
+### Build padrão
+
+```bash
+cargo build
+```
+
+### Build release
+
+```bash
+cargo build --release
+```
+
+### Testes
+
+```bash
+cargo test --workspace
+```
+
+### Formatação
+
+```bash
+cargo fmt --all --check
+```
+
+### Checklist local recomendado
+
+```powershell
+cargo fmt --all --check
+cargo test --workspace
+cargo build --release
+.\scripts\test-local.ps1
+```
+
+---
+
+## Comandos principais
+
+### Sistema
+
+```bash
 burd-agent system --json
 burd-agent fingerprint --json
+burd-agent raw --json
+```
+
+### Fit e benchmark
+
+```bash
 burd-agent fit --json
 burd-agent bench llm --provider ollama --model llama3.2:1b --runs 3 --json
-burd-agent bench llm --provider vllm --url http://localhost:8000 --model Qwen/Qwen2.5-7B-Instruct --runs 3 --json
 burd-agent bench stability --minutes 10 --json
 burd-agent bench network --json
 burd-agent bench disk --json
+```
+
+### Score
+
+```bash
 burd-agent score --json
+```
+
+### Relatórios
+
+```bash
 burd-agent report --json
 burd-agent report --run-all --json
 burd-agent report --run-all --signed --json
 burd-agent verify-report --file docs/examples/signed-report.json --json
+```
+
+### Identidade
+
+```bash
 burd-agent identity init
-burd-agent identity migrate --confirm
-burd-agent identity migrate --from C:\path\to\existing-state --confirm
 burd-agent identity show --json
 burd-agent identity rotate-key --confirm
+burd-agent identity migrate --confirm
+```
+
+### Token local da API
+
+```bash
 burd-agent api-token create --json
 burd-agent api-token rotate --json
 burd-agent api-token show --json
+```
+
+### Challenge
+
+```bash
 burd-agent challenge create-mock --json
 burd-agent challenge run-local --json
 burd-agent challenge run --file docs/examples/challenge.json --json
 burd-agent challenge verify --file signed-response.json --json
+```
+
+### Sessão local
+
+```bash
 burd-agent session start --json
 burd-agent session status --json
 burd-agent session stop --json
-burd-agent health --json
-burd-agent heartbeat --once --json
-burd-agent uptime --json
-burd-agent uptime clear --confirm
+```
+
+### Provider
+
+```bash
 burd-agent provider --json
 burd-agent verify-provider --json
-burd-agent readiness
 burd-agent readiness --json
-burd-agent pricing --json
-burd-agent earnings --json
-burd-agent actions --json
-burd-agent logs --json
-burd-agent logs --tail 50 --json
+burd-agent registration-payload --json
+```
+
+### Histórico e logs
+
+```bash
 burd-agent history --json
 burd-agent history latest --json
 burd-agent history export --output history.json
-burd-agent history clear --confirm
-burd-agent registration-payload --json
-burd-agent registration-payload --output registration.json
-burd-agent raw --json
+burd-agent logs --json
+burd-agent logs --tail 50 --json
+burd-agent actions --json
+```
+
+### API local
+
+```bash
 burd-agent serve --host 127.0.0.1 --port 8787
 ```
 
-All commands with `--json` write valid JSON to stdout without mixed logs.
+Todos os comandos com `--json` devem escrever JSON válido em `stdout`, sem misturar logs no mesmo output.
 
-## VRAM Detection And Confidence
+---
 
-Hardware reports expose optional `vram_source` and `vram_confidence` fields for
-the primary GPU and each GPU entry.
+## API local
 
-- `detected`: VRAM came from a system, driver, or device API such as
-  `nvidia-smi`, ROCm/sysfs, Windows WMI when reliable, or Vulkan device-local
-  memory heaps.
-- `estimated`: no reliable real measurement was available and llmfit used a
-  known-GPU table or unified-memory heuristic.
-- `provided`: the value came from an explicit user override.
-
-Real measurements always take precedence over estimates. Integrated, unknown,
-or ambiguous GPUs are not promoted to `detected` from a name-based estimate.
-Estimated VRAM remains acceptable for MVP/local validation, but future
-marketplace eligibility and pricing policy should require or prioritize
-`detected` high-confidence VRAM.
-
-## Hardware Fingerprint And Marketplace Policy
-
-Run:
-
-```sh
-burd-agent fingerprint --json
-```
-
-The command builds a stable SHA-256 fingerprint from relevant hardware,
-backend, VRAM confidence, and driver signals. New signed reports, provider
-details, challenge responses, and registration payloads carry the fingerprint.
-Provider verification and readiness surface a mismatch with prior signed
-evidence.
-
-The local marketplace policy is `nvidia_cuda_only_mvp`: paid marketplace
-eligibility requires a supported NVIDIA RTX 30xx+ or compatible datacenter GPU,
-CUDA, and detected VRAM with reliable source/confidence. AMD, ROCm, Vulkan-only,
-Apple Silicon, Intel, and CPU-only systems remain available for local
-diagnostics where supported, but are not eligible for the paid marketplace MVP.
-
-See `docs/hardware-fingerprint.md` and `docs/marketplace-gpu-policy.md`.
-
-## Evidence Expiration
-
-Full and signed reports expire after 7 days. Local challenges and challenge
-responses expire after 24 hours. Readiness distinguishes evidence that is
-`missing`, `invalid`, `expired`, or `valid`; expired evidence receives no
-readiness points but is not confused with an invalid signature.
-
-Freshness JSON exposes `issued_at`, `expires_at`, `is_expired`, `age_seconds`,
-and `ttl_seconds`. Verification recalculates time-sensitive values rather than
-trusting persisted flags.
-
-See `docs/evidence-expiration.md`.
-
-## Heartbeat Once
-
-Run:
-
-```sh
-burd-agent heartbeat --once --json
-```
-
-The command performs a single local liveness check against the current
-provider session. It updates `last_heartbeat_at`, increments the local
-heartbeat count, and appends an uptime record when the session is active.
-
-This is not a daemon, not a backend availability signal, and not marketplace
-admission. If the hardware fingerprint changes after the session started, the
-session is invalidated and the heartbeat is not counted as online.
-
-Utilization fields such as GPU load and VRAM usage remain null when they are
-not safely available on the current host. See `docs/heartbeat.md`.
-
-## Score
-
-The Burd Compute Score is a 0-100 score with these MVP weights:
-
-- 40% real LLM benchmark when available, or llmfit estimated throughput fallback;
-- 20% VRAM and capacity;
-- 15% stability;
-- 10% network;
-- 10% disk;
-- 5% verification signals.
-
-Tiers:
-
-- `0-39`: Not Eligible
-- `40-59`: Burd Basic
-- `60-74`: Burd Plus
-- `75-89`: Burd Pro
-- `90-96`: Burd Max
-- `97-100`: Burd Enterprise
-
-Prices are demonstrative and marked with `prices_are_demonstrative: true` in
-JSON reports.
-
-## Provider Identity
-
-Run:
-
-```sh
-burd-agent identity init
-burd-agent identity show --json
-```
-
-The agent writes public config to `~/.burd/agent.json` and stores the Ed25519
-private key separately at `~/.burd/agent.key`. Reports and raw data never expose
-the private key.
-
-For automation, set `BURD_AGENT_HOME` or `BURD_AGENT_CONFIG` to an alternate
-workspace path. `BURD_AGENT_CONFIG` takes precedence and its parent directory
-becomes the canonical state directory, preventing identity, reports, history,
-and challenge evidence from being split across different locations.
-
-Use `identity migrate --confirm` to back up and normalize the current state, or
-`identity migrate --from <state-directory> --confirm` to import an existing
-valid state into the canonical directory. Migration validates the signing key,
-rewrites `agent.json` without legacy secret fields, and copies persisted
-evidence.
-
-## Signed Reports
-
-Run:
-
-```sh
-burd-agent report --run-all --signed --json
-```
-
-The signed output includes:
-
-- canonical report hash;
-- Ed25519 signature;
-- public key;
-- key algorithm;
-- signing timestamp;
-- local signature verification result.
-- canonicalization version.
-
-`report --run-all` and `report --run-all --signed` append local benchmark
-history to `~/.burd/benchmark-history.json`.
-
-The default Rust test suite includes fast contract tests for signed reports,
-local challenge responses, registration payloads, benchmark history, API token
-status, raw/config redaction, and provider readiness. They use deterministic
-internal fixtures for `SystemReport`, `FitReport`, `ScoreReport`,
-`SignedReport`, and provider details. Persistent state is isolated with
-temporary `BURD_AGENT_HOME`/`BURD_AGENT_CONFIG` values, so tests never use the
-real `~/.burd` directory.
-
-One slower integration test exercises real local hardware detection. It is
-ignored by the default `cargo test` run and can be executed intentionally:
-
-```powershell
-cargo test -p burd-bench real_hardware_detection_integration_is_available -- --ignored
-```
-
-CI runs `cargo test --workspace` and enforces a 15-second budget for the
-precompiled fast `burd-bench` library test suite. Run the same performance guard
-locally:
-
-```powershell
-.\scripts\check-contract-test-time.ps1
-```
-
-Sanitized JSON snapshots protect the provider, raw-data, and registration
-payload contracts. See `docs/json-contract-snapshots.md` before intentionally
-updating them.
-
-The `.github/workflows/real-hardware-integration.yml` workflow runs only through
-manual dispatch on a self-hosted runner labeled `burd-hardware`.
-Runner isolation, registration, and removal are documented in
-`docs/real-hardware-runner.md`. No real-hardware runner is configured or started
-by the repository; an operator must provision a dedicated runner before this
-workflow can execute.
-
-## Local API Token
-
-Run:
-
-```sh
-burd-agent api-token create --json
-```
-
-The token is printed once. The config stores only a token hash. Use
-`api-token rotate --json` to rotate it and `api-token show --json` to check
-status without printing the token.
-
-When local API auth is enabled, protected endpoints expect:
-
-```txt
-Authorization: Bearer <token>
-```
-
-## Challenge Response
-
-Run:
-
-```sh
-burd-agent challenge run-local --json
-burd-agent challenge create-mock --json
-burd-agent challenge run --file docs/examples/challenge.json --json
-```
-
-`challenge run-local` is the recommended local validation command because it
-creates, runs, signs, verifies, and persists challenge evidence without an
-intermediate file. The MVP challenge flow is local and mock-backed.
-
-Local verification now checks expiry, nonce, required tests, minimum agent and
-benchmark versions, signed report hash, signed report signature, and challenge
-response signature.
-
-## Provider Session
-
-Run:
-
-```sh
-burd-agent session start --json
-burd-agent session status --json
-burd-agent session stop --json
-```
-
-`session start` persists a local provider-session snapshot with the current
-hardware fingerprint, signed-report hash, challenge id, readiness snapshot,
-marketplace policy snapshot, and evidence summary. Supported NVIDIA/CUDA
-hardware starts a marketplace-local session; unsupported hardware can still
-start a local diagnostic session when local readiness is valid, but it is not
-promoted to the paid marketplace.
-
-`session status` re-evaluates whether the current local session is active,
-expired, invalidated, or stopped. `session stop` marks the local session as
-stopped without starting any long-running background work.
-
-## Benchmark History
-
-Run:
-
-```sh
-burd-agent history --json
-burd-agent history latest --json
-burd-agent history export --output history.json
-```
-
-History stores benchmark summaries only. It must not include private keys, API
-tokens, or raw credentials.
-
-## Provider Registration Payload
-
-Run:
-
-```sh
-burd-agent registration-payload --json
-burd-agent registration-payload --output registration.json
-```
-
-This builds the future backend registration payload locally. It includes public
-identity, latest signed report hash, score, tier, capabilities, pricing, and
-verification summary. It does not submit anything to Burd and does not include
-secrets.
-
-## Provider Readiness
-
-Run:
-
-```sh
-burd-agent readiness
-burd-agent readiness --json
-```
-
-Readiness consolidates identity, signed report, challenge evidence, provider
-verification, benchmark history, API token status, and raw-data redaction into
-a `0-100` score, checks, warnings, and recommendations.
-
-The JSON also reports the canonical state directory and config path. Challenge
-points require the persisted challenge bundle to revalidate successfully and
-remain unexpired; a `challenge_id` in history alone is not sufficient.
-
-`ready_locally` means all local checks pass. It does not mean backend
-verification, audit approval, or marketplace acceptance. See
-`docs/provider-readiness.md` for the complete contract and status definitions.
-
-## Provider Console API and UI
-
-Run:
+Para iniciar a API local:
 
 ```powershell
 .\target\debug\burd-agent.exe serve --host 127.0.0.1 --port 8787
 ```
 
-Endpoints:
-
-- `GET /health`
-- `GET /api/v1/system`
-- `GET /api/v1/fit`
-- `GET /api/v1/score`
-- `GET /api/v1/report`
-- `POST /api/v1/report/signed`
-- `GET /api/v1/challenge/mock`
-- `GET /api/v1/provider`
-- `GET /api/v1/readiness`
-- `GET /api/v1/verification`
-- `GET /api/v1/uptime`
-- `GET /api/v1/history`
-- `GET /api/v1/registration-payload`
-- `GET /api/v1/pricing`
-- `GET /api/v1/earnings`
-- `GET /api/v1/actions`
-- `GET /api/v1/logs`
-- `GET /api/v1/raw`
-- `GET /api/v1/config`
-- `POST /api/v1/benchmark/run`
-- `POST /api/v1/challenge/run`
-- `GET /api/v1/benchmark/status`
-
-The local Provider Console UI is in `apps/benchmark-ui` and is served at `/` by
-the local API. It follows the dark technical Burd design system from `SKILL.md`
-and includes Overview, Readiness, Hardware, Benchmarks, History, Uptime,
-Security, Registration, Logs, and Raw Data.
-
-Open the UI in a browser at:
+A API fica disponível em:
 
 ```txt
-http://127.0.0.1:8787/
+http://127.0.0.1:8787
 ```
 
-Stop the foreground server with `Ctrl+C`.
+Endpoints principais:
 
-If a local process is stuck during development, stop it from PowerShell:
-
-```powershell
-Get-Process burd-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+```txt
+GET  /health
+GET  /api/v1/system
+GET  /api/v1/fit
+GET  /api/v1/score
+GET  /api/v1/report
+POST /api/v1/report/signed
+POST /api/v1/report/verify
+GET  /api/v1/provider
+GET  /api/v1/readiness
+GET  /api/v1/verification
+GET  /api/v1/history
+GET  /api/v1/registration-payload
+GET  /api/v1/pricing
+GET  /api/v1/earnings
+GET  /api/v1/actions
+GET  /api/v1/logs
+GET  /api/v1/raw
+GET  /api/v1/config
+POST /api/v1/benchmark/run
+GET  /api/v1/benchmark/status
+POST /api/v1/challenge/create-mock
+POST /api/v1/challenge/run
+POST /api/v1/challenge/verify
+POST /api/v1/provider/verify
 ```
 
-To test the API without leaving the server running:
+Para testar a API sem deixar o servidor rodando:
 
 ```powershell
 .\scripts\test-api.ps1
 ```
 
-The script starts `serve` on `127.0.0.1:8787`, calls the primary GET endpoints,
-records output under `tmp/test-output/`, and stops the server by PID in a
-`finally` block.
+Para parar um processo local preso:
 
-## Limitations
+```powershell
+Get-Process burd-agent -ErrorAction SilentlyContinue | Stop-Process -Force
+```
 
-- Marketplace listing, payments, billing, login, job orchestration, and remote
-  customer workloads are intentionally out of scope.
-- Backend verification, audit, challenge issuing, reputation, job execution,
-  leases, payouts and billing are future work.
-- Earnings and prices are demonstrative and must not be treated as promised
-  revenue.
-- Real LLM benchmarking requires a local Ollama, vLLM, or MLX-compatible
-  endpoint.
-- Network benchmark defaults to a public endpoint unless `--endpoint` is
-  supplied; no Burd backend is required for this MVP.
-- `burd-agent serve --host 0.0.0.0` is possible but should be paired with
-  `burd-agent api-token create --json`; without a token it emits a strong
-  warning.
-- Current `cargo build` and `cargo test` may emit inherited warnings from
-  `third_party/llmfit/llmfit-core`. They do not block the local build/test flow
-  and are left untouched to preserve the upstream llmfit integration.
+---
 
-## Documentation
+## Identidade do Provider
 
-- `docs/architecture.md`
-- `docs/current-state.md`
-- `docs/local-test-checklist.md`
-- `docs/provider-console-parity.md`
-- `docs/security.md`
-- `docs/provider-identity.md`
-- `docs/challenge-response.md`
-- `docs/benchmark-history.md`
-- `docs/local-api.md`
-- `docs/provider-registration.md`
-- `docs/provider-readiness.md`
-- `docs/provider-trust-layer.md`
-- `docs/hardware-fingerprint.md`
-- `docs/marketplace-gpu-policy.md`
-- `docs/evidence-expiration.md`
-- `docs/provider-console-ui.md`
-- `docs/llmfit-adaptation.md`
-- `docs/benchmark-profiles.md`
-- `docs/json-contract-snapshots.md`
-- `docs/real-hardware-runner.md`
-- `docs/examples/`
+A identidade local é usada para assinar relatórios e comprovar a origem das evidências geradas pela máquina.
+
+Comandos:
+
+```bash
+burd-agent identity init
+burd-agent identity show --json
+```
+
+O agent grava configuração pública e mantém a chave privada separada.
+
+Regras:
+
+* relatórios não devem expor chave privada;
+* raw data não deve expor chave privada;
+* payloads públicos não devem incluir secrets;
+* migrações devem preservar evidências válidas;
+* mudanças de identidade devem ser explícitas.
+
+---
+
+## Relatórios assinados
+
+Para gerar um relatório assinado completo:
+
+```bash
+burd-agent report --run-all --signed --json
+```
+
+Um relatório assinado pode conter:
+
+* hash canônico do relatório;
+* assinatura;
+* chave pública;
+* algoritmo da chave;
+* timestamp de assinatura;
+* resultado de verificação local;
+* versão de canonicalização;
+* resumo de hardware;
+* score;
+* evidências do benchmark.
+
+Regras:
+
+* `report --run-all` deve registrar histórico local;
+* `report --run-all --signed` deve registrar histórico local;
+* relatórios expirados não devem contar como evidência válida;
+* assinatura inválida deve bloquear readiness;
+* relatório assinado não deve conter segredo.
+
+---
+
+## Challenge local
+
+O challenge local valida evidências por meio de nonce, expiração, assinatura e relatório assinado.
+
+Comando recomendado:
+
+```bash
+burd-agent challenge run-local --json
+```
+
+Esse comando cria, executa, assina, verifica e persiste a evidência local do challenge sem exigir arquivo intermediário.
+
+Regras:
+
+* challenge expirado não deve contar ponto de readiness;
+* nonce deve ser validado;
+* assinatura do relatório deve ser validada;
+* assinatura da resposta do challenge deve ser validada;
+* evidência válida deve ser persistida;
+* histórico sozinho não substitui evidência de challenge válida.
+
+---
+
+## Readiness
+
+O readiness consolida o estado local do provider.
+
+Comandos:
+
+```bash
+burd-agent readiness
+burd-agent readiness --json
+```
+
+O readiness considera:
+
+* identidade;
+* relatório assinado;
+* challenge;
+* provider verification;
+* histórico;
+* token da API local;
+* redaction de raw data;
+* validade e expiração das evidências.
+
+Estados esperados:
+
+```txt
+ready_locally
+partial
+failed
+not_verified
+uninitialized
+```
+
+`ready_locally` significa que os checks locais passaram.
+Não significa aprovação externa, auditoria, listagem em marketplace ou garantia de receita.
+
+---
+
+## Score
+
+O Burd Compute Score é uma pontuação de `0` a `100`.
+
+Pesos do MVP:
+
+```txt
+40% benchmark LLM real ou fallback estimado
+20% VRAM e capacidade
+15% estabilidade
+10% rede
+10% disco
+5% sinais de verificação
+```
+
+Tiers:
+
+```txt
+0-39    Not Eligible
+40-59   Burd Basic
+60-74   Burd Plus
+75-89   Burd Pro
+90-96   Burd Max
+97-100  Burd Enterprise
+```
+
+Preços e ganhos demonstrativos não devem ser tratados como promessa de receita.
+
+---
+
+## Histórico
+
+Comandos:
+
+```bash
+burd-agent history --json
+burd-agent history latest --json
+burd-agent history export --output history.json
+```
+
+O histórico deve armazenar resumos de benchmark e evidências públicas.
+
+O histórico não deve conter:
+
+```txt
+private keys
+api tokens
+raw credentials
+secrets
+```
+
+---
+
+## Payload de registro
+
+Comandos:
+
+```bash
+burd-agent registration-payload --json
+burd-agent registration-payload --output registration.json
+```
+
+O payload de registro é uma estrutura local para futura validação externa.
+
+Ele pode conter:
+
+* identidade pública;
+* hash do relatório assinado;
+* score;
+* tier;
+* capabilities;
+* pricing demonstrativo;
+* resumo de verificação.
+
+Ele não deve submeter dados automaticamente.
+Ele não deve incluir segredos.
+
+---
+
+## Regras de segurança
+
+Nunca exponha, registre em log ou commite:
+
+```txt
+private_key
+private_key_path
+secret_key_base64
+api_token
+api_token_hash
+Authorization header
+credentials
+password
+valor bruto de token
+```
+
+Rótulos seguros são permitidos:
+
+```txt
+configurado
+ausente
+inválido
+rotacionado
+ativado
+desativado
+```
+
+Arquivos públicos, payloads, logs, raw data e snapshots devem aplicar redaction quando necessário.
+
+---
+
+## Diretrizes para Pull Request
+
+Antes de abrir um Pull Request, confirme:
+
+* a alteração tem um objetivo claro;
+* os comandos com `--json` continuam retornando JSON válido;
+* relatórios não expõem secrets;
+* raw data não expõe secrets;
+* readiness reflete checks reais;
+* challenge válido é persistido corretamente;
+* evidências expiradas não contam como válidas;
+* histórico não contém credenciais;
+* mudanças de contrato JSON foram intencionais;
+* testes relevantes foram executados;
+* arquivos temporários não foram commitados.
+
+Rode:
+
+```bash
+cargo fmt --all --check
+cargo test --workspace
+cargo build
+```
+
+Se a alteração afetar API local, rode também:
+
+```powershell
+.\scripts\test-api.ps1
+```
+
+Se a alteração afetar validação local, rode:
+
+```powershell
+.\scripts\test-local.ps1
+```
+
+---
+
+## Checklist de Pull Request
+
+* [ ] A alteração tem propósito claro.
+* [ ] `cargo fmt --all --check` passa.
+* [ ] `cargo test --workspace` passa.
+* [ ] `cargo build` passa.
+* [ ] JSON de comandos com `--json` continua válido.
+* [ ] Nenhum segredo é exposto.
+* [ ] Nenhum token é registrado em log.
+* [ ] Raw/config continuam com redaction.
+* [ ] Readiness reflete checks reais.
+* [ ] Challenge válido é persistido quando necessário.
+* [ ] Evidências expiradas são tratadas corretamente.
+* [ ] Arquivos temporários não foram commitados.
+* [ ] Mensagem de commit segue a convenção do projeto.
+
+---
+
+## Convenção de commits
+
+Use mensagens semânticas curtas:
+
+```txt
+tipo: descrição curta
+```
+
+Tipos aceitos:
+
+```txt
+feat
+fix
+docs
+style
+chore
+test
+perf
+refactor
+```
+
+Exemplos:
+
+```txt
+feat: adiciona persistência de challenge local
+fix: corrige cálculo de readiness
+fix: preserva redaction em raw data
+docs: atualiza guia do benchmark
+test: adiciona contrato de relatório assinado
+chore: atualiza fixtures de snapshot
+refactor: simplifica geração de score
+```
+
+Evite mensagens genéricas como:
+
+```txt
+update
+ajustes
+correções
+final
+```
+
+---
+
+## Não commitar
+
+Não commite:
+
+```txt
+target/
+tmp/
+logs/
+.env
+.env.*
+*.log
+challenge.json
+signed-response.json
+registration.json
+history.json
+latest-challenge-response.json
+benchmark-history.json
+agent.json
+agent.key
+```
+
+Também não commite:
+
+```txt
+segredos locais
+estado local
+credenciais
+tokens
+chaves privadas
+relatórios gerados locais
+payloads locais de teste
+arquivos temporários de challenge
+```
+
+---
+
+## Notas para mantenedores
+
+Ao revisar mudanças, preste atenção especial em:
+
+* contratos JSON;
+* validade de relatórios assinados;
+* expiração de evidências;
+* persistência de challenge;
+* cálculo de readiness;
+* redaction de raw/config;
+* status do token local;
+* compatibilidade da API local;
+* efeitos em histórico e payload de registro;
+* mensagens de erro de comandos CLI;
+* separação entre evidência local e aprovação externa.
+
+Um Pull Request que exponha segredos, quebre JSON válido, confunda readiness local com aprovação externa ou altere contratos sem justificativa não deve ser mesclado.
+
+---
+
+## Licença
+
+Este projeto é licenciado sob a licença **MIT**.
+
+Consulte o arquivo [`LICENSE`](./LICENSE) para mais detalhes.
