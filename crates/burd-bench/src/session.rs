@@ -32,7 +32,7 @@ pub fn build_provider_session_start(
         .map_err(|error| format!("latest signed report unavailable: {error}"))?;
     let challenge_output = load_latest_challenge_output()
         .map_err(|error| format!("latest challenge response unavailable: {error}"))?;
-    let now = Utc::now();
+    let now = session_now();
     let signed_verification = verify_signed_report_at(&signed_report, now);
     if !signed_verification.signature_valid || !signed_verification.errors.is_empty() {
         return Err("latest signed report is invalid".to_string());
@@ -161,7 +161,7 @@ pub fn build_provider_session_status(
         build_hardware_fingerprint_report(&current_system).hardware_fingerprint;
     let mut warnings = session.warnings.clone();
     let mut status = session.status;
-    let now = Utc::now();
+    let now = session_now();
 
     if session.status == ProviderSessionStatus::Stopped
         || session.status == ProviderSessionStatus::Failed
@@ -308,6 +308,20 @@ fn parse_timestamp_opt(value: Option<&str>) -> Result<Option<DateTime<Utc>>, Str
     match value {
         Some(value) => Ok(Some(parse_timestamp(value)?)),
         None => Ok(None),
+    }
+}
+
+fn session_now() -> DateTime<Utc> {
+    #[cfg(test)]
+    {
+        DateTime::parse_from_rfc3339(crate::test_fixtures::FIXTURE_TIMESTAMP)
+            .expect("fixture timestamp is valid RFC3339")
+            .with_timezone(&Utc)
+    }
+
+    #[cfg(not(test))]
+    {
+        Utc::now()
     }
 }
 
