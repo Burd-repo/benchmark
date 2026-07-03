@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod capability;
 pub mod disk;
 pub mod earnings;
 pub mod health;
@@ -15,7 +16,9 @@ pub mod report;
 pub mod score;
 pub mod session;
 pub mod stability;
+pub mod trust;
 pub mod verification;
+pub mod workload;
 
 #[cfg(test)]
 mod contract_tests;
@@ -27,11 +30,17 @@ pub use actions::{
     record_action,
 };
 pub use burd_protocol::session::ProviderSessionStatusReport;
+pub use capability::{
+    CapabilitySpotCheck, CapabilitySpotComponents, CapabilitySpotEvidence,
+    CapabilitySpotVerificationReport, build_capability_spot_verification,
+    build_capability_spot_verification_from, calculate_capability_spot_verification,
+};
 pub use disk::{DiskBenchmarkOptions, DiskBenchmarkReport, run_disk_benchmark};
 pub use earnings::{EarningsReport, estimate_earnings};
 pub use health::{
-    HealthReport, HeartbeatReport, UptimeCheck, UptimeHistory, UptimeSummary, clear_uptime_history,
-    detect_health, heartbeat_once, load_uptime_summary,
+    HealthReport, HeartbeatReport, ReliabilityComponents, ReliabilityReport, UptimeCheck,
+    UptimeHistory, UptimeSummary, calculate_reliability, clear_uptime_history, detect_health,
+    heartbeat_once, load_reliability_report, load_uptime_summary,
 };
 pub use history::{
     BenchmarkHistoryClearResult, BenchmarkHistoryEntry, BenchmarkHistoryExportResult,
@@ -40,7 +49,11 @@ pub use history::{
     load_history_list, load_latest_history,
 };
 pub use llm::{LlmBenchmarkOptions, LlmBenchmarkReport, run_llm_benchmark};
-pub use network::{NetworkBenchmarkOptions, NetworkBenchmarkReport, run_network_benchmark};
+pub use network::{
+    NetworkBenchmarkOptions, NetworkBenchmarkReport, NetworkScoreComponents, NetworkScoreReport,
+    calculate_network_score, load_latest_network_benchmark, load_network_score_report,
+    network_score_from_report_value, run_network_benchmark, save_latest_network_benchmark,
+};
 pub use pricing::{PricingReport, calculate_pricing};
 pub use profiles::{BenchmarkProfile, all_profiles, profile_for_vram};
 pub use provider::{BurdProviderDetails, build_provider_details};
@@ -63,4 +76,9 @@ pub use session::{
     build_provider_session_status, export_provider_session_status, stop_provider_session,
 };
 pub use stability::{StabilityBenchmarkReport, run_stability_benchmark};
+pub use trust::{TrustScoreReport, build_trust_score, calculate_trust_score};
 pub use verification::{ProviderVerification, verify_provider};
+pub use workload::{
+    WorkloadEligibility, WorkloadEligibilityReport, build_workload_eligibility,
+    calculate_workload_eligibility,
+};

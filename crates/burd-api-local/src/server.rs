@@ -5,11 +5,13 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_bench::{
-    ReportRunOptions, append_report_history, append_signed_report_history, build_provider_details,
-    build_provider_readiness, build_raw_data, build_registration_payload, calculate_pricing,
-    calculate_score, estimate_earnings, generate_full_report, generate_signed_report, load_actions,
-    load_history_list, load_logs, load_uptime_summary, record_action, save_latest_report,
-    verify_provider,
+    ReportRunOptions, append_report_history, append_signed_report_history,
+    build_capability_spot_verification, build_provider_details, build_provider_readiness,
+    build_raw_data, build_registration_payload, build_trust_score, build_workload_eligibility,
+    calculate_network_score, calculate_pricing, calculate_reliability, calculate_score,
+    estimate_earnings, generate_full_report, generate_signed_report, load_actions,
+    load_history_list, load_logs, load_network_score_report, load_reliability_report,
+    load_uptime_summary, record_action, save_latest_report, verify_provider,
 };
 use burd_hardware::{build_system_report, detect_specs, detect_system_report};
 use burd_llmfit::build_fit_report;
@@ -90,6 +92,11 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/readiness", get(readiness))
         .route("/api/v1/verification", get(verification))
         .route("/api/v1/uptime", get(uptime))
+        .route("/api/v1/reliability", get(reliability))
+        .route("/api/v1/network-score", get(network_score))
+        .route("/api/v1/trust-score", get(trust_score))
+        .route("/api/v1/capability-spot", get(capability_spot))
+        .route("/api/v1/workload-eligibility", get(workload_eligibility))
         .route("/api/v1/history", get(history))
         .route("/api/v1/registration-payload", get(registration_payload))
         .route("/api/v1/pricing", get(pricing))
@@ -192,12 +199,42 @@ async fn uptime() -> Json<serde_json::Value> {
             uptime_1d: 0.0,
             uptime_7d: 0.0,
             uptime_30d: 0.0,
+            uptime_score: 0.0,
+            uptime_level: "No Data".to_string(),
             last_online_at: None,
             last_failed_check_at: None,
             checks_total: 0,
             checks_failed: 0,
             current_status: "unknown".to_string(),
         }
+    )))
+}
+
+async fn reliability() -> Json<serde_json::Value> {
+    Json(serde_json::json!(
+        load_reliability_report().unwrap_or_else(|_| calculate_reliability(&[]))
+    ))
+}
+
+async fn network_score() -> Json<serde_json::Value> {
+    Json(serde_json::json!(
+        load_network_score_report().unwrap_or_else(|_| calculate_network_score(None))
+    ))
+}
+
+async fn trust_score(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!(build_trust_score(&state.agent_version)))
+}
+
+async fn capability_spot(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!(build_capability_spot_verification(
+        &state.agent_version
+    )))
+}
+
+async fn workload_eligibility(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!(build_workload_eligibility(
+        &state.agent_version
     )))
 }
 
@@ -597,6 +634,22 @@ mod tests {
             (
                 "/api/v1/uptime",
                 vec!["uptime_1d", "uptime_7d", "uptime_30d", "checks_total"],
+            ),
+            (
+                "/api/v1/reliability",
+                vec!["reliability_score", "uptime_score", "status"],
+            ),
+            (
+                "/api/v1/network-score",
+                vec!["network_score", "level", "status", "components"],
+            ),
+            (
+                "/api/v1/capability-spot",
+                vec!["capability_score", "level", "status", "checks"],
+            ),
+            (
+                "/api/v1/workload-eligibility",
+                vec!["local_status", "marketplace_status_future", "workloads"],
             ),
             ("/api/v1/history", vec!["entries_total", "entries"]),
             (

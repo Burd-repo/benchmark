@@ -48,11 +48,38 @@ pub struct UptimeSummary {
     pub uptime_1d: f64,
     pub uptime_7d: f64,
     pub uptime_30d: f64,
+    pub uptime_score: f64,
+    pub uptime_level: String,
     pub last_online_at: Option<String>,
     pub last_failed_check_at: Option<String>,
     pub checks_total: usize,
     pub checks_failed: usize,
     pub current_status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReliabilityReport {
+    pub reliability_score: f64,
+    pub uptime_score: f64,
+    pub level: String,
+    pub status: String,
+    pub components: ReliabilityComponents,
+    pub uptime: UptimeSummary,
+    pub checks_total: usize,
+    pub checks_failed: usize,
+    pub consecutive_failed_checks: usize,
+    pub warnings: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReliabilityComponents {
+    pub uptime_1d: f64,
+    pub uptime_7d: f64,
+    pub uptime_30d: f64,
+    pub sample_coverage: f64,
+    pub latest_status: f64,
+    pub failure_penalty: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +283,18 @@ pub fn load_uptime_summary() -> Result<UptimeSummary, String> {
         })
 }
 
+pub fn load_reliability_report() -> Result<ReliabilityReport, String> {
+    load_uptime_history()
+        .map(|history| calculate_reliability(&history.checks))
+        .or_else(|error| {
+            if error.contains("not found") {
+                Ok(calculate_reliability(&[]))
+            } else {
+                Err(error)
+            }
+        })
+}
+
 fn load_uptime_history_or_empty() -> Result<UptimeHistory, String> {
     load_uptime_history().or_else(|error| {
         if error.contains("not found") {
@@ -333,11 +372,17 @@ pub fn summarize_checks(checks: &[UptimeCheck]) -> UptimeSummary {
             }
         })
         .unwrap_or_else(|| "unknown".to_string());
+    let uptime_1d = ratio_for_window(checks, now - Duration::days(1));
+    let uptime_7d = ratio_for_window(checks, now - Duration::days(7));
+    let uptime_30d = ratio_for_window(checks, now - Duration::days(30));
+    let uptime_score = uptime_score_from_ratios(uptime_1d, uptime_7d, uptime_30d);
 
     UptimeSummary {
-        uptime_1d: ratio_for_window(checks, now - Duration::days(1)),
-        uptime_7d: ratio_for_window(checks, now - Duration::days(7)),
-        uptime_30d: ratio_for_window(checks, now - Duration::days(30)),
+        uptime_1d,
+        uptime_7d,
+        uptime_30d,
+        uptime_score,
+        uptime_level: uptime_level(uptime_score).to_string(),
         last_online_at: last_online,
         last_failed_check_at: last_failed,
         checks_total: checks.len(),
@@ -346,6 +391,76 @@ pub fn summarize_checks(checks: &[UptimeCheck]) -> UptimeSummary {
     }
 }
 
+pub fn calculate_reliability(checks: &[UptimeCheck]) -> ReliabilityReport {
+    let uptime = summarize_checks(checks);
+    let checks_total = checks.len();
+    let checks_failed = checks.iter().filter(|check| !check.online).count();
+    let consecutive_failed_checks = checks
+        .iter()
+        .rev()
+        .take_while(|check| !check.online)
+        .count();
+    let sample_coverage = round1(((checks_total as f64 / 24.0) * 100.0).min(100.0));
+    let latest_status = checks
+        .last()
+        .map(|check| if check.online { 100.0 } else { 0.0 })
+        .unwrap_or(0.0);
+    let failure_penalty = round1((consecutive_failed_checks as f64 * 12.5).min(30.0));
+
+    let reliability_score = if checks_total == 0 {
+        0.0
+    } else {
+        round1(
+            (uptime.uptime_score * 0.70 + sample_coverage * 0.15 + latest_status * 0.15
+                - failure_penalty)
+                .clamp(0.0, 100.0),
+        )
+    };
+    let mut warnings = Vec::new();
+    if checks_total == 0 {
+        warnings.push("no local heartbeat history; reliability score is unavailable".to_string());
+    } else {
+        if checks_total < 3 {
+            warnings
+                .push("fewer than 3 heartbeat checks; reliability score is warming up".to_string());
+        }
+        if checks.last().is_some_and(|check| !check.online) {
+            warnings.push("latest heartbeat check is offline or failed".to_string());
+        }
+        if uptime.uptime_1d < 0.90 {
+            warnings.push("1-day uptime is below 90%".to_string());
+        }
+        if consecutive_failed_checks >= 2 {
+            warnings.push("multiple consecutive heartbeat failures detected".to_string());
+        }
+    }
+
+    ReliabilityReport {
+        reliability_score,
+        uptime_score: uptime.uptime_score,
+        level: reliability_level(reliability_score, checks_total).to_string(),
+        status: reliability_status(reliability_score, checks_total, checks.last()).to_string(),
+        components: ReliabilityComponents {
+            uptime_1d: round1(uptime.uptime_1d * 100.0),
+            uptime_7d: round1(uptime.uptime_7d * 100.0),
+            uptime_30d: round1(uptime.uptime_30d * 100.0),
+            sample_coverage,
+            latest_status,
+            failure_penalty,
+        },
+        uptime,
+        checks_total,
+        checks_failed,
+        consecutive_failed_checks,
+        warnings,
+        notes: vec![
+            "Local reliability is derived from local heartbeat history only.".to_string(),
+            "Uptime score weights: 50% 1d, 30% 7d, 20% 30d.".to_string(),
+            "Reliability score weights: 70% uptime score, 15% sample coverage, 15% latest status, minus consecutive failure penalty.".to_string(),
+            "Reliability score is not backend availability, audit approval, marketplace admission, or a payout guarantee.".to_string(),
+        ],
+    }
+}
 fn ratio_for_window(checks: &[UptimeCheck], start: DateTime<Utc>) -> f64 {
     let in_window: Vec<&UptimeCheck> = checks
         .iter()
@@ -360,6 +475,55 @@ fn ratio_for_window(checks: &[UptimeCheck], start: DateTime<Utc>) -> f64 {
     }
     let online = in_window.iter().filter(|check| check.online).count();
     round4(online as f64 / in_window.len() as f64)
+}
+
+fn uptime_score_from_ratios(uptime_1d: f64, uptime_7d: f64, uptime_30d: f64) -> f64 {
+    round1((uptime_1d * 50.0 + uptime_7d * 30.0 + uptime_30d * 20.0).clamp(0.0, 100.0))
+}
+
+fn uptime_level(score: f64) -> &'static str {
+    match score {
+        value if value <= 0.0 => "No Data",
+        value if value >= 99.0 => "Excellent",
+        value if value >= 95.0 => "Good",
+        value if value >= 90.0 => "Watch",
+        value if value >= 75.0 => "Degraded",
+        _ => "Poor",
+    }
+}
+
+fn reliability_level(score: f64, checks_total: usize) -> &'static str {
+    if checks_total == 0 {
+        return "No Data";
+    }
+    match score {
+        value if value >= 95.0 => "Excellent",
+        value if value >= 85.0 => "Good",
+        value if value >= 70.0 => "Fair",
+        value if value >= 40.0 => "Degraded",
+        _ => "Poor",
+    }
+}
+
+fn reliability_status(
+    score: f64,
+    checks_total: usize,
+    latest: Option<&UptimeCheck>,
+) -> &'static str {
+    if checks_total == 0 {
+        return "no_history";
+    }
+    if latest.is_some_and(|check| !check.online) {
+        return "offline";
+    }
+    if checks_total < 3 {
+        return "warming_up";
+    }
+    if score >= 70.0 {
+        "reliable"
+    } else {
+        "degraded"
+    }
 }
 
 fn disk_free_gb() -> Option<f64> {
@@ -398,6 +562,10 @@ fn round2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
+fn round1(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
 fn round4(value: f64) -> f64 {
     (value * 10000.0).round() / 10000.0
 }
@@ -430,5 +598,48 @@ mod tests {
         assert_eq!(summary.checks_total, 3);
         assert_eq!(summary.checks_failed, 1);
         assert!(summary.uptime_1d > 0.66 && summary.uptime_1d < 0.67);
+        assert!(summary.uptime_score > 66.0 && summary.uptime_score < 67.0);
+    }
+
+    #[test]
+    fn reliability_rewards_good_history() {
+        let now = Utc::now();
+        let checks = (0..24)
+            .map(|index| UptimeCheck {
+                checked_at: (now - Duration::minutes(index)).to_rfc3339(),
+                online: true,
+                status: "heartbeat_ok".to_string(),
+            })
+            .collect::<Vec<_>>();
+
+        let report = calculate_reliability(&checks);
+
+        assert_eq!(report.uptime_score, 100.0);
+        assert_eq!(report.reliability_score, 100.0);
+        assert_eq!(report.status, "reliable");
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn reliability_penalizes_failed_latest_check() {
+        let now = Utc::now();
+        let checks = vec![
+            UptimeCheck {
+                checked_at: (now - Duration::minutes(3)).to_rfc3339(),
+                online: true,
+                status: "heartbeat_ok".to_string(),
+            },
+            UptimeCheck {
+                checked_at: (now - Duration::minutes(2)).to_rfc3339(),
+                online: false,
+                status: "fingerprint_mismatch".to_string(),
+            },
+        ];
+
+        let report = calculate_reliability(&checks);
+
+        assert_eq!(report.status, "offline");
+        assert_eq!(report.consecutive_failed_checks, 1);
+        assert!(report.reliability_score < report.uptime_score);
     }
 }

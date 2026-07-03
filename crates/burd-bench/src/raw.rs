@@ -31,6 +31,10 @@ pub struct RawData {
     pub pricing: serde_json::Value,
     pub earnings_mock: serde_json::Value,
     pub uptime: serde_json::Value,
+    pub reliability: serde_json::Value,
+    pub network: serde_json::Value,
+    pub capability_spot: serde_json::Value,
+    pub workload_eligibility: serde_json::Value,
 }
 
 pub fn build_raw_data(agent_version: &str, host_uri: &str) -> RawData {
@@ -84,6 +88,16 @@ pub(crate) fn build_raw_data_from_provider(
             load_uptime_summary().unwrap_or_else(|_| provider.uptime.clone()),
         )
         .unwrap_or_else(|_| serde_json::json!({"error": "uptime serialization failed"})),
+        reliability: serde_json::to_value(&provider.reliability)
+            .unwrap_or_else(|_| serde_json::json!({"error": "reliability serialization failed"})),
+        network: serde_json::to_value(&provider.network)
+            .unwrap_or_else(|_| serde_json::json!({"error": "network serialization failed"})),
+        capability_spot: serde_json::to_value(&provider.capability_spot).unwrap_or_else(
+            |_| serde_json::json!({"error": "capability spot serialization failed"}),
+        ),
+        workload_eligibility: serde_json::to_value(&provider.workload_eligibility).unwrap_or_else(
+            |_| serde_json::json!({"error": "workload eligibility serialization failed"}),
+        ),
     }
 }
 
@@ -141,6 +155,10 @@ mod tests {
             pricing: serde_json::json!({}),
             earnings_mock: serde_json::json!({}),
             uptime: serde_json::json!({}),
+            reliability: serde_json::json!({}),
+            network: serde_json::json!({}),
+            capability_spot: serde_json::json!({}),
+            workload_eligibility: serde_json::json!({}),
         };
         let json = serde_json::to_string(&raw).unwrap();
         assert!(!json.contains("secret_key_base64"));

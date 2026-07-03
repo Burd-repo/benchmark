@@ -54,7 +54,6 @@ folder.
 
 - Heartbeat once is not a backend availability signal.
 - Heartbeat once is not a marketplace readiness decision.
-- Heartbeat once prepares the local data that a later reliability score could
-  consume.
+- Heartbeat once prepares the local data consumed by `reliability --json` and `GET /api/v1/reliability`.
 - Provider details, raw data, registration payloads, and readiness may surface
   the latest heartbeat summary when one exists.

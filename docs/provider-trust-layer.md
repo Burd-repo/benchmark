@@ -15,7 +15,7 @@ implement billing and payouts.
   history, API authentication, and redaction contracts are valid now.
 - **Compute Score**: how much AI compute the machine can deliver. Network
   quality must not erase compute capacity.
-- **Network Score**: which remote workload profiles the connection can support.
+- **Network Score**: local quality signal from finite latency, jitter, loss, and DNS samples.
 - **Reliability Score**: whether sessions and heartbeats remain stable.
 - **Trust Score**: historical confidence from evidence freshness, hardware
   stability, reliability, verification history, and suspicious behavior.
@@ -41,7 +41,7 @@ policy decision.
 11. Provider Console trust UI.
 12. Documentation consolidation.
 
-PR 1 through PR 4 are implemented locally. The remaining PRs are future work
+PR 1 through PR 9 are implemented locally. The remaining PRs are future work
 and should stay small, deterministic, and independent from a real backend.
 
 ## PR 3 Summary
@@ -81,6 +81,56 @@ availability signal, or marketplace admission.
   the latest heartbeat summary when one exists.
 
 See `docs/heartbeat.md` for the full contract.
+
+## PR 5 Summary
+
+Local reliability and uptime score converts heartbeat history into deterministic
+local scoring. It does not contact a backend and does not imply marketplace
+availability or admission.
+
+- `uptime --json` includes `uptime_score` and `uptime_level` derived from local
+  1d, 7d, and 30d uptime ratios.
+- `reliability --json` and `GET /api/v1/reliability` expose a structured
+  reliability report with `reliability_score`, status, components, warnings,
+  and notes.
+- Provider details, raw data, registration payloads, full reports, signed
+  reports, and the Provider Console surface the same local reliability signal.
+- The score is intentionally local-only and separate from Burd Compute Score,
+  readiness, backend availability, and future trust scoring.
+
+## PR 6 Summary
+
+Network score converts the latest finite local network benchmark into a deterministic local signal. It does not start a daemon, bind a port, prove public reachability, or imply marketplace availability.
+
+- `bench network --json` persists the latest finite network sample to local state.
+- `network-score --json` and `GET /api/v1/network-score` expose `network_score`, level, status, components, warnings, and notes.
+- Provider details, raw data, registration payloads, full reports, signed reports, and the Provider Console surface the same local network signal.
+- The score is intentionally separate from backend availability, workload eligibility, public SLA, and future trust scoring.
+
+
+## PR 7 Summary
+
+Trust score converts local verification, freshness, reliability, network quality, and benchmark history depth into a deterministic local confidence signal. It does not contact a backend and does not imply marketplace admission, payout approval, or workload scheduling.
+
+- `trust-score --json` and `GET /api/v1/trust-score` expose `trust_score`, `level`, `status`, `components`, `warnings`, and `notes`.
+- Provider details, raw data, and registration payloads can surface the same local trust summary.
+- The score is intentionally heuristic and remains separate from backend approval, marketplace policy, and future workload eligibility.
+
+## PR 8 Summary
+
+Local/mock AI capability spot verification converts fit analysis, runtime readiness, signed evidence, optional live LLM benchmark proof, and local history depth into a deterministic capability signal. It does not create workload eligibility, a scheduler decision, or backend verification.
+
+- `capability-spot --json` and `GET /api/v1/capability-spot` expose `capability_score`, `level`, `status`, `checks`, `evidence`, `warnings`, and `notes`.
+- Provider details, raw data, and registration payloads surface the same local/mock capability spot verification report.
+- A current signed report with a passing local LLM benchmark is treated as stronger evidence than fit-only capability inference.
+
+## PR 9 Summary
+
+Workload eligibility converts fit recommendations, capability spot verification, trust score, provider verification, reliability, compute score, and marketplace GPU policy into a deterministic local workload decision layer. It does not create a lease, a scheduler assignment, marketplace admission, or a paid job.
+
+- `workload-eligibility --json` and `GET /api/v1/workload-eligibility` expose `local_status`, `marketplace_status_future`, per-workload decisions, confidence levels, reasons, blockers, warnings, and notes.
+- Provider details, raw data, and registration payloads surface the same workload eligibility report.
+- Local eligibility can be `eligible_locally`, `diagnostic_only`, `not_recommended`, or `blocked`; future marketplace eligibility remains stricter and stays blocked when compute, trust, signed evidence, or marketplace policy are insufficient.
 
 ## Future Boundaries
 

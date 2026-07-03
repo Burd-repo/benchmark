@@ -13,7 +13,7 @@
           <div class="eyebrow"><span></span><strong>BURD PROVIDER CONSOLE</strong></div>
           <h1>Provider validation console.</h1>
           <p>
-            Local GPU readiness, signed reports, verification signals, uptime,
+            Local GPU readiness, signed reports, verification signals, uptime, reliability,
             registration payload and redacted raw data for the Burd provider flow.
           </p>
         </div>
@@ -79,6 +79,9 @@
           <article class="tile"><span>Uptime 1d</span><strong id="overviewUptime1d">--</strong></article>
           <article class="tile"><span>Uptime 7d</span><strong id="overviewUptime7d">--</strong></article>
           <article class="tile"><span>Uptime 30d</span><strong id="overviewUptime30d">--</strong></article>
+          <article class="tile"><span>Uptime score</span><strong id="overviewUptimeScore">--</strong></article>
+          <article class="tile"><span>Reliability</span><strong id="overviewReliability">--</strong></article>
+          <article class="tile"><span>Network score</span><strong id="overviewNetworkScore">--</strong></article>
           <article class="tile"><span>Signed report</span><strong id="overviewSigned">--</strong></article>
           <article class="tile"><span>Challenge</span><strong id="overviewChallenge">--</strong></article>
           <article class="tile"><span>Fraud risk</span><strong id="overviewFraud">--</strong></article>
@@ -127,6 +130,10 @@
           <article class="tile"><span>LLM benchmark</span><strong id="benchLlm">--</strong></article>
           <article class="tile"><span>Stability</span><strong id="benchStability">--</strong></article>
           <article class="tile"><span>Network</span><strong id="benchNetwork">--</strong></article>
+          <article class="tile"><span>Network score</span><strong id="benchNetworkScore">--</strong></article>
+          <article class="tile"><span>Network level</span><strong id="benchNetworkLevel">--</strong></article>
+          <article class="tile"><span>Latency</span><strong id="benchNetworkLatency">--</strong></article>
+          <article class="tile"><span>Loss</span><strong id="benchNetworkLoss">--</strong></article>
           <article class="tile"><span>Disk</span><strong id="benchDisk">--</strong></article>
           <article class="tile"><span>Fit analysis</span><strong id="benchFit">--</strong></article>
           <article class="tile"><span>Models analyzed</span><strong id="benchModels">--</strong></article>
@@ -154,6 +161,9 @@
           <article class="tile"><span>Uptime 1d</span><strong id="uptime1d">--</strong></article>
           <article class="tile"><span>Uptime 7d</span><strong id="uptime7d">--</strong></article>
           <article class="tile"><span>Uptime 30d</span><strong id="uptime30d">--</strong></article>
+          <article class="tile"><span>Uptime score</span><strong id="uptimeScore">--</strong></article>
+          <article class="tile"><span>Reliability score</span><strong id="reliabilityScore">--</strong></article>
+          <article class="tile"><span>Reliability level</span><strong id="reliabilityLevel">--</strong></article>
           <article class="tile"><span>Total checks</span><strong id="uptimeChecks">0</strong></article>
           <article class="tile"><span>Failed checks</span><strong id="uptimeFailed">0</strong></article>
           <article class="tile"><span>Last online</span><strong id="uptimeLastOnline">--</strong></article>
@@ -220,6 +230,8 @@
         readiness: "/api/v1/readiness",
         verification: "/api/v1/verification",
         uptime: "/api/v1/uptime",
+        reliability: "/api/v1/reliability",
+        networkScore: "/api/v1/network-score",
         history: "/api/v1/history",
         registration: "/api/v1/registration-payload",
         pricing: "/api/v1/pricing",
@@ -345,6 +357,8 @@
         const score = isError(state.score) ? provider.score || report.score || raw.score || {} : state.score || provider.score || report.score || raw.score || {};
         const verification = isError(state.verification) ? provider.verification || raw.verification || {} : state.verification || provider.verification || raw.verification || {};
         const uptime = isError(state.uptime) ? provider.uptime || raw.uptime || {} : state.uptime || provider.uptime || raw.uptime || {};
+        const reliability = isError(state.reliability) ? provider.reliability || raw.reliability || {} : state.reliability || provider.reliability || raw.reliability || {};
+        const networkScore = isError(state.networkScore) ? provider.network || raw.network || report.network_score || {} : state.networkScore || provider.network || raw.network || report.network_score || {};
         const pricing = isError(state.pricing) ? provider.pricing || raw.pricing || {} : state.pricing || provider.pricing || raw.pricing || {};
         const earnings = isError(state.earnings) ? provider.estimated_earnings || raw.earnings_mock || {} : state.earnings || provider.estimated_earnings || raw.earnings_mock || {};
         const history = isError(state.history) ? { entries: [] } : state.history || { entries: [] };
@@ -355,7 +369,7 @@
         const actions = Array.isArray(state.actions) ? state.actions : raw.actions?.items || [];
         const logs = Array.isArray(state.logs) ? state.logs : raw.actions?.logs || [];
 
-        return { raw, provider, readiness, report, system, score, verification, uptime, pricing, earnings, history, registration, config, fit, benchmarkStatus, actions, logs };
+        return { raw, provider, readiness, report, system, score, verification, uptime, reliability, networkScore, pricing, earnings, history, registration, config, fit, benchmarkStatus, actions, logs };
       }
 
       function render() {
@@ -403,6 +417,9 @@
         write("overviewUptime1d", pct(first(data.provider.uptime_1d, data.uptime.uptime_1d)));
         write("overviewUptime7d", pct(first(data.provider.uptime_7d, data.uptime.uptime_7d)));
         write("overviewUptime30d", pct(first(data.provider.uptime_30d, data.uptime.uptime_30d)));
+        write("overviewUptimeScore", first(data.uptime.uptime_score, data.provider.uptime_score) !== undefined ? `${first(data.uptime.uptime_score, data.provider.uptime_score)}/100` : "--");
+        write("overviewReliability", data.reliability.reliability_score !== undefined ? `${data.reliability.reliability_score}/100` : "--");
+        write("overviewNetworkScore", data.networkScore.network_score !== undefined ? `${data.networkScore.network_score}/100` : "--");
         write("overviewSigned", signed);
         write("overviewChallenge", challenge);
         write("overviewFraud", data.verification.fraud_risk_level || "--");
@@ -437,6 +454,10 @@
         write("benchLlm", data.report.llm_benchmark?.avg_tps ? `${data.report.llm_benchmark.avg_tps} tok/s` : statusLabel(data.report.llm_benchmark));
         write("benchStability", statusLabel(data.report.stability));
         write("benchNetwork", statusLabel(data.report.network));
+        write("benchNetworkScore", data.networkScore.network_score !== undefined ? `${data.networkScore.network_score}/100` : "--");
+        write("benchNetworkLevel", data.networkScore.level || data.networkScore.status || "--");
+        write("benchNetworkLatency", typeof data.networkScore.components?.avg_latency_ms === "number" ? `${data.networkScore.components.avg_latency_ms} ms` : "--");
+        write("benchNetworkLoss", typeof data.networkScore.components?.loss_pct === "number" ? `${data.networkScore.components.loss_pct}%` : "--");
         write("benchDisk", statusLabel(data.report.disk));
         write("benchFit", data.fit.source || "--");
         write("benchModels", data.fit.total_models_analyzed ?? "--");
@@ -456,6 +477,9 @@
         write("uptime1d", pct(data.uptime.uptime_1d));
         write("uptime7d", pct(data.uptime.uptime_7d));
         write("uptime30d", pct(data.uptime.uptime_30d));
+        write("uptimeScore", data.uptime.uptime_score !== undefined ? `${data.uptime.uptime_score}/100` : "--");
+        write("reliabilityScore", data.reliability.reliability_score !== undefined ? `${data.reliability.reliability_score}/100` : "--");
+        write("reliabilityLevel", data.reliability.level || data.reliability.status || "--");
         write("uptimeChecks", data.uptime.checks_total ?? 0);
         write("uptimeFailed", data.uptime.checks_failed ?? 0);
         write("uptimeLastOnline", data.uptime.last_online_at || "--");

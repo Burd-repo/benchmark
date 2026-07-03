@@ -49,6 +49,9 @@ after the June 2026 reliability pass.
 - `actions --json`
 - `logs --json`
 - `raw --json`
+- `trust-score --json`
+- `capability-spot --json`
+- `workload-eligibility --json`
 - `serve --host <ip> --port <port>`
 
 ## Added In This Stage
@@ -101,6 +104,17 @@ after the June 2026 reliability pass.
   enabled.
 - Registration payload is generated locally without secrets.
 - Uptime can be listed and cleared through CLI.
+- Uptime summaries include `uptime_score` and `uptime_level`.
+- Local reliability can be calculated from heartbeat history through CLI and API.
+- Provider details, raw data, registration payloads, full reports, signed reports, and the Provider Console surface local reliability.
+- Local network score can be calculated from the latest finite network benchmark through CLI and API.
+- Provider details, raw data, registration payloads, full reports, signed reports, and the Provider Console surface local network score.
+- Local trust score can be calculated from verification, evidence freshness, reliability, network quality, and local benchmark history through CLI and API.
+- Provider details, raw data, and registration payloads surface local trust score summaries.
+- Local/mock AI capability spot verification can be calculated from fit analysis, runtime readiness, signed evidence, optional local LLM benchmark proof, and local history depth through CLI and API.
+- Provider details, raw data, and registration payloads surface local/mock capability spot verification summaries.
+- Local workload eligibility can be calculated from fit recommendations, capability spot verification, trust score, provider verification, reliability, compute score, and marketplace GPU policy through CLI and API.
+- Provider details, raw data, and registration payloads surface local and future-marketplace workload eligibility summaries.
 - Network benchmark includes latency aliases, request counts, status code,
   DNS timing, duration, jitter, and warnings.
 - Raw data includes explicit redaction metadata and summaries for history,
@@ -164,8 +178,7 @@ after the June 2026 reliability pass.
 - Hardware attestation through TPM/HSM/OS keychain.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
-- Continuous heartbeat loops, backend-bound availability, reliability/network/
-  trust scores, spot verification, and workload eligibility.
+- Backend-bound availability and scheduler enforcement of workload eligibility.
 
 ## Known Build Warnings
 
@@ -186,6 +199,7 @@ after the June 2026 reliability pass.
 - `~/.burd/provider-session.json`: local provider session snapshot.
 - `~/.burd/benchmark-history.json`: benchmark history summaries.
 - `~/.burd/uptime.json`: heartbeat history.
+- `~/.burd/latest-network.json`: latest finite network benchmark sample.
 - `~/.burd/actions.json`: action records.
 - `~/.burd/logs.json`: task logs.
 
