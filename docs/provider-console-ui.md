@@ -74,6 +74,8 @@ The UI consumes these local endpoints when opened through `serve`:
 - `GET /api/v1/readiness`
 - `GET /api/v1/verification`
 - `GET /api/v1/uptime`
+- `GET /api/v1/reliability`
+- `GET /api/v1/network-score`
 - `GET /api/v1/history`
 - `GET /api/v1/registration-payload`
 - `GET /api/v1/pricing`
@@ -105,7 +107,7 @@ The UI includes:
 
 Overview shows provider and machine identity, online status, Burd Compute Score,
 tier, local marketplace readiness, GPU, backend, suggested demonstrative price,
-uptime, signed report status, and challenge status.
+uptime, reliability, network score, signed report status, and challenge status.
 
 Readiness shows the canonical local readiness score, level, status, individual
 checks, warnings, and recommendations from `GET /api/v1/readiness`.
@@ -113,8 +115,8 @@ checks, warnings, and recommendations from `GET /api/v1/readiness`.
 Hardware shows CPU, RAM, GPU, VRAM, backend, driver/runtime signals, disk, and
 network summary.
 
-Benchmarks shows LLM, stability, network, disk, fit analysis, and skipped,
-passed, or failed status.
+Benchmarks shows LLM, stability, network, network score, latency, loss, disk,
+fit analysis, and skipped, passed, or failed status.
 
 History shows the latest benchmark and prior persisted benchmark summaries when
 they exist, including score, tier, signed state, and challenge ID.

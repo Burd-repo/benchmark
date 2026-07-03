@@ -68,6 +68,8 @@ heartbeat loop.
 .\target\debug\burd-agent.exe history --json
 .\target\debug\burd-agent.exe history latest --json
 .\target\debug\burd-agent.exe uptime --json
+.\target\debug\burd-agent.exe reliability --json
+.\target\debug\burd-agent.exe network-score --json
 .\target\debug\burd-agent.exe actions --json
 .\target\debug\burd-agent.exe logs --json
 .\target\debug\burd-agent.exe registration-payload --json

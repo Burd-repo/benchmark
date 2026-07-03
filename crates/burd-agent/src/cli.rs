@@ -97,6 +97,31 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<UptimeCommands>,
     },
+    /// Calculate local reliability from heartbeat uptime history.
+    Reliability {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Calculate local network score from the latest finite network benchmark.
+    NetworkScore {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Calculate local heuristic trust score from verification, freshness, reliability, network, and history.
+    TrustScore {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run local/mock AI capability spot verification from fit, runtime, signed evidence, and optional live benchmark proof.
+    CapabilitySpot {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Evaluate local and future marketplace workload eligibility.
+    WorkloadEligibility {
+        #[arg(long)]
+        json: bool,
+    },
     /// Aggregate local provider console details.
     Provider {
         #[arg(long)]
@@ -339,3 +364,6 @@ pub enum UptimeCommands {
         confirm: bool,
     },
 }
+
+
+

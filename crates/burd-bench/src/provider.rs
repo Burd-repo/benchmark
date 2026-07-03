@@ -1,12 +1,19 @@
 use crate::actions::logs_summary;
+use crate::capability::{CapabilitySpotVerificationReport, calculate_capability_spot_verification};
 use crate::earnings::{EarningsReport, estimate_earnings};
-use crate::health::{UptimeSummary, detect_health_from_system};
+use crate::history::load_history_list;
+use crate::health::{
+    ReliabilityReport, UptimeSummary, calculate_reliability, detect_health_from_system,
+    load_reliability_report,
+};
+use crate::network::{NetworkScoreReport, calculate_network_score, load_network_score_report};
 use crate::pricing::{PricingReport, calculate_pricing};
 use crate::report::{
     ReportRunOptions, generate_full_report_from_snapshot, load_latest_signed_report,
 };
 use crate::score::{ScoreReport, calculate_score};
 use crate::verification::{ProviderVerification, verify_provider_from_reports};
+use crate::workload::{WorkloadEligibilityReport, calculate_workload_eligibility};
 use burd_hardware::{
     MarketplaceGpuPolicy, SystemReport, build_hardware_fingerprint_report, build_system_report,
     detect_specs, gpu_vendor,
@@ -42,7 +49,14 @@ pub struct BurdProviderDetails {
     pub uptime_1d: f64,
     pub uptime_7d: f64,
     pub uptime_30d: f64,
+    pub uptime_score: f64,
+    pub reliability_score: f64,
+    pub network_score: f64,
     pub uptime: UptimeSummary,
+    pub reliability: ReliabilityReport,
+    pub network: NetworkScoreReport,
+    pub capability_spot: CapabilitySpotVerificationReport,
+    pub workload_eligibility: WorkloadEligibilityReport,
     pub stats: ProviderStats,
     pub pricing: PricingReport,
     pub score: ScoreReport,
@@ -131,12 +145,34 @@ pub fn build_provider_details(agent_version: &str, host_uri: &str) -> BurdProvid
     let pricing = calculate_pricing(&system, &score);
     let earnings = estimate_earnings(&pricing);
     let health = detect_health_from_system(agent_version, &system);
+    let reliability = load_reliability_report().unwrap_or_else(|_| calculate_reliability(&[]));
+    let network = load_network_score_report().unwrap_or_else(|_| calculate_network_score(None));
+    let latest_signed_result = load_latest_signed_report();
+    let latest_signed_report = latest_signed_result.clone().ok();
     let verification = verify_provider_from_reports(
         identity_result.as_ref().map(|_| ()).map_err(Clone::clone),
         &system,
         &score,
-        load_latest_signed_report(),
+        latest_signed_result,
         load_latest_challenge_output(),
+    );
+    let history = load_history_list().ok();
+    let capability_spot = calculate_capability_spot_verification(
+        &system,
+        &fit,
+        &verification,
+        latest_signed_report.as_ref(),
+        history.as_ref(),
+    );
+    let workload_eligibility = calculate_workload_eligibility(
+        &system,
+        &fit,
+        &score,
+        &verification,
+        &reliability,
+        &capability_spot,
+        &crate::trust::calculate_trust_score(&verification, &reliability, &network, history.as_ref(), None),
+        history.as_ref(),
     );
     let session = load_provider_session().ok().flatten();
     let heartbeat = heartbeat_summary_from_session(session.as_ref());
@@ -184,7 +220,14 @@ pub fn build_provider_details(agent_version: &str, host_uri: &str) -> BurdProvid
         uptime_1d: health.uptime.uptime_1d,
         uptime_7d: health.uptime.uptime_7d,
         uptime_30d: health.uptime.uptime_30d,
-        uptime: health.uptime,
+        uptime_score: health.uptime.uptime_score,
+        reliability_score: reliability.reliability_score,
+        network_score: network.network_score,
+        uptime: health.uptime.clone(),
+        reliability,
+        network,
+        capability_spot,
+        workload_eligibility,
         stats: stats_from_system(&system, health.disk_free_gb),
         pricing: pricing.clone(),
         tier: score.tier.clone(),
@@ -384,3 +427,9 @@ mod tests {
         assert_eq!(gpu_models[0].vram_confidence.as_deref(), Some("detected"));
     }
 }
+
+
+
+
+
+

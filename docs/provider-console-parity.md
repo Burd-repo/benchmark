@@ -38,6 +38,8 @@ tokens, expiry durations, CORS, and service host configuration.
 | `email`, `website` | optional provider contact attributes |
 | `region`, `country`, `city`, `timezone` | `location` object |
 | `uptime1d`, `uptime7d`, `uptime30d` | local uptime ratios from `~/.burd/uptime.json` |
+| reliability score | local score derived from heartbeat uptime history |
+| network score | local score derived from the latest finite network benchmark |
 | `isOnline` | `is_online` from local health/heartbeat |
 | `isAudited` | `is_audited` and `audit_status` |
 | `attributes` | Burd provider attributes for discovery/readiness |
@@ -111,6 +113,7 @@ tokens, expiry durations, CORS, and service host configuration.
 - Audit status is local/self-verification only.
 - Persistent storage support is represented in the model but not provisioned.
 - Network up/down bandwidth may be unknown unless a future benchmark measures it.
+- Network score is local-only and derived from latency, jitter, loss, and DNS timing.
 - Marketplace orchestration, billing, Pix, payouts, and real job execution are
   not implemented.
 
@@ -124,4 +127,3 @@ tokens, expiry durations, CORS, and service host configuration.
 - Provider payment, billing, Pix, settlement, and tax/reporting flows.
 - Remote telemetry, alerting, notifications, and moderation.
 - API tokens or mTLS for non-local provider APIs.
-

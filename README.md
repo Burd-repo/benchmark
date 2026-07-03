@@ -31,6 +31,8 @@
 * [Challenge local](#challenge-local)
 * [Readiness](#readiness)
 * [Score](#score)
+* [Network score](#network-score)
+* [Reliability e uptime](#reliability-e-uptime)
 * [Histórico](#histórico)
 * [Payload de registro](#payload-de-registro)
 * [Regras de segurança](#regras-de-segurança)
@@ -59,6 +61,8 @@ O agent é responsável por:
 * criar e validar challenges locais;
 * registrar histórico local;
 * calcular readiness;
+* calcular reliability local a partir do historico de heartbeat;
+* calcular network score local a partir de benchmark finito;
 * expor uma API local para integração com interfaces.
 
 Este repositório não é uma landing page institucional.
@@ -151,6 +155,7 @@ burd-agent bench disk --json
 
 ```bash
 burd-agent score --json
+burd-agent network-score --json
 ```
 
 ### Relatórios
@@ -202,6 +207,8 @@ burd-agent session stop --json
 burd-agent provider --json
 burd-agent verify-provider --json
 burd-agent readiness --json
+burd-agent uptime --json
+burd-agent reliability --json
 burd-agent registration-payload --json
 ```
 
@@ -253,6 +260,9 @@ POST /api/v1/report/verify
 GET  /api/v1/provider
 GET  /api/v1/readiness
 GET  /api/v1/verification
+GET  /api/v1/uptime
+GET  /api/v1/reliability
+GET  /api/v1/network-score
 GET  /api/v1/history
 GET  /api/v1/registration-payload
 GET  /api/v1/pricing
@@ -424,6 +434,50 @@ Tiers:
 ```
 
 Preços e ganhos demonstrativos não devem ser tratados como promessa de receita.
+
+---
+
+## Network score
+
+O network score local usa a ultima amostra finita de `bench network --json` ou a secao `network` do ultimo `report --run-all` salvo em `~/.burd/latest-report.json`.
+Ele nao executa medicao continua, nao abre porta, nao prova disponibilidade publica e nao representa aprovacao de marketplace.
+
+Comandos:
+
+```bash
+burd-agent bench network --json
+burd-agent network-score --json
+```
+
+Campos principais:
+
+```txt
+network_score   score 0-100 ponderado por latencia, jitter, perda e DNS
+status          no_benchmark, failed, constrained, usable, strong ou excellent
+level           No Data, Poor, Constrained, Usable, Strong ou Excellent
+```
+
+---
+
+## Reliability e uptime
+
+O score de reliability local usa apenas o historico de heartbeat em `~/.burd/uptime.json`.
+Ele nao altera o Burd Compute Score e nao representa disponibilidade de backend, auditoria externa, listagem em marketplace ou promessa de receita.
+
+Comandos:
+
+```bash
+burd-agent uptime --json
+burd-agent reliability --json
+```
+
+Campos principais:
+
+```txt
+uptime_score        score 0-100 ponderado por uptime 1d, 7d e 30d
+reliability_score   score 0-100 com uptime, cobertura de amostras, status recente e penalidade de falhas consecutivas
+status              no_history, warming_up, reliable, degraded ou offline
+```
 
 ---
 

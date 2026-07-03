@@ -1,6 +1,10 @@
 use crate::disk::{DiskBenchmarkOptions, run_disk_benchmark};
+use crate::health::{calculate_reliability, load_reliability_report};
 use crate::llm::{LlmBenchmarkOptions, LlmBenchmarkReport, run_llm_benchmark};
-use crate::network::{NetworkBenchmarkOptions, run_network_benchmark};
+use crate::network::{
+    NetworkBenchmarkOptions, calculate_network_score, load_network_score_report,
+    run_network_benchmark,
+};
 use crate::profiles::profile_for_vram;
 use crate::score::calculate_score;
 use crate::stability::{StabilityBenchmarkReport, run_stability_benchmark};
@@ -90,6 +94,13 @@ pub(crate) fn generate_full_report_from_snapshot(
         network.as_ref(),
         disk.as_ref(),
     );
+    let reliability = load_reliability_report().unwrap_or_else(|_| calculate_reliability(&[]));
+    let network_score = network
+        .as_ref()
+        .map(|report| calculate_network_score(Some(report)))
+        .unwrap_or_else(|| {
+            load_network_score_report().unwrap_or_else(|_| calculate_network_score(None))
+        });
 
     let machine_id = identity.as_ref().map(|value| value.machine_id.clone());
     let challenge_id = options
@@ -123,11 +134,17 @@ pub(crate) fn generate_full_report_from_snapshot(
         } else {
             Some(skipped("not run; use report --run-all or bench network"))
         },
+        network_score: Some(
+            serde_json::to_value(network_score).expect("network score report serializes"),
+        ),
         disk: if let Some(value) = &disk {
             Some(serde_json::to_value(value).expect("disk report serializes"))
         } else {
             Some(skipped("not run; use report --run-all or bench disk"))
         },
+        reliability: Some(
+            serde_json::to_value(reliability).expect("reliability report serializes"),
+        ),
         score: serde_json::to_value(score).expect("score serializes"),
         timestamp,
         agent_version: options.agent_version,
@@ -345,7 +362,9 @@ mod tests {
                 llm_benchmark: None,
                 stability: None,
                 network: None,
+                network_score: None,
                 disk: None,
+                reliability: None,
                 score: serde_json::json!({"burd_compute_score": 0}),
                 timestamp: "2026-06-08T00:00:00Z".to_string(),
                 agent_version: "0.1.0".to_string(),

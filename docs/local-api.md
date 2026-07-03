@@ -39,6 +39,11 @@ Endpoints:
 - `GET /api/v1/provider`
 - `GET /api/v1/verification`
 - `GET /api/v1/uptime`
+- `GET /api/v1/reliability`
+- `GET /api/v1/network-score`
+- `GET /api/v1/trust-score`
+- `GET /api/v1/capability-spot`
+- `GET /api/v1/workload-eligibility`
 - `GET /api/v1/history`
 - `GET /api/v1/registration-payload`
 - `GET /api/v1/pricing`
@@ -72,4 +77,6 @@ Public or lower-risk endpoints:
 
 - `GET /health`
 - read-only summaries such as system, provider, verification, history, uptime,
+  reliability, network score, trust score, capability spot, workload eligibility,
   pricing, earnings, actions, and logs.
+

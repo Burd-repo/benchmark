@@ -28,6 +28,8 @@ Fields:
 - `capabilities`
 - `pricing`
 - `verification`
+- `reliability`
+- `network`
 - `evidence`
 - `created_at`
 - `secrets_included`
@@ -50,6 +52,7 @@ The current payload carries the live hardware fingerprint and local
 `nvidia_cuda_only_mvp` policy snapshot. Provider verification also exposes the
 latest signed-report fingerprint and whether it matches current hardware.
 
+`reliability` and `network` carry local-only scores for future backend review.
 `evidence` includes signed-report and challenge freshness. An expired signed
 report remains visible by hash for audit/history purposes, but its signed score
 and tier do not count as current registration evidence.

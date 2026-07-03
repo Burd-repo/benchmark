@@ -28,6 +28,10 @@ pub struct ProviderRegistrationPayload {
     pub capabilities: serde_json::Value,
     pub pricing: serde_json::Value,
     pub verification: serde_json::Value,
+    pub reliability: serde_json::Value,
+    pub network: serde_json::Value,
+    pub capability_spot: serde_json::Value,
+    pub workload_eligibility: serde_json::Value,
     pub evidence: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<ProviderSession>,
@@ -84,8 +88,17 @@ pub(crate) fn build_registration_payload_from(
         "hardware_fingerprint": provider.hardware_fingerprint.clone(),
         "marketplace_policy": provider.marketplace_policy.clone(),
         "recommended_workloads": provider.score.recommended_workloads.clone(),
+        "uptime_score": provider.uptime_score,
+        "reliability_score": provider.reliability_score,
+        "network_score": provider.network_score,
+        "network_status": provider.network.status.clone(),
         "container_orchestration_future": false,
         "marketplace_jobs_future": false,
+        "capability_spot_score": provider.capability_spot.capability_score,
+        "capability_spot_status": provider.capability_spot.status.clone(),
+        "capability_spot_level": provider.capability_spot.level.clone(),
+        "workload_eligibility_status": provider.workload_eligibility.local_status.clone(),
+        "workload_marketplace_status_future": provider.workload_eligibility.marketplace_status_future.clone(),
     });
     if let Some(map) = capabilities.as_object_mut() {
         if let Some(source) = provider.hardware.vram_source.clone() {
@@ -114,6 +127,10 @@ pub(crate) fn build_registration_payload_from(
             "attributes": provider.attributes.clone(),
             "tier": provider.tier.clone(),
             "score": provider.score.burd_compute_score,
+            "uptime_score": provider.uptime_score,
+            "reliability_score": provider.reliability_score,
+            "network_score": provider.network_score,
+            "network_status": provider.network.status.clone(),
         }),
         latest_signed_report_hash: latest_signed.map(|report| report.report_hash.clone()),
         latest_score,
@@ -132,6 +149,14 @@ pub(crate) fn build_registration_payload_from(
             .unwrap_or_else(|_| serde_json::json!({"error": "pricing serialization failed"})),
         verification: serde_json::to_value(verification)
             .unwrap_or_else(|_| serde_json::json!({"error": "verification serialization failed"})),
+        reliability: serde_json::to_value(&provider.reliability)
+            .unwrap_or_else(|_| serde_json::json!({"error": "reliability serialization failed"})),
+        network: serde_json::to_value(&provider.network)
+            .unwrap_or_else(|_| serde_json::json!({"error": "network serialization failed"})),
+        capability_spot: serde_json::to_value(&provider.capability_spot)
+            .unwrap_or_else(|_| serde_json::json!({"error": "capability spot serialization failed"})),
+        workload_eligibility: serde_json::to_value(&provider.workload_eligibility)
+            .unwrap_or_else(|_| serde_json::json!({"error": "workload eligibility serialization failed"})),
         evidence: serde_json::json!({
             "signed_report": verification.signed_report_evidence.clone(),
             "challenge": verification.challenge_evidence.clone(),
@@ -196,6 +221,10 @@ mod tests {
             capabilities: serde_json::json!({}),
             pricing: serde_json::json!({}),
             verification: serde_json::json!({}),
+            reliability: serde_json::json!({}),
+            network: serde_json::json!({}),
+            capability_spot: serde_json::json!({}),
+            workload_eligibility: serde_json::json!({}),
             evidence: serde_json::json!({}),
             session: None,
             heartbeat: None,
@@ -257,3 +286,8 @@ mod tests {
         );
     }
 }
+
+
+
+
+

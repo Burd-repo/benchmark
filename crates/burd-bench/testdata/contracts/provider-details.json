@@ -12,6 +12,84 @@
   ],
   "audit_status": "self_verified",
   "backend_verification_status_future": "not_connected",
+  "capability_spot": {
+    "capability_score": 85.0,
+    "checked_at": "<timestamp>",
+    "checks": [
+      {
+        "id": "fit_evidence",
+        "label": "Model fit evidence",
+        "max_score": 100.0,
+        "message": "fit analysis found 1 runnable models and 2 recommended workloads",
+        "score": 60.0,
+        "status": "partial"
+      },
+      {
+        "id": "runtime_readiness",
+        "label": "Runtime readiness",
+        "max_score": 100.0,
+        "message": "runtime uses CUDA with 1 gpu(s); llm runtime verified: true",
+        "score": 100.0,
+        "status": "passed"
+      },
+      {
+        "id": "benchmark_evidence",
+        "label": "Live benchmark evidence",
+        "max_score": 100.0,
+        "message": "latest signed report includes a passing llm benchmark (avg_tps 42.0)",
+        "score": 100.0,
+        "status": "passed"
+      },
+      {
+        "id": "verification_integrity",
+        "label": "Verification integrity",
+        "max_score": 100.0,
+        "message": "signed current: true, fingerprint matches: true, fraud risk: low",
+        "score": 85.0,
+        "status": "passed"
+      },
+      {
+        "id": "history_support",
+        "label": "History support",
+        "max_score": 100.0,
+        "message": "local benchmark history contains 3 entrie(s)",
+        "score": 100.0,
+        "status": "passed"
+      }
+    ],
+    "components": {
+      "benchmark_evidence": 100.0,
+      "fit_evidence": 60.0,
+      "history_support": 100.0,
+      "runtime_readiness": 100.0,
+      "verification_integrity": 85.0
+    },
+    "evidence": {
+      "challenge_verified": false,
+      "history_entries": 3,
+      "llm_benchmark_current": true,
+      "llm_benchmark_passed": true,
+      "signed_report_current": true
+    },
+    "level": "Good",
+    "notes": [
+      "Capability spot verification is a local/mock signal derived from fit analysis, runtime state, signed evidence, and optional live benchmark proof.",
+      "It does not create workload eligibility, marketplace admission, backend approval, or a scheduling guarantee.",
+      "A current signed report with a passing llm benchmark is stronger evidence than fit-only capability inference."
+    ],
+    "recommended_workloads": [
+      "LLM medio quantizado",
+      "agentes"
+    ],
+    "runnable_models": 1,
+    "status": "verified_locally",
+    "summary": "fit evidence supports local AI capability; live benchmark evidence is current; capability score 85.0; verification status self_verified.",
+    "top_model": "Burd Contract Model",
+    "verification_mode": "local_mock",
+    "warnings": [
+      "challenge-backed capability evidence is not available yet"
+    ]
+  },
   "created_at": "<timestamp>",
   "estimated_earnings": {
     "active_jobs_future": 0,
@@ -73,6 +151,52 @@
     "requires_detected_vram": true,
     "requires_nvidia": true
   },
+  "network": {
+    "benchmark": {
+      "attempts": 5,
+      "avg_latency_ms": 80.0,
+      "dns_resolution_ms": 10.0,
+      "download_probe_bytes": null,
+      "duration_ms": 410.0,
+      "endpoint": "https://www.cloudflare.com/cdn-cgi/trace",
+      "errors": [],
+      "failed_requests": 0,
+      "failures": 0,
+      "jitter_ms": 5.0,
+      "latency_avg_ms": 80.0,
+      "latency_max_ms": 84.0,
+      "latency_min_ms": 76.0,
+      "loss_pct": 0.0,
+      "max_latency_ms": 84.0,
+      "min_latency_ms": 76.0,
+      "passed": true,
+      "status_code": 200,
+      "successful_requests": 5,
+      "warnings": []
+    },
+    "components": {
+      "avg_latency_ms": 80.0,
+      "dns_resolution_ms": 10.0,
+      "dns_score": 95.0,
+      "jitter_ms": 5.0,
+      "jitter_score": 90.0,
+      "latency_score": 80.0,
+      "loss_pct": 0.0,
+      "loss_score": 100.0,
+      "success_rate": 100.0
+    },
+    "level": "Strong",
+    "network_score": 88.5,
+    "notes": [
+      "Local network score is derived from the latest finite network benchmark only.",
+      "Network score weights: 45% latency, 20% jitter, 25% loss/success, 10% DNS resolution.",
+      "Network score is not backend availability, public reachability, marketplace admission, or a payout guarantee."
+    ],
+    "source": "https://www.cloudflare.com/cdn-cgi/trace",
+    "status": "strong",
+    "warnings": []
+  },
+  "network_score": 88.5,
   "pricing": {
     "cpu_price_brl_hour": 0.24,
     "endpoint_price_brl_hour_future": 0.0,
@@ -177,6 +301,89 @@
       "reason": "not run in fast contract fixture",
       "status": "skipped"
     },
+    "network_score": {
+      "benchmark": {
+        "attempts": 5,
+        "avg_latency_ms": 80.0,
+        "dns_resolution_ms": 10.0,
+        "download_probe_bytes": null,
+        "duration_ms": 410.0,
+        "endpoint": "https://www.cloudflare.com/cdn-cgi/trace",
+        "errors": [],
+        "failed_requests": 0,
+        "failures": 0,
+        "jitter_ms": 5.0,
+        "latency_avg_ms": 80.0,
+        "latency_max_ms": 84.0,
+        "latency_min_ms": 76.0,
+        "loss_pct": 0.0,
+        "max_latency_ms": 84.0,
+        "min_latency_ms": 76.0,
+        "passed": true,
+        "status_code": 200,
+        "successful_requests": 5,
+        "warnings": []
+      },
+      "components": {
+        "avg_latency_ms": 80.0,
+        "dns_resolution_ms": 10.0,
+        "dns_score": 95.0,
+        "jitter_ms": 5.0,
+        "jitter_score": 90.0,
+        "latency_score": 80.0,
+        "loss_pct": 0.0,
+        "loss_score": 100.0,
+        "success_rate": 100.0
+      },
+      "level": "Strong",
+      "network_score": 88.5,
+      "notes": [
+        "Local network score is derived from the latest finite network benchmark only.",
+        "Network score weights: 45% latency, 20% jitter, 25% loss/success, 10% DNS resolution.",
+        "Network score is not backend availability, public reachability, marketplace admission, or a payout guarantee."
+      ],
+      "source": "https://www.cloudflare.com/cdn-cgi/trace",
+      "status": "strong",
+      "warnings": []
+    },
+    "reliability": {
+      "checks_failed": 0,
+      "checks_total": 1,
+      "components": {
+        "failure_penalty": 0.0,
+        "latest_status": 100.0,
+        "sample_coverage": 4.2,
+        "uptime_1d": 100.0,
+        "uptime_30d": 100.0,
+        "uptime_7d": 100.0
+      },
+      "consecutive_failed_checks": 0,
+      "level": "Good",
+      "notes": [
+        "Local reliability is derived from local heartbeat history only.",
+        "Uptime score weights: 50% 1d, 30% 7d, 20% 30d.",
+        "Reliability score weights: 70% uptime score, 15% sample coverage, 15% latest status, minus consecutive failure penalty.",
+        "Reliability score is not backend availability, audit approval, marketplace admission, or a payout guarantee."
+      ],
+      "reliability_score": 85.6,
+      "status": "warming_up",
+      "uptime": {
+        "checks_failed": 0,
+        "checks_total": 1,
+        "current_status": "idle",
+        "last_failed_check_at": null,
+        "last_online_at": "<timestamp>",
+        "uptime_1d": 1.0,
+        "uptime_30d": 1.0,
+        "uptime_7d": 1.0,
+        "uptime_level": "Excellent",
+        "uptime_score": 100.0
+      },
+      "uptime_score": 100.0,
+      "warnings": [
+        "fewer than 3 heartbeat checks; reliability score is warming up"
+      ]
+    },
     "score": {
       "burd_compute_score": 82.5,
       "components": {
@@ -250,6 +457,45 @@
     },
     "timestamp": "<timestamp>"
   },
+  "reliability": {
+    "checks_failed": 0,
+    "checks_total": 1,
+    "components": {
+      "failure_penalty": 0.0,
+      "latest_status": 100.0,
+      "sample_coverage": 4.2,
+      "uptime_1d": 100.0,
+      "uptime_30d": 100.0,
+      "uptime_7d": 100.0
+    },
+    "consecutive_failed_checks": 0,
+    "level": "Good",
+    "notes": [
+      "Local reliability is derived from local heartbeat history only.",
+      "Uptime score weights: 50% 1d, 30% 7d, 20% 30d.",
+      "Reliability score weights: 70% uptime score, 15% sample coverage, 15% latest status, minus consecutive failure penalty.",
+      "Reliability score is not backend availability, audit approval, marketplace admission, or a payout guarantee."
+    ],
+    "reliability_score": 85.6,
+    "status": "warming_up",
+    "uptime": {
+      "checks_failed": 0,
+      "checks_total": 1,
+      "current_status": "idle",
+      "last_failed_check_at": null,
+      "last_online_at": "<timestamp>",
+      "uptime_1d": 1.0,
+      "uptime_30d": 1.0,
+      "uptime_7d": 1.0,
+      "uptime_level": "Excellent",
+      "uptime_score": 100.0
+    },
+    "uptime_score": 100.0,
+    "warnings": [
+      "fewer than 3 heartbeat checks; reliability score is warming up"
+    ]
+  },
+  "reliability_score": 85.6,
   "score": {
     "burd_compute_score": 82.5,
     "components": {
@@ -327,11 +573,14 @@
     "last_online_at": "<timestamp>",
     "uptime_1d": 1.0,
     "uptime_30d": 1.0,
-    "uptime_7d": 1.0
+    "uptime_7d": 1.0,
+    "uptime_level": "Excellent",
+    "uptime_score": 100.0
   },
   "uptime_1d": 1.0,
   "uptime_30d": 1.0,
   "uptime_7d": 1.0,
+  "uptime_score": 100.0,
   "verification": {
     "audit_status": "self_verified",
     "benchmark_verified": true,
@@ -358,5 +607,189 @@
     "vram_confidence": "detected",
     "vram_source": "nvidia_smi",
     "warnings": []
+  },
+  "workload_eligibility": {
+    "checked_at": "<timestamp>",
+    "local_status": "eligible_locally",
+    "marketplace_status_future": "marketplace_candidate",
+    "notes": [
+      "Workload eligibility is a local decision layer built on top of fit analysis, capability spot verification, trust score, and marketplace GPU policy.",
+      "Local eligibility does not create a backend lease, a scheduler assignment, or a paid marketplace admission.",
+      "Future marketplace eligibility remains stricter than local eligibility and is blocked when marketplace policy or evidence quality is insufficient."
+    ],
+    "provider_tier": "Burd Pro",
+    "summary": "Local workload eligibility is eligible_locally and future marketplace workload eligibility is marketplace_candidate; capability 85.0; trust 78.5.",
+    "warnings": [],
+    "workloads": [
+      {
+        "blockers": [],
+        "capability_score": 85.0,
+        "confidence_level": "medium",
+        "local_status": "eligible_locally",
+        "marketplace_status_future": "marketplace_candidate",
+        "reasons": [
+          "fit analysis recommends this workload for the current hardware snapshot",
+          "provider verification keeps the current hardware and signature evidence coherent",
+          "current signed evidence includes a passing local llm benchmark"
+        ],
+        "summary": "eligible_locally locally; marketplace_candidate for future marketplace policy.",
+        "trust_score": 78.5,
+        "workload": "LLM inference"
+      },
+      {
+        "blockers": [],
+        "capability_score": 85.0,
+        "confidence_level": "medium",
+        "local_status": "diagnostic_only",
+        "marketplace_status_future": "marketplace_candidate",
+        "reasons": [
+          "workload is not explicitly recommended, so eligibility falls back to generic local capability signals",
+          "provider verification keeps the current hardware and signature evidence coherent",
+          "current signed evidence includes a passing local llm benchmark"
+        ],
+        "summary": "diagnostic_only locally; marketplace_candidate for future marketplace policy.",
+        "trust_score": 78.5,
+        "workload": "chatbots"
+      },
+      {
+        "blockers": [],
+        "capability_score": 85.0,
+        "confidence_level": "medium",
+        "local_status": "diagnostic_only",
+        "marketplace_status_future": "marketplace_candidate",
+        "reasons": [
+          "workload is not explicitly recommended, so eligibility falls back to generic local capability signals",
+          "provider verification keeps the current hardware and signature evidence coherent",
+          "current signed evidence includes a passing local llm benchmark"
+        ],
+        "summary": "diagnostic_only locally; marketplace_candidate for future marketplace policy.",
+        "trust_score": 78.5,
+        "workload": "coding agents"
+      },
+      {
+        "blockers": [],
+        "capability_score": 85.0,
+        "confidence_level": "medium",
+        "local_status": "diagnostic_only",
+        "marketplace_status_future": "marketplace_candidate",
+        "reasons": [
+          "workload is not explicitly recommended, so eligibility falls back to generic local capability signals",
+          "provider verification keeps the current hardware and signature evidence coherent",
+          "current signed evidence includes a passing local llm benchmark"
+        ],
+        "summary": "diagnostic_only locally; marketplace_candidate for future marketplace policy.",
+        "trust_score": 78.5,
+        "workload": "reasoning agents"
+      },
+      {
+        "blockers": [],
+        "capability_score": 85.0,
+        "confidence_level": "medium",
+        "local_status": "diagnostic_only",
+        "marketplace_status_future": "marketplace_candidate",
+        "reasons": [
+          "workload is not explicitly recommended, so eligibility falls back to generic local capability signals",
+          "provider verification keeps the current hardware and signature evidence coherent",
+          "current signed evidence includes a passing local llm benchmark"
+        ],
+        "summary": "diagnostic_only locally; marketplace_candidate for future marketplace policy.",
+        "trust_score": 78.5,
+        "workload": "embeddings"
+      },
+      {
+        "blockers": [],
+        "capability_score": 85.0,
+        "confidence_level": "medium",
+        "local_status": "diagnostic_only",
+        "marketplace_status_future": "marketplace_candidate",
+        "reasons": [
+          "workload is not explicitly recommended, so eligibility falls back to generic local capability signals",
+          "provider verification keeps the current hardware and signature evidence coherent",
+          "current signed evidence includes a passing local llm benchmark"
+        ],
+        "summary": "diagnostic_only locally; marketplace_candidate for future marketplace policy.",
+        "trust_score": 78.5,
+        "workload": "batch inference pequeno"
+      },
+      {
+        "blockers": [],
+        "capability_score": 85.0,
+        "confidence_level": "medium",
+        "local_status": "diagnostic_only",
+        "marketplace_status_future": "marketplace_candidate",
+        "reasons": [
+          "workload is not explicitly recommended, so eligibility falls back to generic local capability signals",
+          "provider verification keeps the current hardware and signature evidence coherent",
+          "current signed evidence includes a passing local llm benchmark"
+        ],
+        "summary": "diagnostic_only locally; marketplace_candidate for future marketplace policy.",
+        "trust_score": 78.5,
+        "workload": "SDXL"
+      },
+      {
+        "blockers": [
+          "compute score is below the local threshold for this workload"
+        ],
+        "capability_score": 85.0,
+        "confidence_level": "medium",
+        "local_status": "diagnostic_only",
+        "marketplace_status_future": "marketplace_blocked",
+        "reasons": [
+          "workload is not explicitly recommended, so eligibility falls back to generic local capability signals",
+          "provider verification keeps the current hardware and signature evidence coherent",
+          "current signed evidence includes a passing local llm benchmark"
+        ],
+        "summary": "diagnostic_only locally; marketplace_blocked for future marketplace policy.",
+        "trust_score": 78.5,
+        "workload": "fine-tuning"
+      },
+      {
+        "blockers": [],
+        "capability_score": 85.0,
+        "confidence_level": "medium",
+        "local_status": "eligible_locally",
+        "marketplace_status_future": "marketplace_candidate",
+        "reasons": [
+          "fit analysis recommends this workload for the current hardware snapshot",
+          "provider verification keeps the current hardware and signature evidence coherent",
+          "current signed evidence includes a passing local llm benchmark"
+        ],
+        "summary": "eligible_locally locally; marketplace_candidate for future marketplace policy.",
+        "trust_score": 78.5,
+        "workload": "LLM medio quantizado"
+      },
+      {
+        "blockers": [],
+        "capability_score": 85.0,
+        "confidence_level": "medium",
+        "local_status": "eligible_locally",
+        "marketplace_status_future": "marketplace_candidate",
+        "reasons": [
+          "fit analysis recommends this workload for the current hardware snapshot",
+          "provider verification keeps the current hardware and signature evidence coherent",
+          "current signed evidence includes a passing local llm benchmark"
+        ],
+        "summary": "eligible_locally locally; marketplace_candidate for future marketplace policy.",
+        "trust_score": 78.5,
+        "workload": "agentes"
+      },
+      {
+        "blockers": [
+          "fit analysis explicitly marks this workload as not recommended",
+          "this workload is explicitly outside the current local recommendation set for future marketplace use"
+        ],
+        "capability_score": 85.0,
+        "confidence_level": "medium",
+        "local_status": "not_recommended",
+        "marketplace_status_future": "marketplace_blocked",
+        "reasons": [
+          "provider verification keeps the current hardware and signature evidence coherent",
+          "current signed evidence includes a passing local llm benchmark"
+        ],
+        "summary": "not_recommended locally; marketplace_blocked for future marketplace policy.",
+        "trust_score": 78.5,
+        "workload": "fine-tuning pesado"
+      }
+    ]
   }
 }

@@ -3,15 +3,17 @@ mod cli;
 use anyhow::Result;
 use burd_bench::{
     DiskBenchmarkOptions, LlmBenchmarkOptions, NetworkBenchmarkOptions, ReportRunOptions,
-    append_report_history, append_signed_report_history, build_provider_details,
+    append_report_history, append_signed_report_history, build_capability_spot_verification, build_provider_details, build_workload_eligibility,
     build_provider_readiness, build_provider_session_start, build_provider_session_status,
-    build_raw_data, build_registration_payload, calculate_pricing, calculate_score, clear_history,
-    clear_uptime_history, detect_health, estimate_earnings, export_history,
-    export_registration_payload, generate_full_report, generate_signed_report, heartbeat_once,
-    load_actions, load_history_list, load_latest_history, load_logs, load_logs_for_task,
+    build_raw_data, build_registration_payload, build_trust_score, calculate_network_score, calculate_pricing,
+    calculate_score, clear_history, clear_uptime_history, detect_health, estimate_earnings,
+    export_history, export_registration_payload, generate_full_report, generate_signed_report,
+    heartbeat_once, load_actions, load_history_list, load_latest_history, load_logs,
+    load_logs_for_task, load_network_score_report, load_reliability_report,
     load_signed_report_file, load_uptime_summary, profile_for_vram, record_action,
     run_disk_benchmark, run_llm_benchmark, run_network_benchmark, run_stability_benchmark,
-    save_latest_report, stop_provider_session, verify_provider, verify_signed_report,
+    save_latest_network_benchmark, save_latest_report, stop_provider_session, verify_provider,
+    verify_signed_report,
 };
 use burd_hardware::{
     build_hardware_fingerprint_report, build_system_report, detect_specs, detect_system_report,
@@ -159,6 +161,7 @@ fn run() -> Result<()> {
                     endpoint,
                     attempts: 5,
                 });
+                let _ = save_latest_network_benchmark(&report);
                 let _ = record_action(
                     "network benchmark",
                     if report.passed { "completed" } else { "failed" },
@@ -383,6 +386,23 @@ fn run() -> Result<()> {
                 print_json(&load_uptime_summary().map_err(anyhow::Error::msg)?)?;
             }
         },
+        Commands::Reliability { json: _ } => {
+            print_json(&load_reliability_report().map_err(anyhow::Error::msg)?)?;
+        }
+        Commands::NetworkScore { json: _ } => {
+            let report =
+                load_network_score_report().unwrap_or_else(|_| calculate_network_score(None));
+            print_json(&report)?;
+        }
+        Commands::TrustScore { json: _ } => {
+            print_json(&build_trust_score(AGENT_VERSION))?;
+        }
+        Commands::CapabilitySpot { json: _ } => {
+            print_json(&build_capability_spot_verification(AGENT_VERSION))?;
+        }
+        Commands::WorkloadEligibility { json: _ } => {
+            print_json(&build_workload_eligibility(AGENT_VERSION))?;
+        }
         Commands::Provider { json: _, host_uri } => {
             print_json(&build_provider_details(AGENT_VERSION, &host_uri))?;
         }
@@ -685,3 +705,10 @@ fn run_challenge(challenge: Challenge) -> Result<ChallengeRunOutput> {
     );
     Ok(output)
 }
+
+
+
+
+
+
+
