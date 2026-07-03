@@ -3,17 +3,17 @@ mod cli;
 use anyhow::Result;
 use burd_bench::{
     DiskBenchmarkOptions, LlmBenchmarkOptions, NetworkBenchmarkOptions, ReportRunOptions,
-    append_report_history, append_signed_report_history, build_capability_spot_verification, build_provider_details, build_workload_eligibility,
-    build_provider_readiness, build_provider_session_start, build_provider_session_status,
-    build_raw_data, build_registration_payload, build_trust_score, calculate_network_score, calculate_pricing,
-    calculate_score, clear_history, clear_uptime_history, detect_health, estimate_earnings,
-    export_history, export_registration_payload, generate_full_report, generate_signed_report,
-    heartbeat_once, load_actions, load_history_list, load_latest_history, load_logs,
-    load_logs_for_task, load_network_score_report, load_reliability_report,
-    load_signed_report_file, load_uptime_summary, profile_for_vram, record_action,
-    run_disk_benchmark, run_llm_benchmark, run_network_benchmark, run_stability_benchmark,
-    save_latest_network_benchmark, save_latest_report, stop_provider_session, verify_provider,
-    verify_signed_report,
+    append_report_history, append_signed_report_history, build_capability_spot_verification,
+    build_provider_details, build_provider_readiness, build_provider_session_start,
+    build_provider_session_status, build_raw_data, build_registration_payload, build_trust_score,
+    build_workload_eligibility, calculate_network_score, calculate_pricing, calculate_score,
+    clear_history, clear_uptime_history, detect_health, estimate_earnings, export_history,
+    export_registration_payload, generate_full_report, generate_signed_report, heartbeat_once,
+    load_actions, load_history_list, load_latest_history, load_logs, load_logs_for_task,
+    load_network_score_report, load_reliability_report, load_signed_report_file,
+    load_uptime_summary, profile_for_vram, record_action, run_disk_benchmark, run_llm_benchmark,
+    run_network_benchmark, run_stability_benchmark, save_latest_network_benchmark,
+    save_latest_report, stop_provider_session, verify_provider, verify_signed_report,
 };
 use burd_hardware::{
     build_hardware_fingerprint_report, build_system_report, detect_specs, detect_system_report,
@@ -705,10 +705,3 @@ fn run_challenge(challenge: Challenge) -> Result<ChallengeRunOutput> {
     );
     Ok(output)
 }
-
-
-
-
-
-
-

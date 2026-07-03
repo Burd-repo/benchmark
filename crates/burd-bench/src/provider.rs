@@ -1,11 +1,11 @@
 use crate::actions::logs_summary;
 use crate::capability::{CapabilitySpotVerificationReport, calculate_capability_spot_verification};
 use crate::earnings::{EarningsReport, estimate_earnings};
-use crate::history::load_history_list;
 use crate::health::{
     ReliabilityReport, UptimeSummary, calculate_reliability, detect_health_from_system,
     load_reliability_report,
 };
+use crate::history::load_history_list;
 use crate::network::{NetworkScoreReport, calculate_network_score, load_network_score_report};
 use crate::pricing::{PricingReport, calculate_pricing};
 use crate::report::{
@@ -171,7 +171,13 @@ pub fn build_provider_details(agent_version: &str, host_uri: &str) -> BurdProvid
         &verification,
         &reliability,
         &capability_spot,
-        &crate::trust::calculate_trust_score(&verification, &reliability, &network, history.as_ref(), None),
+        &crate::trust::calculate_trust_score(
+            &verification,
+            &reliability,
+            &network,
+            history.as_ref(),
+            None,
+        ),
         history.as_ref(),
     );
     let session = load_provider_session().ok().flatten();
@@ -427,9 +433,3 @@ mod tests {
         assert_eq!(gpu_models[0].vram_confidence.as_deref(), Some("detected"));
     }
 }
-
-
-
-
-
-

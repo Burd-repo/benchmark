@@ -153,10 +153,12 @@ pub(crate) fn build_registration_payload_from(
             .unwrap_or_else(|_| serde_json::json!({"error": "reliability serialization failed"})),
         network: serde_json::to_value(&provider.network)
             .unwrap_or_else(|_| serde_json::json!({"error": "network serialization failed"})),
-        capability_spot: serde_json::to_value(&provider.capability_spot)
-            .unwrap_or_else(|_| serde_json::json!({"error": "capability spot serialization failed"})),
-        workload_eligibility: serde_json::to_value(&provider.workload_eligibility)
-            .unwrap_or_else(|_| serde_json::json!({"error": "workload eligibility serialization failed"})),
+        capability_spot: serde_json::to_value(&provider.capability_spot).unwrap_or_else(
+            |_| serde_json::json!({"error": "capability spot serialization failed"}),
+        ),
+        workload_eligibility: serde_json::to_value(&provider.workload_eligibility).unwrap_or_else(
+            |_| serde_json::json!({"error": "workload eligibility serialization failed"}),
+        ),
         evidence: serde_json::json!({
             "signed_report": verification.signed_report_evidence.clone(),
             "challenge": verification.challenge_evidence.clone(),
@@ -286,8 +288,3 @@ mod tests {
         );
     }
 }
-
-
-
-
-

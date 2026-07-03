@@ -223,4 +223,3 @@ starting the API server or depending on host state:
   `not_verified`, `ready_locally`, and `failed` states.
 - one-shot heartbeat behavior, local uptime history updates, active-session
   liveness checks, and session invalidation on fingerprint mismatch.
-

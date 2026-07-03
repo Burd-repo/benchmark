@@ -283,13 +283,8 @@ mod tests {
         let network = crate::test_fixtures::network_score_report();
         let history = crate::test_fixtures::history_list();
 
-        let report = calculate_trust_score(
-            &verification,
-            &reliability,
-            &network,
-            Some(&history),
-            None,
-        );
+        let report =
+            calculate_trust_score(&verification, &reliability, &network, Some(&history), None);
 
         assert!(report.trust_score >= 70.0);
         assert_eq!(report.status, "trusted_locally");
@@ -311,7 +306,17 @@ mod tests {
         );
 
         assert_eq!(report.status, "at_risk");
-        assert!(report.warnings.iter().any(|item| item.contains("fraud risk")));
-        assert!(report.warnings.iter().any(|item| item.contains("fingerprint")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|item| item.contains("fraud risk"))
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|item| item.contains("fingerprint"))
+        );
     }
 }

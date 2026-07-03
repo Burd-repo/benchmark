@@ -79,4 +79,3 @@ Public or lower-risk endpoints:
 - read-only summaries such as system, provider, verification, history, uptime,
   reliability, network score, trust score, capability spot, workload eligibility,
   pricing, earnings, actions, and logs.
-

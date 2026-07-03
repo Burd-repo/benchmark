@@ -364,6 +364,3 @@ pub enum UptimeCommands {
         confirm: bool,
     },
 }
-
-
-

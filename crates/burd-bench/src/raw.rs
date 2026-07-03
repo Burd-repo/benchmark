@@ -92,10 +92,12 @@ pub(crate) fn build_raw_data_from_provider(
             .unwrap_or_else(|_| serde_json::json!({"error": "reliability serialization failed"})),
         network: serde_json::to_value(&provider.network)
             .unwrap_or_else(|_| serde_json::json!({"error": "network serialization failed"})),
-        capability_spot: serde_json::to_value(&provider.capability_spot)
-            .unwrap_or_else(|_| serde_json::json!({"error": "capability spot serialization failed"})),
-        workload_eligibility: serde_json::to_value(&provider.workload_eligibility)
-            .unwrap_or_else(|_| serde_json::json!({"error": "workload eligibility serialization failed"})),
+        capability_spot: serde_json::to_value(&provider.capability_spot).unwrap_or_else(
+            |_| serde_json::json!({"error": "capability spot serialization failed"}),
+        ),
+        workload_eligibility: serde_json::to_value(&provider.workload_eligibility).unwrap_or_else(
+            |_| serde_json::json!({"error": "workload eligibility serialization failed"}),
+        ),
     }
 }
 
@@ -162,8 +164,3 @@ mod tests {
         assert!(!json.contains("secret_key_base64"));
     }
 }
-
-
-
-
-

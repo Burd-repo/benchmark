@@ -53,9 +53,7 @@ pub struct CapabilitySpotEvidence {
     pub history_entries: usize,
 }
 
-pub fn build_capability_spot_verification(
-    agent_version: &str,
-) -> CapabilitySpotVerificationReport {
+pub fn build_capability_spot_verification(agent_version: &str) -> CapabilitySpotVerificationReport {
     let latest_signed = load_latest_signed_report().ok();
     let history = load_history_list().ok();
     build_capability_spot_verification_from(agent_version, latest_signed.as_ref(), history.as_ref())
@@ -96,10 +94,15 @@ pub fn calculate_capability_spot_verification(
 
     let mut warnings = Vec::new();
     if !verification.signed_report_current {
-        warnings.push("signed report evidence is not current for capability spot verification".to_string());
+        warnings.push(
+            "signed report evidence is not current for capability spot verification".to_string(),
+        );
     }
     if !benchmark.current {
-        warnings.push("no current live llm benchmark evidence is attached to the latest signed report".to_string());
+        warnings.push(
+            "no current live llm benchmark evidence is attached to the latest signed report"
+                .to_string(),
+        );
     } else if !benchmark.passed {
         warnings.push("latest signed report includes a failed llm benchmark".to_string());
     }
@@ -107,7 +110,10 @@ pub fn calculate_capability_spot_verification(
         warnings.push("challenge-backed capability evidence is not available yet".to_string());
     }
     if fit.runnable_models == 0 {
-        warnings.push("fit analysis did not find runnable models for the current hardware snapshot".to_string());
+        warnings.push(
+            "fit analysis did not find runnable models for the current hardware snapshot"
+                .to_string(),
+        );
     }
 
     let checks = vec![
@@ -222,7 +228,12 @@ fn runtime_readiness_score(system: &SystemReport, verification: &ProviderVerific
     if verification.llm_runtime_verified {
         score += 20.0;
     }
-    if system.vram_total_gb.or(system.vram_per_gpu_gb).unwrap_or(0.0) >= 8.0 {
+    if system
+        .vram_total_gb
+        .or(system.vram_per_gpu_gb)
+        .unwrap_or(0.0)
+        >= 8.0
+    {
         score += 20.0;
     }
     score.min(100.0)
@@ -278,9 +289,13 @@ fn llm_benchmark_evidence(
     };
 
     let message = if !current {
-        "latest signed report contains llm benchmark evidence, but the signed report is stale".to_string()
+        "latest signed report contains llm benchmark evidence, but the signed report is stale"
+            .to_string()
     } else if passed {
-        format!("latest signed report includes a passing llm benchmark (avg_tps {:.1})", avg_tps)
+        format!(
+            "latest signed report includes a passing llm benchmark (avg_tps {:.1})",
+            avg_tps
+        )
     } else {
         "latest signed report includes llm benchmark evidence, but it did not pass".to_string()
     };
@@ -345,9 +360,7 @@ fn fit_message(fit: &FitReport) -> String {
 fn runtime_message(system: &SystemReport, verification: &ProviderVerification) -> String {
     format!(
         "runtime uses {} with {} gpu(s); llm runtime verified: {}",
-        system.backend_detected,
-        system.gpu_count,
-        verification.llm_runtime_verified
+        system.backend_detected, system.gpu_count, verification.llm_runtime_verified
     )
 }
 
@@ -455,7 +468,9 @@ mod tests {
             &crate::test_fixtures::system_report(),
             &crate::test_fixtures::fit_report(),
             &crate::test_fixtures::provider_verification(),
-            Some(&crate::test_fixtures::signed_report_with_llm_benchmark(true)),
+            Some(&crate::test_fixtures::signed_report_with_llm_benchmark(
+                true,
+            )),
             Some(&crate::test_fixtures::history_list()),
         );
 
@@ -471,16 +486,19 @@ mod tests {
             &crate::test_fixtures::system_report(),
             &crate::test_fixtures::fit_report(),
             &crate::test_fixtures::provider_verification(),
-            Some(&crate::test_fixtures::synthetic_signed_report(crate::test_fixtures::full_report(None))),
+            Some(&crate::test_fixtures::synthetic_signed_report(
+                crate::test_fixtures::full_report(None),
+            )),
             Some(&crate::test_fixtures::history_list()),
         );
 
         assert!(!report.evidence.llm_benchmark_current);
-        assert!(report.warnings.iter().any(|warning| warning.contains("no current live llm benchmark evidence")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("no current live llm benchmark evidence"))
+        );
         assert!(report.capability_score < 90.0);
     }
 }
-
-
-
-

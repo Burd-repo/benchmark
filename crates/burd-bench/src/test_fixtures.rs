@@ -1,7 +1,7 @@
 use crate::capability::CapabilitySpotVerificationReport;
-use crate::history::{BenchmarkHistoryEntry, BenchmarkHistoryList, GpuSummary, SystemSummary};
 use crate::earnings::estimate_earnings;
 use crate::health::{ReliabilityComponents, ReliabilityReport, UptimeSummary};
+use crate::history::{BenchmarkHistoryEntry, BenchmarkHistoryList, GpuSummary, SystemSummary};
 use crate::network::{NetworkBenchmarkReport, NetworkScoreReport, calculate_network_score};
 use crate::pricing::calculate_pricing;
 use crate::provider::{
@@ -11,8 +11,8 @@ use crate::provider::{
 use crate::report::sign_full_report_at;
 use crate::score::{ScoreComponents, ScoreReport};
 use crate::trust::TrustScoreReport;
-use crate::workload::WorkloadEligibilityReport;
 use crate::verification::ProviderVerification;
+use crate::workload::WorkloadEligibilityReport;
 use burd_hardware::{
     BENCHMARK_VERSION, GpuReport, SystemReport, build_hardware_fingerprint_report,
 };
@@ -294,7 +294,6 @@ pub(crate) fn capability_spot_report() -> CapabilitySpotVerificationReport {
     )
 }
 
-
 pub(crate) fn trust_score_report() -> TrustScoreReport {
     crate::trust::calculate_trust_score(
         &provider_verification(),
@@ -535,10 +534,3 @@ fn skipped(reason: &str) -> serde_json::Value {
         "reason": reason,
     })
 }
-
-
-
-
-
-
-

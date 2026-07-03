@@ -5,12 +5,13 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_bench::{
-    ReportRunOptions, append_report_history, append_signed_report_history, build_capability_spot_verification, build_provider_details, build_workload_eligibility,
-    build_provider_readiness, build_raw_data, build_registration_payload, build_trust_score, calculate_network_score,
-    calculate_pricing, calculate_reliability, calculate_score, estimate_earnings,
-    generate_full_report, generate_signed_report, load_actions, load_history_list, load_logs,
-    load_network_score_report, load_reliability_report, load_uptime_summary, record_action,
-    save_latest_report, verify_provider,
+    ReportRunOptions, append_report_history, append_signed_report_history,
+    build_capability_spot_verification, build_provider_details, build_provider_readiness,
+    build_raw_data, build_registration_payload, build_trust_score, build_workload_eligibility,
+    calculate_network_score, calculate_pricing, calculate_reliability, calculate_score,
+    estimate_earnings, generate_full_report, generate_signed_report, load_actions,
+    load_history_list, load_logs, load_network_score_report, load_reliability_report,
+    load_uptime_summary, record_action, save_latest_report, verify_provider,
 };
 use burd_hardware::{build_system_report, detect_specs, detect_system_report};
 use burd_llmfit::build_fit_report;
@@ -226,11 +227,15 @@ async fn trust_score(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
 }
 
 async fn capability_spot(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    Json(serde_json::json!(build_capability_spot_verification(&state.agent_version)))
+    Json(serde_json::json!(build_capability_spot_verification(
+        &state.agent_version
+    )))
 }
 
 async fn workload_eligibility(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    Json(serde_json::json!(build_workload_eligibility(&state.agent_version)))
+    Json(serde_json::json!(build_workload_eligibility(
+        &state.agent_version
+    )))
 }
 
 async fn history() -> Json<serde_json::Value> {
@@ -644,11 +649,7 @@ mod tests {
             ),
             (
                 "/api/v1/workload-eligibility",
-                vec![
-                    "local_status",
-                    "marketplace_status_future",
-                    "workloads",
-                ],
+                vec!["local_status", "marketplace_status_future", "workloads"],
             ),
             ("/api/v1/history", vec!["entries_total", "entries"]),
             (
@@ -872,9 +873,3 @@ mod tests {
         ))
     }
 }
-
-
-
-
-
-

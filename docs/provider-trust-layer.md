@@ -146,4 +146,3 @@ Initial orchestration priority:
 
 Distributed clusters, real leases, jobs, marketplace listing, Pix, billing,
 payouts, and heartbeat loops are explicitly outside the local MVP.
-

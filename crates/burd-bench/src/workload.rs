@@ -1,7 +1,4 @@
-use crate::capability::{
-    CapabilitySpotVerificationReport,
-    calculate_capability_spot_verification,
-};
+use crate::capability::{CapabilitySpotVerificationReport, calculate_capability_spot_verification};
 use crate::health::{ReliabilityReport, calculate_reliability, load_reliability_report};
 use crate::history::{BenchmarkHistoryList, load_history_list};
 use crate::network::{calculate_network_score, load_network_score_report};
@@ -88,26 +85,37 @@ pub fn calculate_workload_eligibility(
     let workloads = canonical_workloads(fit);
     let items: Vec<WorkloadEligibility> = workloads
         .into_iter()
-        .map(|workload| evaluate_workload(
-            &workload,
-            &system,
-            fit,
-            score,
-            verification,
-            reliability,
-            capability,
-            trust,
-        ))
+        .map(|workload| {
+            evaluate_workload(
+                &workload,
+                &system,
+                fit,
+                score,
+                verification,
+                reliability,
+                capability,
+                trust,
+            )
+        })
         .collect();
 
-    let local_status = if items.iter().any(|item| item.local_status == "eligible_locally") {
+    let local_status = if items
+        .iter()
+        .any(|item| item.local_status == "eligible_locally")
+    {
         "eligible_locally"
-    } else if items.iter().any(|item| item.local_status == "diagnostic_only") {
+    } else if items
+        .iter()
+        .any(|item| item.local_status == "diagnostic_only")
+    {
         "diagnostic_only"
     } else {
         "not_ready"
     };
-    let marketplace_status_future = if items.iter().any(|item| item.marketplace_status_future == "marketplace_candidate") {
+    let marketplace_status_future = if items
+        .iter()
+        .any(|item| item.marketplace_status_future == "marketplace_candidate")
+    {
         "marketplace_candidate"
     } else {
         "marketplace_blocked"
@@ -115,7 +123,10 @@ pub fn calculate_workload_eligibility(
 
     let mut warnings = Vec::new();
     if !verification.signed_report_current {
-        warnings.push("signed report evidence is not current; workload eligibility remains conservative".to_string());
+        warnings.push(
+            "signed report evidence is not current; workload eligibility remains conservative"
+                .to_string(),
+        );
     }
     if capability.status != "verified_locally" {
         warnings.push("capability spot verification is below verified_locally; some workloads remain diagnostic-only".to_string());
@@ -162,7 +173,10 @@ fn canonical_workloads(fit: &FitReport) -> Vec<String> {
         .iter()
         .chain(fit.not_recommended_workloads.iter())
     {
-        if !workloads.iter().any(|item| normalize(item) == normalize(workload)) {
+        if !workloads
+            .iter()
+            .any(|item| normalize(item) == normalize(workload))
+        {
             workloads.push(workload.clone());
         }
     }
@@ -185,7 +199,12 @@ fn evaluate_workload(
         .recommended_workloads
         .iter()
         .any(|item| normalize(item) == normalized)
-        || fit.models.iter().any(|model| model.workloads.iter().any(|item| normalize(item) == normalized));
+        || fit.models.iter().any(|model| {
+            model
+                .workloads
+                .iter()
+                .any(|item| normalize(item) == normalized)
+        });
     let explicitly_not_recommended = fit
         .not_recommended_workloads
         .iter()
@@ -195,17 +214,27 @@ fn evaluate_workload(
     let mut blockers = Vec::new();
 
     if recommended {
-        reasons.push("fit analysis recommends this workload for the current hardware snapshot".to_string());
+        reasons.push(
+            "fit analysis recommends this workload for the current hardware snapshot".to_string(),
+        );
     } else if explicitly_not_recommended {
         blockers.push("fit analysis explicitly marks this workload as not recommended".to_string());
     } else {
         reasons.push("workload is not explicitly recommended, so eligibility falls back to generic local capability signals".to_string());
     }
 
-    if verification.signature_verified && verification.hardware_verified && verification.fingerprint_matches {
-        reasons.push("provider verification keeps the current hardware and signature evidence coherent".to_string());
+    if verification.signature_verified
+        && verification.hardware_verified
+        && verification.fingerprint_matches
+    {
+        reasons.push(
+            "provider verification keeps the current hardware and signature evidence coherent"
+                .to_string(),
+        );
     } else {
-        blockers.push("provider verification is missing current hardware or signature integrity".to_string());
+        blockers.push(
+            "provider verification is missing current hardware or signature integrity".to_string(),
+        );
     }
 
     if capability.evidence.llm_benchmark_current && capability.evidence.llm_benchmark_passed {
@@ -235,7 +264,8 @@ fn evaluate_workload(
             &mut blockers,
         )
     };
-    let confidence_level = confidence_level(capability.capability_score, trust.trust_score).to_string();
+    let confidence_level =
+        confidence_level(capability.capability_score, trust.trust_score).to_string();
 
     WorkloadEligibility {
         workload: workload.to_string(),
@@ -263,7 +293,9 @@ fn local_workload_status(
 ) -> &'static str {
     if verification.fraud_risk_level == "high" || !verification.fingerprint_matches {
         if !blockers.iter().any(|item| item.contains("fraud")) {
-            blockers.push("fraud risk or fingerprint mismatch blocks local workload eligibility".to_string());
+            blockers.push(
+                "fraud risk or fingerprint mismatch blocks local workload eligibility".to_string(),
+            );
         }
         return "blocked";
     }
@@ -293,11 +325,17 @@ fn marketplace_workload_status(
 ) -> &'static str {
     let policy = marketplace_policy(system);
     if !policy.marketplace_eligible {
-        blockers.push("marketplace gpu policy does not allow this machine into the paid marketplace path".to_string());
+        blockers.push(
+            "marketplace gpu policy does not allow this machine into the paid marketplace path"
+                .to_string(),
+        );
         return "marketplace_blocked";
     }
     if capability.status != "verified_locally" {
-        blockers.push("capability spot verification is not strong enough for future marketplace eligibility".to_string());
+        blockers.push(
+            "capability spot verification is not strong enough for future marketplace eligibility"
+                .to_string(),
+        );
         return "marketplace_blocked";
     }
     if trust.trust_score < 70.0 {
@@ -305,11 +343,15 @@ fn marketplace_workload_status(
         return "marketplace_blocked";
     }
     if reliability.reliability_score < 70.0 {
-        blockers.push("reliability score is below the local future-marketplace threshold".to_string());
+        blockers
+            .push("reliability score is below the local future-marketplace threshold".to_string());
         return "marketplace_blocked";
     }
     if !verification.signed_report_current || !verification.signature_verified {
-        blockers.push("signed report evidence is not current and verified for future marketplace eligibility".to_string());
+        blockers.push(
+            "signed report evidence is not current and verified for future marketplace eligibility"
+                .to_string(),
+        );
         return "marketplace_blocked";
     }
     if score.burd_compute_score < workload_min_compute_score(workload) {
@@ -371,8 +413,18 @@ mod tests {
             Some(&crate::test_fixtures::history_list()),
         );
 
-        assert!(report.workloads.iter().any(|item| item.workload == "agentes" && item.local_status == "eligible_locally"));
-        assert!(report.workloads.iter().any(|item| item.marketplace_status_future == "marketplace_candidate"));
+        assert!(
+            report
+                .workloads
+                .iter()
+                .any(|item| item.workload == "agentes" && item.local_status == "eligible_locally")
+        );
+        assert!(
+            report
+                .workloads
+                .iter()
+                .any(|item| item.marketplace_status_future == "marketplace_candidate")
+        );
     }
 
     #[test]
@@ -397,5 +449,3 @@ mod tests {
         assert_eq!(fine_tuning.marketplace_status_future, "marketplace_blocked");
     }
 }
-
-
