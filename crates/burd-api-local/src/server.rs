@@ -651,6 +651,14 @@ mod tests {
                 vec!["network_score", "level", "status", "components"],
             ),
             (
+                "/api/v1/ai-performance",
+                vec!["status", "level", "source", "confidence_level"],
+            ),
+            (
+                "/api/v1/trust-score",
+                vec!["trust_score", "level", "status", "components"],
+            ),
+            (
                 "/api/v1/capability-spot",
                 vec!["capability_score", "level", "status", "checks"],
             ),
@@ -688,6 +696,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn provider_console_ui_consumes_pr11_contracts_without_auto_heavy_actions() {
+        assert!(UI_INDEX.contains("/api/v1/ai-performance"));
+        assert!(UI_INDEX.contains("/api/v1/trust-score"));
+        assert!(UI_INDEX.contains("/api/v1/capability-spot"));
+        assert!(UI_INDEX.contains("/api/v1/workload-eligibility"));
+        assert!(UI_INDEX.contains("data-tab=\"workloads\""));
+        assert!(UI_INDEX.contains("Local Trust Assessment"));
+        assert!(UI_INDEX.contains("Capability Spot - Local/Mock"));
+        assert!(UI_INDEX.contains("future_marketplace"));
+        assert!(UI_INDEX.contains("Token required"));
+        assert!(UI_INDEX.contains("window.confirm"));
+        assert!(UI_INDEX.contains("manual heavy operation"));
+        assert!(!UI_INDEX.contains("Marketplace Approved"));
+        assert!(!UI_INDEX.contains("Remote Verified"));
+        assert!(!UI_INDEX.contains("Global Trust"));
+        assert!(!UI_INDEX.contains("state.raw = await postJson(\"/api/v1/benchmark/run\")"));
+    }
+
+    #[test]
+    fn provider_console_ui_redacts_secrets_and_marks_local_future_states() {
+        assert!(UI_INDEX.contains("sanitizeSecrets"));
+        assert!(UI_INDEX.contains("private_key"));
+        assert!(UI_INDEX.contains("api_token_hash"));
+        assert!(UI_INDEX.contains("local heuristic"));
+        assert!(UI_INDEX.contains("local/mock"));
+        assert!(UI_INDEX.contains("Not measured"));
+        assert!(UI_INDEX.contains("No history; not enough samples yet and not treated as fraud."));
+        assert!(UI_INDEX.contains("Online locally"));
+        assert!(!UI_INDEX.contains("api-token-placeholder-secret-value"));
+        assert!(!UI_INDEX.contains("private-key-placeholder-secret-value"));
+    }
     #[tokio::test(flavor = "current_thread")]
     async fn protected_endpoints_return_token_contract_when_auth_enabled() {
         let _lock = env_lock().await;

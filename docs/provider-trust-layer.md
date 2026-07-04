@@ -154,3 +154,7 @@ Initial orchestration priority:
 
 Distributed clusters, real leases, jobs, marketplace listing, Pix, billing,
 payouts, and heartbeat loops are explicitly outside the local MVP.
+
+## PR 11 - Provider Console Integration
+
+The Provider Console now renders Provider Trust Layer signals from the dedicated local API endpoints where available. AI Performance appears in Benchmarks; Trust Score and Capability Spot appear as local technical assessment blocks in Overview; Workload Eligibility appears in a Workloads tab. These remain local-only, local-heuristic, local/mock, or future-marketplace signals as appropriate and do not imply backend approval, remote Proof of Capability, scheduler admission, leases, billing, Pix, payouts, or marketplace approval.

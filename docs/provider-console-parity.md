@@ -127,3 +127,7 @@ tokens, expiry durations, CORS, and service host configuration.
 - Provider payment, billing, Pix, settlement, and tax/reporting flows.
 - Remote telemetry, alerting, notifications, and moderation.
 - API tokens or mTLS for non-local provider APIs.
+
+## PR 11 Console Integration Notes
+
+Burd now maps Akash-style provider-console monitoring into local-only Burd contracts without claiming parity for remote marketplace behavior. The Workloads tab shows local eligibility and future marketplace status, but never uses `approved`. Trust, capability, network, reliability, and AI performance remain local technical signals until a future backend and remote Proof of Capability exist.

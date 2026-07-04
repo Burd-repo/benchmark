@@ -13,8 +13,7 @@
           <div class="eyebrow"><span></span><strong>BURD PROVIDER CONSOLE</strong></div>
           <h1>Provider validation console.</h1>
           <p>
-            Local GPU readiness, signed reports, verification signals, uptime, reliability,
-            registration payload and redacted raw data for the Burd provider flow.
+            Local GPU readiness, signed reports, AI performance, trust, capability, workload eligibility and redacted raw data. Local assessment only; not marketplace approval.
           </p>
         </div>
 
@@ -27,16 +26,16 @@
           </div>
           <div class="button-row">
             <button id="refreshData" type="button">Refresh</button>
-            <button id="runBenchmark" type="button">Executar benchmark</button>
-            <button id="signReport" type="button">Gerar relatorio assinado</button>
-            <button id="runChallenge" type="button">Rodar challenge mock</button>
+            <button id="runBenchmark" type="button">Run benchmark - heavy manual action</button>
+            <button id="signReport" type="button">Sign report - protected action</button>
+            <button id="runChallenge" type="button">Run local/mock challenge</button>
           </div>
           <p class="action-message" id="actionMessage">Idle</p>
         </aside>
       </header>
 
       <section class="notice hidden" id="apiNotice">
-        <strong>API local da Burd não está rodando. Execute:</strong>
+        <strong>API local da Burd nao esta rodando. Execute:</strong>
         <code>.\target\debug\burd-agent.exe serve --host 127.0.0.1 --port 8787</code>
       </section>
 
@@ -45,6 +44,7 @@
         <button class="tab" data-tab="readiness" type="button">Readiness</button>
         <button class="tab" data-tab="hardware" type="button">Hardware</button>
         <button class="tab" data-tab="benchmarks" type="button">Benchmarks</button>
+        <button class="tab" data-tab="workloads" type="button">Workloads</button>
         <button class="tab" data-tab="history" type="button">History</button>
         <button class="tab" data-tab="uptime" type="button">Uptime</button>
         <button class="tab" data-tab="security" type="button">Security</button>
@@ -56,7 +56,7 @@
       <section class="metrics">
         <article><span>Provider</span><strong id="metricProvider">--</strong></article>
         <article><span>Machine</span><strong id="metricMachine">--</strong></article>
-        <article><span>Status</span><strong id="metricOnline">--</strong></article>
+        <article><span>Local status</span><strong id="metricOnline">--</strong></article>
         <article><span>Price</span><strong id="metricPrice">--</strong></article>
         <article><span>GPU</span><strong id="metricGpu">--</strong></article>
         <article><span>Backend</span><strong id="metricBackend">--</strong></article>
@@ -69,8 +69,8 @@
         <div class="grid four">
           <article class="tile"><span>Provider ID</span><strong id="overviewProvider">--</strong></article>
           <article class="tile"><span>Machine ID</span><strong id="overviewMachine">--</strong></article>
-          <article class="tile"><span>Online</span><strong id="overviewOnline">--</strong></article>
-          <article class="tile"><span>Burd Score</span><strong id="overviewScore">--</strong></article>
+          <article class="tile"><span>Online locally</span><strong id="overviewOnline">--</strong></article>
+          <article class="tile"><span>Compute Score</span><strong id="overviewScore">--</strong></article>
           <article class="tile"><span>Tier</span><strong id="overviewTier">--</strong></article>
           <article class="tile"><span>Readiness</span><strong id="overviewReadiness">--</strong></article>
           <article class="tile"><span>GPU</span><strong id="overviewGpu">--</strong></article>
@@ -86,6 +86,36 @@
           <article class="tile"><span>Challenge</span><strong id="overviewChallenge">--</strong></article>
           <article class="tile"><span>Fraud risk</span><strong id="overviewFraud">--</strong></article>
           <article class="tile"><span>Backend verification</span><strong id="overviewBackendVerification">--</strong></article>
+          <article class="tile"><span>Local Heuristic Trust</span><strong id="overviewTrust">--</strong></article>
+          <article class="tile"><span>Local/Mock Capability</span><strong id="overviewCapability">--</strong></article>
+          <article class="tile"><span>Future Marketplace Status</span><strong id="overviewMarketplaceFuture">--</strong></article>
+          <article class="tile"><span>NVIDIA/CUDA Marketplace Policy</span><strong id="overviewMarketplacePolicy">--</strong></article>
+          <article class="tile"><span>Session status</span><strong id="overviewSession">--</strong></article>
+          <article class="tile"><span>Last heartbeat</span><strong id="overviewHeartbeat">--</strong></article>
+        </div>
+        <div class="grid two">
+          <article class="technical-block">
+            <div class="section-head compact"><span>Local Trust Assessment</span><strong id="trustStatus">--</strong></div>
+            <p class="microcopy">Calculated locally from available evidence. Not remote marketplace verification.</p>
+            <div class="grid three">
+              <article class="tile"><span>Trust score</span><strong id="trustScore">--</strong></article>
+              <article class="tile"><span>Level</span><strong id="trustLevel">--</strong></article>
+              <article class="tile"><span>Source</span><strong id="trustSource">--</strong></article>
+            </div>
+            <div class="list" id="trustComponents"></div>
+            <div class="list" id="trustWarnings"></div>
+          </article>
+          <article class="technical-block">
+            <div class="section-head compact"><span>Capability Spot - Local/Mock</span><strong id="capabilityStatus">--</strong></div>
+            <p class="microcopy">Uses existing local evidence. Not a remote challenge, remote Proof of Capability, or public availability proof.</p>
+            <div class="grid three">
+              <article class="tile"><span>Capability score</span><strong id="capabilityScore">--</strong></article>
+              <article class="tile"><span>Level</span><strong id="capabilityLevel">--</strong></article>
+              <article class="tile"><span>Mode</span><strong id="capabilityMode">--</strong></article>
+            </div>
+            <div class="list" id="capabilityComponents"></div>
+            <div class="list" id="capabilityChecks"></div>
+          </article>
         </div>
       </section>
 
@@ -103,6 +133,8 @@
         <div class="list" id="readinessWarnings"></div>
         <div class="section-head"><span>Recommendations</span><strong>Next local steps</strong></div>
         <div class="list" id="readinessRecommendations"></div>
+        <div class="section-head"><span>Evidence</span><strong>Signed/local state</strong></div>
+        <div class="list" id="readinessEvidence"></div>
       </section>
 
       <section class="tab-panel" data-panel="hardware">
@@ -120,7 +152,14 @@
           <article class="tile"><span>Disk free</span><strong id="hardwareDisk">--</strong></article>
           <article class="tile"><span>Network</span><strong id="hardwareNetwork">--</strong></article>
           <article class="tile"><span>Architecture</span><strong id="hardwareArch">--</strong></article>
+          <article class="tile wide"><span>Hardware fingerprint</span><strong id="hardwareFingerprint">--</strong></article>
+          <article class="tile"><span>Fingerprint status</span><strong id="hardwareFingerprintStatus">--</strong></article>
+          <article class="tile"><span>GPU vendor</span><strong id="hardwareGpuVendor">--</strong></article>
+          <article class="tile"><span>VRAM source</span><strong id="hardwareVramSource">--</strong></article>
+          <article class="tile"><span>VRAM confidence</span><strong id="hardwareVramConfidence">--</strong></article>
+          <article class="tile"><span>Marketplace policy</span><strong id="hardwareMarketplacePolicy">--</strong></article>
         </div>
+        <div class="list" id="hardwareWarnings"></div>
         <pre id="gpuModels">[]</pre>
       </section>
 
@@ -139,8 +178,62 @@
           <article class="tile"><span>Models analyzed</span><strong id="benchModels">--</strong></article>
           <article class="tile"><span>Runnable models</span><strong id="benchRunnable">--</strong></article>
           <article class="tile"><span>Benchmark status</span><strong id="benchRunStatus">--</strong></article>
+          <article class="tile"><span>AI status</span><strong id="aiStatus">--</strong></article>
+          <article class="tile"><span>AI level</span><strong id="aiLevel">--</strong></article>
+          <article class="tile"><span>AI source</span><strong id="aiSource">--</strong></article>
+          <article class="tile"><span>AI confidence</span><strong id="aiConfidence">--</strong></article>
+          <article class="tile"><span>Measured at</span><strong id="aiMeasuredAt">--</strong></article>
+          <article class="tile"><span>Expires at</span><strong id="aiExpiresAt">--</strong></article>
+          <article class="tile"><span>Model</span><strong id="aiModel">--</strong></article>
+          <article class="tile"><span>Runtime/provider</span><strong id="aiRuntime">--</strong></article>
+          <article class="tile"><span>AI backend</span><strong id="aiBackend">--</strong></article>
+          <article class="tile"><span>AI GPU</span><strong id="aiGpu">--</strong></article>
+          <article class="tile"><span>AI VRAM</span><strong id="aiVram">--</strong></article>
+          <article class="tile"><span>Tokens/s</span><strong id="aiTokens">--</strong></article>
+          <article class="tile"><span>Sustained tokens/s</span><strong id="aiSustainedTokens">--</strong></article>
+          <article class="tile"><span>TTFT</span><strong id="aiTtft">--</strong></article>
+          <article class="tile"><span>Requests/s</span><strong id="aiRequests">--</strong></article>
+          <article class="tile"><span>Latency p50</span><strong id="aiLatencyP50">--</strong></article>
+          <article class="tile"><span>Latency p95</span><strong id="aiLatencyP95">--</strong></article>
+          <article class="tile"><span>Stability</span><strong id="aiStability">--</strong></article>
+          <article class="tile"><span>Benchmark runs</span><strong id="aiRuns">--</strong></article>
+          <article class="tile"><span>Max model class</span><strong id="aiModelClass">--</strong></article>
+          <article class="tile"><span>Network jitter</span><strong id="benchNetworkJitter">--</strong></article>
+          <article class="tile"><span>DNS timing</span><strong id="benchNetworkDns">--</strong></article>
+          <article class="tile"><span>Network source</span><strong id="benchNetworkSource">--</strong></article>
         </div>
+        <p class="microcopy">AI performance uses the consolidated local report. Sustained tokens/s is the current benchmark minimum when available, not a dedicated long-duration soak test.</p>
+        <p class="microcopy">Local finite measurement. Not external SLA or public reachability verification.</p>
+        <div class="list" id="aiWarnings"></div>
+        <div class="list" id="aiCompatibleModels"></div>
         <div class="list" id="fitList"></div>
+      </section>
+
+      <section class="tab-panel" data-panel="workloads">
+        <div class="section-head"><span>Workloads</span><strong id="workloadStatus">Local decision layer</strong></div>
+        <p class="microcopy">Local workload eligibility and future marketplace status. Never a scheduler assignment, lease, paid job, or marketplace approval.</p>
+        <div class="grid four">
+          <article class="tile"><span>Local status</span><strong id="workloadLocalStatus">--</strong></article>
+          <article class="tile"><span>Future marketplace</span><strong id="workloadMarketplaceStatus">--</strong></article>
+          <article class="tile"><span>Provider tier</span><strong id="workloadProviderTier">--</strong></article>
+          <article class="tile"><span>Checked at</span><strong id="workloadCheckedAt">--</strong></article>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Workload</th>
+                <th>Local status</th>
+                <th>Future marketplace</th>
+                <th>Confidence</th>
+                <th>Reasons</th>
+                <th>Blockers</th>
+              </tr>
+            </thead>
+            <tbody id="workloadRows"></tbody>
+          </table>
+        </div>
+        <div class="list" id="workloadWarnings"></div>
       </section>
 
       <section class="tab-panel" data-panel="history">
@@ -169,7 +262,16 @@
           <article class="tile"><span>Last online</span><strong id="uptimeLastOnline">--</strong></article>
           <article class="tile"><span>Last failed</span><strong id="uptimeLastFailed">--</strong></article>
           <article class="tile"><span>Verification</span><strong id="uptimeVerification">--</strong></article>
+          <article class="tile"><span>Session status</span><strong id="uptimeSessionStatus">--</strong></article>
+          <article class="tile"><span>Session ID</span><strong id="uptimeSessionId">--</strong></article>
+          <article class="tile"><span>Session started</span><strong id="uptimeSessionStarted">--</strong></article>
+          <article class="tile"><span>Session expires</span><strong id="uptimeSessionExpires">--</strong></article>
+          <article class="tile"><span>Last heartbeat</span><strong id="uptimeHeartbeatLast">--</strong></article>
+          <article class="tile"><span>Heartbeat count</span><strong id="uptimeHeartbeatCount">--</strong></article>
+          <article class="tile"><span>Online locally</span><strong id="uptimeOnlineLocally">--</strong></article>
+          <article class="tile"><span>Fingerprint match</span><strong id="uptimeFingerprintMatch">--</strong></article>
         </div>
+        <div class="list" id="uptimeWarnings"></div>
       </section>
 
       <section class="tab-panel" data-panel="security">
@@ -232,6 +334,10 @@
         uptime: "/api/v1/uptime",
         reliability: "/api/v1/reliability",
         networkScore: "/api/v1/network-score",
+        aiPerformance: "/api/v1/ai-performance",
+        trustScore: "/api/v1/trust-score",
+        capabilitySpot: "/api/v1/capability-spot",
+        workloadEligibility: "/api/v1/workload-eligibility",
         history: "/api/v1/history",
         registration: "/api/v1/registration-payload",
         pricing: "/api/v1/pricing",
@@ -245,6 +351,10 @@
 
       function isError(value) {
         return value && value.__error === true;
+      }
+
+      function isTokenRequired(value) {
+        return isError(value) && (value.status === 401 || value.status === 403);
       }
 
       async function fetchJson(path) {
@@ -279,6 +389,18 @@
 
       function write(id, value) {
         $(id).textContent = value ?? "--";
+      }
+
+      function statusText(value) {
+        if (value === null || value === undefined || value === "") return "Unavailable";
+        const text = String(value).replaceAll("_", " ");
+        return text ? `${text.slice(0, 1).toUpperCase()}${text.slice(1)}` : "Unavailable";
+      }
+
+      function shortFingerprint(value) {
+        if (!value) return "unavailable";
+        const text = String(value).replace(/^sha256:/, "");
+        return `sha256: ${text.slice(0, 8)}...${text.slice(-4)}`;
       }
 
       function escapeHtml(value) {
@@ -318,7 +440,7 @@
 
       function statusLabel(value) {
         if (isError(value)) {
-          return value.status === 401 ? "Token required" : "Unavailable";
+          return isTokenRequired(value) ? "Token required" : "Unavailable";
         }
         if (!value) return "--";
         if (typeof value.status === "string") return capitalize(value.status);
@@ -348,30 +470,47 @@
         return value;
       }
 
+      function endpointSignal(key, fallbacks, emptyValue) {
+        if (state[key] !== undefined && !isError(state[key])) {
+          return { value: state[key], source: `endpoint ${endpoints[key]}` };
+        }
+        for (const [value, source] of fallbacks) {
+          if (value !== undefined && value !== null && !(typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0)) {
+            return { value, source };
+          }
+        }
+        return { value: emptyValue, source: isTokenRequired(state[key]) ? "token_required" : "unavailable" };
+      }
+
       function currentData() {
         const raw = isError(state.raw) ? {} : state.raw || {};
         const provider = isError(state.provider) ? raw.provider_details || {} : state.provider || raw.provider_details || {};
-        const readiness = isError(state.readiness) ? {} : state.readiness || {};
+        const readiness = endpointSignal("readiness", [[provider.readiness, "provider aggregate"]], {}).value;
         const report = isError(state.report) ? provider.raw_report || raw.latest_report || {} : state.report || provider.raw_report || raw.latest_report || {};
-        const system = isError(state.system) ? report.system || {} : state.system || report.system || {};
-        const score = isError(state.score) ? provider.score || report.score || raw.score || {} : state.score || provider.score || report.score || raw.score || {};
-        const verification = isError(state.verification) ? provider.verification || raw.verification || {} : state.verification || provider.verification || raw.verification || {};
-        const uptime = isError(state.uptime) ? provider.uptime || raw.uptime || {} : state.uptime || provider.uptime || raw.uptime || {};
-        const reliability = isError(state.reliability) ? provider.reliability || raw.reliability || {} : state.reliability || provider.reliability || raw.reliability || {};
-        const networkScore = isError(state.networkScore) ? provider.network || raw.network || report.network_score || {} : state.networkScore || provider.network || raw.network || report.network_score || {};
-        const pricing = isError(state.pricing) ? provider.pricing || raw.pricing || {} : state.pricing || provider.pricing || raw.pricing || {};
-        const earnings = isError(state.earnings) ? provider.estimated_earnings || raw.earnings_mock || {} : state.earnings || provider.estimated_earnings || raw.earnings_mock || {};
-        const history = isError(state.history) ? { entries: [] } : state.history || { entries: [] };
         const registration = isError(state.registration) ? {} : state.registration || {};
+        const system = endpointSignal("system", [[report.system, "full report"], [provider.hardware, "provider aggregate"]], {}).value;
+        const score = endpointSignal("score", [[provider.score, "provider aggregate"], [report.score, "full report"], [raw.score, "raw data"]], {}).value;
+        const verification = endpointSignal("verification", [[provider.verification, "provider aggregate"], [raw.verification, "raw data"]], {}).value;
+        const uptime = endpointSignal("uptime", [[provider.uptime, "provider aggregate"], [raw.uptime, "raw data"]], {}).value;
+        const reliability = endpointSignal("reliability", [[provider.reliability, "provider aggregate"], [raw.reliability, "raw data"]], {}).value;
+        const networkSignal = endpointSignal("networkScore", [[provider.network, "provider aggregate"], [raw.network, "raw data"], [report.network_score, "full/signed report"]], {});
+        const aiSignal = endpointSignal("aiPerformance", [[provider.ai_performance, "provider aggregate"], [raw.ai_performance, "raw data"], [registration.ai_performance, "registration payload"], [report.ai_performance, "full/signed report"]], {});
+        const trustSignal = endpointSignal("trustScore", [[provider.trust_score, "provider aggregate"], [raw.trust_score, "raw data"], [registration.trust_score, "registration payload"]], {});
+        const capabilitySignal = endpointSignal("capabilitySpot", [[provider.capability_spot, "provider aggregate"], [raw.capability_spot, "raw data"], [registration.capability_spot, "registration payload"]], {});
+        const workloadSignal = endpointSignal("workloadEligibility", [[provider.workload_eligibility, "provider aggregate"], [raw.workload_eligibility, "raw data"], [registration.workload_eligibility, "registration payload"]], {});
+        const pricing = endpointSignal("pricing", [[provider.pricing, "provider aggregate"], [raw.pricing, "raw data"]], {}).value;
+        const earnings = endpointSignal("earnings", [[provider.estimated_earnings, "provider aggregate"], [raw.earnings_mock, "raw data mock"]], {}).value;
+        const history = endpointSignal("history", [[raw.history_summary, "raw data"]], { entries: [] }).value;
         const config = isError(state.config) ? state.config : state.config || raw.config_redacted || {};
-        const fit = isError(state.fit) ? report.fit || {} : state.fit || report.fit || {};
+        const fit = endpointSignal("fit", [[report.fit, "full report"]], {}).value;
         const benchmarkStatus = isError(state.benchmarkStatus) ? state.benchmarkStatus : state.benchmarkStatus || {};
         const actions = Array.isArray(state.actions) ? state.actions : raw.actions?.items || [];
         const logs = Array.isArray(state.logs) ? state.logs : raw.actions?.logs || [];
+        const session = provider.session || raw.session || trustSignal.value.session || null;
+        const heartbeat = provider.heartbeat || raw.heartbeat || null;
 
-        return { raw, provider, readiness, report, system, score, verification, uptime, reliability, networkScore, pricing, earnings, history, registration, config, fit, benchmarkStatus, actions, logs };
+        return { raw, provider, readiness, report, system, score, verification, uptime, reliability, networkScore: networkSignal.value, aiPerformance: aiSignal.value, trustScore: trustSignal.value, capabilitySpot: capabilitySignal.value, workloadEligibility: workloadSignal.value, pricing, earnings, history, registration, config, fit, benchmarkStatus, actions, logs, session, heartbeat, sources: { networkScore: networkSignal.source, aiPerformance: aiSignal.source, trustScore: trustSignal.source, capabilitySpot: capabilitySignal.source, workloadEligibility: workloadSignal.source } };
       }
-
       function render() {
         const data = currentData();
         const apiOffline = isError(state.health) && state.health.status === 0;
@@ -389,7 +528,7 @@
         const signed = data.verification.signature_verified ? "Valid" : latestHistory.signed ? "Signed" : "Missing";
         const challenge = data.verification.challenge_verified ? "Verified" : latestHistory.challenge_id ? "Local response" : "Pending";
         const readiness = first(data.readiness.readiness_level, data.provider.is_verified || data.score.eligible ? "Ready locally" : "Needs verification");
-        const online = first(data.provider.is_online, state.health && !isError(state.health) ? true : null);
+        const online = first(data.session?.online_locally, data.heartbeat?.online_locally, data.provider.is_online, state.health && !isError(state.health) ? true : null);
 
         write("healthStatus", apiOffline ? "Offline" : isError(state.health) ? "Degraded" : "Online");
         write("scoreHero", score ?? "--");
@@ -397,7 +536,7 @@
         write("readinessHero", readiness);
         write("metricProvider", short(providerId));
         write("metricMachine", short(machineId));
-        write("metricOnline", online === true ? "Online" : online === false ? "Offline" : "--");
+        write("metricOnline", online === true ? "Online locally" : online === false ? "Offline locally" : "Unavailable");
         write("metricPrice", money(price));
         write("metricGpu", short(gpuName, 34));
         write("metricBackend", backend || "--");
@@ -407,7 +546,7 @@
         write("overviewStamp", first(data.report.timestamp, data.provider.last_check_date, state.health?.agent_version ? `agent ${state.health.agent_version}` : null));
         write("overviewProvider", short(providerId, 34));
         write("overviewMachine", short(machineId, 34));
-        write("overviewOnline", online === true ? "Online" : online === false ? "Offline" : "--");
+        write("overviewOnline", online === true ? "Online locally" : online === false ? "Offline locally" : "Unavailable");
         write("overviewScore", score ?? "--");
         write("overviewTier", tier || "--");
         write("overviewReadiness", readiness);
@@ -423,7 +562,15 @@
         write("overviewSigned", signed);
         write("overviewChallenge", challenge);
         write("overviewFraud", data.verification.fraud_risk_level || "--");
-        write("overviewBackendVerification", data.provider.backend_verification_status_future || "--");
+        write("overviewBackendVerification", data.provider.backend_verification_status_future || "not_connected");
+        write("overviewTrust", data.trustScore.trust_score !== undefined ? `${data.trustScore.trust_score}/100 local heuristic` : "Unavailable");
+        write("overviewCapability", data.capabilitySpot.capability_score !== undefined ? `${data.capabilitySpot.capability_score}/100 local/mock` : "Unavailable");
+        write("overviewMarketplaceFuture", data.workloadEligibility.marketplace_status_future || "future_marketplace unavailable");
+        write("overviewMarketplacePolicy", policyLabel(data.provider.marketplace_policy));
+        write("overviewSession", data.session?.status || data.trustScore.session?.status || "No session");
+        write("overviewHeartbeat", first(data.heartbeat?.last_heartbeat_at, data.session?.last_heartbeat_at, "No history"));
+        renderTrust(data);
+        renderCapability(data);
 
         write("readinessStatus", data.readiness.status || "--");
         write("readinessScore", data.readiness.readiness_score !== undefined ? `${data.readiness.readiness_score}/100` : "--");
@@ -448,10 +595,20 @@
         write("hardwareDisk", gb(first(data.provider.hardware?.disk_free_gb, data.provider.stats?.storage?.total?.available)));
         write("hardwareNetwork", statusLabel(data.report.network));
         write("hardwareArch", first(data.system.architecture, data.provider.hardware?.architecture));
+        const fingerprint = first(data.verification.hardware_fingerprint, data.provider.hardware_fingerprint, data.session?.hardware_fingerprint);
+        const fingerprintStatus = data.verification.fingerprint_matches === false ? "mismatch" : fingerprint ? "stable" : "unavailable";
+        write("hardwareFingerprint", shortFingerprint(fingerprint));
+        write("hardwareFingerprintStatus", fingerprintStatus);
+        write("hardwareGpuVendor", first(data.provider.gpu_models?.[0]?.vendor, data.system.gpus?.[0]?.vendor, "Unavailable"));
+        write("hardwareVramSource", first(data.verification.vram_source, data.provider.hardware?.vram_source, data.provider.gpu_models?.[0]?.vram_source, "Unavailable"));
+        write("hardwareVramConfidence", first(data.verification.vram_confidence, data.provider.hardware?.vram_confidence, data.provider.gpu_models?.[0]?.vram_confidence, "Unavailable"));
+        write("hardwareMarketplacePolicy", policyLabel(data.provider.marketplace_policy));
+        renderReadinessEvidence(data);
+        renderHardwareWarnings(data, fingerprintStatus);
         $("gpuModels").textContent = JSON.stringify(sanitizeSecrets(first(data.provider.gpu_models, data.system.gpus, [])), null, 2);
 
         write("benchmarkSummary", statusLabel(data.benchmarkStatus) === "--" ? "Latest signals" : statusLabel(data.benchmarkStatus));
-        write("benchLlm", data.report.llm_benchmark?.avg_tps ? `${data.report.llm_benchmark.avg_tps} tok/s` : statusLabel(data.report.llm_benchmark));
+        write("benchLlm", typeof data.aiPerformance.tokens_per_second === "number" ? `${data.aiPerformance.tokens_per_second} tok/s` : statusText(data.aiPerformance.status || "not_measured"));
         write("benchStability", statusLabel(data.report.stability));
         write("benchNetwork", statusLabel(data.report.network));
         write("benchNetworkScore", data.networkScore.network_score !== undefined ? `${data.networkScore.network_score}/100` : "--");
@@ -462,8 +619,11 @@
         write("benchFit", data.fit.source || "--");
         write("benchModels", data.fit.total_models_analyzed ?? "--");
         write("benchRunnable", data.fit.runnable_models ?? "--");
-        write("benchRunStatus", data.benchmarkStatus.status || "--");
+        write("benchRunStatus", data.benchmarkStatus.status || "Idle");
+        renderAiPerformance(data);
+        renderNetworkDetails(data);
         renderFitList(data.fit.models || []);
+        renderWorkloads(data);
 
         write("historyCount", `${data.history.entries_total || (data.history.entries || []).length || 0} entries`);
         write("historyLatest", latestHistory.timestamp || "--");
@@ -484,15 +644,24 @@
         write("uptimeFailed", data.uptime.checks_failed ?? 0);
         write("uptimeLastOnline", data.uptime.last_online_at || "--");
         write("uptimeLastFailed", data.uptime.last_failed_check_at || "--");
-        write("uptimeVerification", data.verification.uptime_verified ? "Verified" : "Pending");
+        write("uptimeVerification", data.verification.uptime_verified ? "Verified locally" : "Pending local evidence");
+        write("uptimeSessionStatus", data.session?.status || data.trustScore.session?.status || "No session");
+        write("uptimeSessionId", short(data.session?.provider_session_id));
+        write("uptimeSessionStarted", data.session?.started_at || "No session");
+        write("uptimeSessionExpires", data.session?.expires_at || "No session");
+        write("uptimeHeartbeatLast", first(data.heartbeat?.last_heartbeat_at, data.session?.last_heartbeat_at, "No history"));
+        write("uptimeHeartbeatCount", first(data.heartbeat?.heartbeat_count, data.session?.heartbeat_count, data.trustScore.session?.heartbeat_count, 0));
+        write("uptimeOnlineLocally", yesNo(first(data.heartbeat?.online_locally, data.session?.online_locally, data.trustScore.session?.online_locally)));
+        write("uptimeFingerprintMatch", yesNo(first(data.heartbeat?.fingerprint_matches_session, data.session?.last_heartbeat_fingerprint_matches_session, data.verification.fingerprint_matches)));
+        renderTextRows("uptimeWarnings", [...(data.reliability.warnings || []), ...(data.heartbeat?.warnings || []), ...(data.session?.warnings || []), ...(data.reliability.checks_total === 0 ? ["No history; not enough samples yet and not treated as fraud."] : [])], "No uptime warnings", "local");
 
         write("securityIdentity", providerId && providerId !== "uninitialized" ? "Ready" : "Missing");
         write("securityPublicKeyShort", short(data.provider.public_key, 34));
         write("securitySignature", signed);
-        write("securityApiToken", isError(data.config) && data.config.status === 401 ? "Token required" : data.config.api_auth_enabled ? "Enabled" : "Dev mode");
+        write("securityApiToken", isTokenRequired(data.config) ? "Token required" : data.config.api_auth_enabled ? "Enabled" : "Dev mode");
         write("securityChallenge", challenge);
         write("securityFraud", data.verification.fraud_risk_level || "--");
-        write("securityRedaction", data.raw.redacted ? "Active" : isError(state.raw) && state.raw.status === 401 ? "Token required" : "Pending");
+        write("securityRedaction", data.raw.redacted ? "Active" : isTokenRequired(state.raw) ? "Token required" : "Pending");
         write("securityAudit", data.verification.audit_status || data.provider.audit_status || "--");
         $("publicKey").textContent = `public_key: ${data.provider.public_key || "--"}`;
         renderWarnings(data.verification.warnings || []);
@@ -506,15 +675,176 @@
         renderActions(data.actions);
         $("logsJson").textContent = JSON.stringify(sanitizeSecrets(data.logs || []), null, 2);
 
-        if (isError(state.raw)) {
-          write("rawStatus", state.raw.status === 401 ? "Token required" : "Unavailable");
-          $("rawJson").textContent = JSON.stringify(sanitizeSecrets(state.raw), null, 2);
+        if (isTokenRequired(state.raw)) {
+          write("rawStatus", "Token required");
+          $("rawJson").textContent = JSON.stringify({ status: "token_required", message: "Authorization required for raw data." }, null, 2);
+        } else if (isError(state.raw)) {
+          write("rawStatus", "Unavailable");
+          $("rawJson").textContent = JSON.stringify({ status: "unavailable", message: state.raw.message || "raw endpoint unavailable" }, null, 2);
         } else {
           write("rawStatus", data.raw.redacted ? "Redacted" : "Loaded");
           $("rawJson").textContent = JSON.stringify(sanitizeSecrets(data.raw || {}), null, 2);
         }
       }
 
+      function policyLabel(policy) {
+        if (!policy || typeof policy !== "object") return "Unavailable";
+        return first(policy.status, policy.marketplace_status, policy.gpu_policy_status, policy.policy_status, policy.eligible === true ? "eligible locally" : null, policy.supported === true ? "supported" : null, "See policy details");
+      }
+
+      function renderTrust(data) {
+        const trust = data.trustScore || {};
+        write("trustStatus", trust.status || "Unavailable");
+        write("trustScore", trust.trust_score !== undefined ? `${trust.trust_score}/100` : "Unavailable");
+        write("trustLevel", trust.level || "Unavailable");
+        write("trustSource", data.sources.trustScore);
+        renderObjectRows("trustComponents", trust.components || {}, "No trust components available", "local heuristic");
+        renderTextRows("trustWarnings", trust.warnings || [], "No local trust warnings", "Warning");
+      }
+
+      function renderCapability(data) {
+        const capability = data.capabilitySpot || {};
+        write("capabilityStatus", capability.status || "Unavailable");
+        write("capabilityScore", capability.capability_score !== undefined ? `${capability.capability_score}/100` : "Unavailable");
+        write("capabilityLevel", capability.level || "Unavailable");
+        write("capabilityMode", capability.verification_mode || "local_mock");
+        renderObjectRows("capabilityComponents", capability.components || {}, "No capability components available", "local/mock");
+        $("capabilityChecks").innerHTML = (capability.checks || []).map((check) => `
+          <article class="list-row">
+            <span>${escapeHtml(check.label || check.id)} | ${escapeHtml(check.message)}</span>
+            <strong>${escapeHtml(statusText(check.status))}</strong>
+          </article>
+        `).join("") || `<article class="list-row"><span>No capability checks available</span><strong>local/mock</strong></article>`;
+      }
+
+      function renderReadinessEvidence(data) {
+        const signedEvidence = data.verification.signed_report_evidence || data.readiness.evidence?.signed_report;
+        const challengeEvidence = data.verification.challenge_evidence || data.readiness.evidence?.challenge;
+        const rows = [
+          evidenceRow("Signed report", signedEvidence, data.verification.signed_report_current),
+          evidenceRow("Full report", data.report.timestamp ? { issued_at: data.report.timestamp, is_expired: false } : null, Boolean(data.report.timestamp)),
+          evidenceRow("Challenge", challengeEvidence, data.verification.challenge_verified),
+          evidenceRow("Challenge response", challengeEvidence, data.verification.challenge_verified),
+          { label: "Provider verification", status: data.verification.signature_verified ? "valid" : "missing", detail: data.verification.audit_status || "local verification unavailable" }
+        ];
+        $("readinessEvidence").innerHTML = rows.map((row) => `
+          <article class="list-row">
+            <span>${escapeHtml(row.label)} | ${escapeHtml(row.detail)}</span>
+            <strong>${escapeHtml(statusText(row.status))}</strong>
+          </article>
+        `).join("");
+      }
+
+      function evidenceRow(label, evidence, valid) {
+        if (!evidence || typeof evidence === "string") {
+          return { label, status: valid ? "valid" : "missing", detail: valid ? "valid local evidence" : "missing evidence; recommendation: generate current local evidence" };
+        }
+        const status = evidence.is_expired ? "expired" : valid ? "valid" : "invalid";
+        const age = evidence.age_seconds !== undefined ? `age ${evidence.age_seconds}s` : "age unavailable";
+        const expires = evidence.expires_at ? `expires ${evidence.expires_at}` : "expiration unavailable";
+        return { label, status, detail: `${evidence.issued_at || "issued_at unavailable"} | ${expires} | ${age}` };
+      }
+
+      function renderHardwareWarnings(data, fingerprintStatus) {
+        const policy = data.provider.marketplace_policy || data.session?.marketplace_policy_snapshot || {};
+        const warnings = [
+          ...(fingerprintStatus === "mismatch" ? ["hardware fingerprint mismatch detected"] : []),
+          ...(data.verification.warnings || []),
+          ...(policy.reasons || []),
+          ...(policy.blockers || [])
+        ];
+        renderTextRows("hardwareWarnings", warnings, "No hardware policy warnings", fingerprintStatus);
+      }
+
+      function renderAiPerformance(data) {
+        const ai = data.aiPerformance || {};
+        write("aiStatus", statusText(ai.status || "not_measured"));
+        write("aiLevel", ai.level || "unknown");
+        write("aiSource", `${ai.source || "unavailable"} via ${data.sources.aiPerformance}`);
+        write("aiConfidence", ai.confidence_level || "unavailable");
+        write("aiMeasuredAt", ai.measured_at || "Not measured");
+        write("aiExpiresAt", ai.expires_at || "Unavailable");
+        write("aiModel", ai.model || "Not measured");
+        write("aiRuntime", [ai.runtime, ai.provider].filter(Boolean).join(" / ") || "Unavailable");
+        write("aiBackend", ai.backend || "Unavailable");
+        write("aiGpu", ai.gpu_name || "Unavailable");
+        write("aiVram", gb(ai.vram_total_gb));
+        write("aiTokens", typeof ai.tokens_per_second === "number" ? `${ai.tokens_per_second} tok/s` : "Not measured");
+        write("aiSustainedTokens", typeof ai.sustained_tokens_per_second === "number" ? `${ai.sustained_tokens_per_second} tok/s` : "Not measured");
+        write("aiTtft", typeof ai.time_to_first_token_ms === "number" ? `${ai.time_to_first_token_ms} ms` : "Not measured");
+        write("aiRequests", typeof ai.requests_per_second === "number" ? `${ai.requests_per_second}/s` : "Not measured");
+        write("aiLatencyP50", typeof ai.latency_p50_ms === "number" ? `${ai.latency_p50_ms} ms` : "Not measured");
+        write("aiLatencyP95", typeof ai.latency_p95_ms === "number" ? `${ai.latency_p95_ms} ms` : "Not measured");
+        write("aiStability", ai.stability_passed === true ? "Passed" : ai.stability_passed === false ? "Failed" : "Not measured");
+        write("aiRuns", ai.benchmark_runs ?? "Not measured");
+        write("aiModelClass", ai.max_recommended_model_class || "Unavailable");
+        renderTextRows("aiWarnings", [...(ai.is_expired ? ["AI performance evidence is expired"] : []), ...(ai.warnings || []), ...(data.networkScore.warnings || [])], "No AI/network warnings", ai.is_expired ? "expired" : "local");
+        renderTextRows("aiCompatibleModels", ai.compatible_models || [], "No compatible models reported", "compatible");
+      }
+
+      function renderNetworkDetails(data) {
+        write("benchNetworkJitter", typeof data.networkScore.components?.jitter_ms === "number" ? `${data.networkScore.components.jitter_ms} ms` : "Unavailable");
+        write("benchNetworkDns", typeof data.networkScore.components?.dns_resolution_ms === "number" ? `${data.networkScore.components.dns_resolution_ms} ms` : "Unavailable");
+        write("benchNetworkSource", `${data.networkScore.source || "unavailable"} via ${data.sources.networkScore}`);
+      }
+
+      function renderWorkloads(data) {
+        const report = data.workloadEligibility || {};
+        write("workloadStatus", report.summary || "Local decision layer");
+        write("workloadLocalStatus", report.local_status || "unavailable");
+        write("workloadMarketplaceStatus", report.marketplace_status_future || "future_marketplace unavailable");
+        write("workloadProviderTier", report.provider_tier || "Unavailable");
+        write("workloadCheckedAt", report.checked_at || "Unavailable");
+        const rows = report.workloads || [];
+        $("workloadRows").innerHTML = rows.map((item) => `
+          <tr>
+            <td>${escapeHtml(workloadDisplayName(item.workload))}</td>
+            <td><span class="badge">${escapeHtml(statusText(item.local_status))}</span></td>
+            <td><span class="badge future">${escapeHtml(statusText(item.marketplace_status_future || "future_marketplace pending"))}</span></td>
+            <td>${escapeHtml(item.confidence_level || "unavailable")}</td>
+            <td>${escapeHtml((item.reasons || []).join(" | ") || "--")}</td>
+            <td>${escapeHtml((item.blockers || []).join(" | ") || "--")}</td>
+          </tr>
+        `).join("") || `<tr><td colspan="6">No workload eligibility data available</td></tr>`;
+        renderTextRows("workloadWarnings", report.warnings || [], "No workload warnings", "future_marketplace");
+      }
+
+      function workloadDisplayName(value) {
+        const normalized = String(value || "").toLowerCase();
+        const map = {
+          "llm inference": "LLM Realtime API",
+          "batch inference pequeno": "LLM Batch Inference",
+          "embeddings": "Embeddings",
+          "sdxl": "Image Generation",
+          "comfyui": "ComfyUI Remote",
+          "interactive notebook": "Interactive Notebook",
+          "whisper transcription": "Whisper Transcription",
+          "file processing": "File Processing",
+          "fine-tuning": "Training Light",
+          "fine-tuning pesado": "Training Heavy",
+          "modelos enterprise grandes": "Large Model Inference"
+        };
+        return map[normalized] || value || "Unknown workload";
+      }
+
+      function renderObjectRows(id, object, emptyLabel, status) {
+        const entries = Object.entries(object || {});
+        $(id).innerHTML = entries.map(([key, value]) => `
+          <article class="list-row">
+            <span>${escapeHtml(key.replaceAll("_", " "))}</span>
+            <strong>${escapeHtml(value)}</strong>
+          </article>
+        `).join("") || `<article class="list-row"><span>${escapeHtml(emptyLabel)}</span><strong>${escapeHtml(statusText(status))}</strong></article>`;
+      }
+
+      function renderTextRows(id, items, emptyLabel, status) {
+        $(id).innerHTML = (items || []).map((item) => `
+          <article class="list-row">
+            <span>${escapeHtml(item)}</span>
+            <strong>${escapeHtml(statusText(status))}</strong>
+          </article>
+        `).join("") || `<article class="list-row"><span>${escapeHtml(emptyLabel)}</span><strong>${escapeHtml(statusText(status))}</strong></article>`;
+      }
       function renderFitList(models) {
         $("fitList").innerHTML = (models || []).slice(0, 6).map((model) => `
           <article class="list-row">
@@ -591,7 +921,7 @@
           payload = text;
         }
         if (!response.ok) {
-          return { __error: true, status: response.status, body: payload };
+          return { __error: true, status: response.status, body: payload, message: payload?.error || response.statusText };
         }
         return payload;
       }
@@ -608,21 +938,38 @@
       $("refreshData").addEventListener("click", refresh);
 
       $("runBenchmark").addEventListener("click", async () => {
+        const confirmed = window.confirm("Run local benchmark now? This is a manual heavy operation that may use GPU/CPU and take time.");
+        if (!confirmed) return;
         write("actionMessage", "Benchmark running");
-        state.raw = await postJson("/api/v1/benchmark/run");
+        const result = await postJson("/api/v1/benchmark/run");
+        if (isTokenRequired(result)) {
+          write("actionMessage", "Token required for benchmark action");
+        } else if (isError(result)) {
+          write("actionMessage", result.message || "Benchmark action failed");
+        }
         await refresh();
       });
 
       $("signReport").addEventListener("click", async () => {
         write("actionMessage", "Signing report");
-        state.raw = await postJson("/api/v1/report/signed");
+        const result = await postJson("/api/v1/report/signed");
+        if (isTokenRequired(result)) {
+          write("actionMessage", "Token required for signed report action");
+        } else if (isError(result)) {
+          write("actionMessage", result.message || "Signed report action failed");
+        }
         await refresh();
       });
 
       $("runChallenge").addEventListener("click", async () => {
-        write("actionMessage", "Running challenge");
+        write("actionMessage", "Running local/mock challenge");
         const challenge = await fetchJson("/api/v1/challenge/mock");
-        state.raw = isError(challenge) ? challenge : await postJson("/api/v1/challenge/run", challenge);
+        const result = isError(challenge) ? challenge : await postJson("/api/v1/challenge/run", challenge);
+        if (isTokenRequired(result)) {
+          write("actionMessage", "Token required for challenge run");
+        } else if (isError(result)) {
+          write("actionMessage", result.message || "Challenge action failed");
+        }
         await refresh();
       });
 
