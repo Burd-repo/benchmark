@@ -76,6 +76,10 @@ The UI consumes these local endpoints when opened through `serve`:
 - `GET /api/v1/uptime`
 - `GET /api/v1/reliability`
 - `GET /api/v1/network-score`
+- `GET /api/v1/ai-performance`
+- `GET /api/v1/trust-score`
+- `GET /api/v1/capability-spot`
+- `GET /api/v1/workload-eligibility`
 - `GET /api/v1/history`
 - `GET /api/v1/registration-payload`
 - `GET /api/v1/pricing`
@@ -98,40 +102,35 @@ The UI includes:
 2. Readiness
 3. Hardware
 4. Benchmarks
-5. History
-6. Uptime
-7. Security
-8. Registration
-9. Logs
-10. Raw Data
+5. Workloads
+6. History
+7. Uptime
+8. Security
+9. Registration
+10. Logs
+11. Raw Data
 
-Overview shows provider and machine identity, online status, Burd Compute Score,
-tier, local marketplace readiness, GPU, backend, suggested demonstrative price,
-uptime, reliability, network score, signed report status, and challenge status.
+Overview shows provider and machine identity, local online status, Compute Score, local readiness, GPU, backend, suggested demonstrative price, local reliability, local network assessment, local heuristic trust, local/mock capability, future marketplace status, session status, signed report status, and challenge status.
 
-Readiness shows the canonical local readiness score, level, status, individual
-checks, warnings, and recommendations from `GET /api/v1/readiness`.
+Readiness shows the canonical local readiness score, level, status, individual checks, warnings, recommendations, and evidence state from `GET /api/v1/readiness` plus local verification evidence.
 
-Hardware shows CPU, RAM, GPU, VRAM, backend, driver/runtime signals, disk, and
-network summary.
+Hardware shows CPU, RAM, GPU, VRAM, backend, driver/runtime signals, disk, hardware fingerprint summary, VRAM source/confidence, marketplace GPU policy, and fingerprint mismatch warnings.
 
-Benchmarks shows LLM, stability, network, network score, latency, loss, disk,
-fit analysis, and skipped, passed, or failed status.
+Benchmarks shows consolidated AI Performance from `GET /api/v1/ai-performance`, including measured/estimated/expired/not-measured status, source, confidence, model/runtime/backend, tokens per second, TTFT, latency where measured, compatible models, network score, latency, jitter, loss, DNS timing, disk, and fit analysis.
 
-History shows the latest benchmark and prior persisted benchmark summaries when
-they exist, including score, tier, signed state, and challenge ID.
+Workloads shows local workload eligibility and future marketplace status from `GET /api/v1/workload-eligibility`, including reasons and blockers. It never labels a workload as approved.
 
-Security shows public key summary, signature status, API token status, challenge
-verification, fraud risk, and raw-data redaction status.
+History shows the latest benchmark and prior persisted benchmark summaries when they exist, including score, tier, signed state, and challenge ID.
 
-Registration shows the local registration payload for future backend use, a copy
-button, and a disabled future backend send action.
+Uptime shows local heartbeat/session state, local online status, reliability, uptime ratios, fingerprint match state, and no-history warnings without treating missing samples as fraud.
+
+Security shows public key summary, signature status, API token status, challenge verification, fraud risk, and raw-data redaction status.
+
+Registration shows the local registration payload for future backend use, a copy button, and a disabled future backend send action.
 
 Logs shows local actions and task logs.
 
-Raw Data shows formatted redacted JSON. Private keys, API tokens, token hashes,
-and credential fields must never be displayed.
-
+Raw Data shows formatted redacted JSON. Private keys, API tokens, token hashes, and credential fields must never be displayed.
 ## Offline API Message
 
 If the UI cannot reach the local API, it shows:
@@ -148,3 +147,16 @@ This replaces unhelpful browser errors such as `Failed to fetch`.
 The console intentionally does not implement a production backend, Pix, billing,
 payouts, real marketplace listings, real jobs, leases, orchestration, reputation
 ranking, TPM/HSM attestation, remote storage, or remote telemetry.
+
+## Provider Console Integration - PR 11
+
+The console now consumes the dedicated PR 7-10 endpoints directly before falling back to provider aggregates or raw data:
+
+- AI Performance is shown inside `Benchmarks` from `GET /api/v1/ai-performance`.
+- Local Trust Assessment is summarized in `Overview` from `GET /api/v1/trust-score`.
+- Capability Spot - Local/Mock is summarized in `Overview` from `GET /api/v1/capability-spot`.
+- Workloads is a dedicated tab backed by `GET /api/v1/workload-eligibility`.
+
+The UI labels local-only, local-heuristic, local/mock, future-marketplace, token-required, not-measured, unavailable, expired, and missing states explicitly. It does not calculate scores in the browser; it renders backend contracts and source labels. The benchmark action remains visible but asks for confirmation because it can be a heavy manual local operation.
+
+There is no API-token input in this phase. Protected endpoints that return `401` or `403` show `Token required` while the rest of the console remains usable.
