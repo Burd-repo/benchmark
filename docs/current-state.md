@@ -1,4 +1,4 @@
-﻿# Current State
+# Current State
 
 This document records the technical audit for the Provider Agent MVP before and
 after the June 2026 reliability pass.
@@ -225,11 +225,17 @@ starting the API server or depending on host state:
   `not_verified`, `ready_locally`, and `failed` states.
 - one-shot heartbeat behavior, local uptime history updates, active-session
   liveness checks, and session invalidation on fingerprint mismatch.
-
 ## Provider Console Integration - PR 11
 
 - Provider Console keeps the existing visual structure and adds direct consumption of AI Performance, Local Trust Score, Capability Spot, and Workload Eligibility endpoints.
 - AI Performance is integrated into Benchmarks; Workloads is a new tab for local and future-marketplace workload eligibility.
 - Trust and Capability are shown as local heuristic/local mock signals, not remote marketplace verification or Proof of Capability.
-- Protected endpoints without a token are surfaced as `Token required`; the UI does not implement token entry yet.
+- Protected endpoints without a token are surfaced as Token required; the UI does not implement token entry yet.
 - Benchmark execution remains a manual heavy action with confirmation and is not run automatically.
+
+## PR 12 - Documentation Consolidation
+
+- Provider Trust Layer documentation now explicitly defines readiness, compute, network, reliability, trust, verification status, capability spot, and workload eligibility as separate local concepts.
+- Dedicated docs cover reliability score, network score, trust score, local/mock spot verification, and workload eligibility contracts.
+- README and current docs clarify the NVIDIA/CUDA-only marketplace MVP policy, AMD/ROCm/Vulkan local-diagnostic behavior, evidence expiration, session invalidation, heartbeat boundaries, and future scheduler/marketplace consumption.
+- The documentation keeps backend registry, remote Proof of Capability, marketplace listings, jobs, leases, orchestration, Pix, billing, and payouts out of the local MVP.

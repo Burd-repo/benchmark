@@ -87,3 +87,7 @@ Tests use temporary state directories and never touch the real home folder.
   snapshot.
 - This is a local contract only. Backend sessions, session leases, heartbeat
   loops, and marketplace admission remain future work.
+
+## Relationship To Workload Eligibility
+
+An active local session is evidence of intended availability, not a lease. Future marketplace and scheduler policy should require active session state and recent heartbeat before routing online workloads, but the local MVP only records and reports the state.

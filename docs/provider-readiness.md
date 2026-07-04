@@ -79,7 +79,7 @@ machine may be ready for local diagnostics while the
 When a local provider session exists, readiness reports it and treats active,
 expired, stopped, and invalidated state as informational. If a heartbeat has
 been recorded, readiness can surface the latest heartbeat summary as context,
-but it still does not turn readiness into trust scoring or backend admission.
+but it still does not turn readiness into trust scoring, workload eligibility, or backend admission.
 
 The `evidence` summary distinguishes `missing`, `invalid`, `expired`, and
 `valid`. Signed reports expire after 7 days; local challenge evidence expires
@@ -114,3 +114,15 @@ Readiness tab.
 
 `Ready Locally` only means the local contracts pass. Backend verification,
 auditing, marketplace listing, jobs, payouts, and billing remain out of scope.
+
+## Relationship To Trust And Eligibility
+
+Readiness is one input to the Provider Trust Layer, not the final commercial decision. A provider can be `ready_locally` while still being blocked from the paid marketplace MVP by the NVIDIA/CUDA policy, insufficient trust, weak reliability, missing heartbeat history, limited network quality, or workload-specific constraints.
+
+Use:
+
+- `trust-score --json` for local heuristic confidence;
+- `capability-spot --json` for local/mock AI capability evidence;
+- `workload-eligibility --json` for workload-specific local and future-marketplace decisions.
+
+See `docs/provider-trust-layer.md` for the consolidated model.

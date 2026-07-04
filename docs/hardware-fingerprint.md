@@ -73,3 +73,9 @@ The fingerprint changes when relevant technical evidence changes, including:
 
 Runtime-only values such as timestamps, available RAM, and container flags do
 not change the fingerprint.
+
+## Evidence And Session Impact
+
+A fingerprint mismatch means old evidence no longer proves the current machine. Provider verification, readiness, trust score, session status, heartbeat, and workload eligibility should treat the provider conservatively until fresh signed report and challenge evidence are generated.
+
+This is a local security boundary only. It does not contact a backend or perform hardware attestation through TPM, HSM, OS keychain, or a remote verifier.
