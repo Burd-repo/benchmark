@@ -1,4 +1,4 @@
-use crate::provider::build_provider_details;
+﻿use crate::provider::build_provider_details;
 use crate::raw::build_raw_data_from_provider;
 use crate::readiness::{
     ProviderReadinessInputs, ProviderReadinessStatus, ReadinessCheckStatus,
@@ -57,6 +57,7 @@ fn signed_report_contract_uses_temp_identity_and_hides_secrets() {
     assert!(signed.report.evidence.is_some());
     assert!(signed.signature_valid_locally);
     assert!(signed.report.hardware_fingerprint.is_some());
+    assert!(signed.report.ai_performance.is_some());
     assert!(signed.report.marketplace_policy.is_some());
     assert!(verification.signature_valid);
     assert!(verification.errors.is_empty());
@@ -259,9 +260,11 @@ fn provider_session_contract_starts_reads_and_stops_without_secrets() {
 
     let provider = build_provider_details(TEST_AGENT_VERSION, "http://127.0.0.1:8787");
     assert!(provider.session.is_some());
+    assert!(provider.ai_performance.tokens_per_second.is_some());
     let verification = test_fixtures::provider_verification();
     let raw = build_raw_data_from_provider(&provider, &verification);
     assert!(raw.session.is_some());
+    assert!(raw.ai_performance.get("status").is_some());
     let provider_value = serde_json::to_value(&provider).unwrap();
     let raw_value = serde_json::to_value(&raw).unwrap();
     assert_no_secret_values(&provider_value, None);
@@ -359,8 +362,10 @@ fn heartbeat_once_contract_records_session_and_updates_local_history() {
     assert!(uptime.checks_total >= 1);
     assert_eq!(uptime.current_status, "heartbeat_ok");
     assert!(provider.session.is_some());
+    assert!(provider.ai_performance.tokens_per_second.is_some());
     assert!(provider.heartbeat.is_some());
     assert!(raw.session.is_some());
+    assert!(raw.ai_performance.get("status").is_some());
     assert!(raw.heartbeat.is_some());
     assert!(payload.session.is_some());
     assert!(payload.heartbeat.is_some());

@@ -1,5 +1,77 @@
 {
   "active_jobs_future": 0,
+  "ai_performance": {
+    "backend": "CUDA",
+    "benchmark_profile": "profile_24gb",
+    "benchmark_runs": 3,
+    "compatible_models": [
+      "Burd Contract Model"
+    ],
+    "components": {
+      "fit_source": "contract fixture",
+      "llm_benchmark_passed": true,
+      "raw_metric_keys": [
+        "avg_latency_ms",
+        "avg_tps",
+        "avg_ttft_ms",
+        "errors",
+        "max_tps",
+        "min_tps",
+        "model",
+        "output_tokens_avg",
+        "passed",
+        "prompt_tokens_avg",
+        "provider",
+        "run_details",
+        "runs",
+        "runtime",
+        "stddev_tps",
+        "total_duration_ms",
+        "total_tokens_avg",
+        "warnings"
+      ],
+      "signed_report_current": true
+    },
+    "confidence_level": "high",
+    "cuda_version": null,
+    "driver": "555.42",
+    "expires_at": null,
+    "gpu_name": "NVIDIA GeForce RTX 4090",
+    "is_expired": false,
+    "latency_p50_ms": 840.0,
+    "latency_p95_ms": 870.0,
+    "level": "good",
+    "limited_models": [],
+    "max_recommended_model_class": "medium",
+    "measured_at": "2026-06-08T00:00:00Z",
+    "model": "fixture-8b",
+    "notes": [
+      "AI performance metrics consolidate local signed reports, benchmark history, capability spot evidence, and fit estimates.",
+      "This report does not execute benchmarks automatically and does not start an external runtime.",
+      "Fit estimates are never treated as measured benchmark proof.",
+      "Local evidence does not imply backend approval, remote Proof of Capability, scheduler admission, or marketplace eligibility."
+    ],
+    "profile": "llm_inference",
+    "provider": "ollama",
+    "requests_per_second": null,
+    "runtime": "ollama",
+    "source": "real_benchmark",
+    "stability_passed": true,
+    "status": "measured",
+    "sustained_tokens_per_second": 39.5,
+    "sustained_tokens_per_second_confidence": "high",
+    "sustained_tokens_per_second_source": "real_benchmark",
+    "time_to_first_token_ms": 180.0,
+    "time_to_first_token_ms_confidence": "high",
+    "time_to_first_token_ms_source": "real_benchmark",
+    "tokens_per_second": 42.0,
+    "tokens_per_second_confidence": "high",
+    "tokens_per_second_source": "real_benchmark",
+    "vram_total_gb": 24.0,
+    "warnings": [
+      "deterministic contract fixture"
+    ]
+  },
   "attributes": [
     {
       "key": "host",
@@ -214,6 +286,54 @@
   "public_key": "<cryptographic-value>",
   "raw_report": {
     "agent_version": "0.1.0-test",
+    "ai_performance": {
+      "backend": "CUDA",
+      "benchmark_profile": "profile_24gb",
+      "benchmark_runs": null,
+      "compatible_models": [
+        "Burd Contract Model"
+      ],
+      "components": {
+        "estimated": true,
+        "fit_source": "contract fixture"
+      },
+      "confidence_level": "low",
+      "cuda_version": null,
+      "driver": "555.42",
+      "expires_at": null,
+      "gpu_name": "NVIDIA GeForce RTX 4090",
+      "is_expired": false,
+      "latency_p50_ms": null,
+      "latency_p95_ms": null,
+      "level": "high",
+      "limited_models": [],
+      "max_recommended_model_class": "medium",
+      "measured_at": null,
+      "model": "Burd Contract Model",
+      "notes": [
+        "deterministic contract fixture"
+      ],
+      "profile": "llm_inference",
+      "provider": "fixture",
+      "requests_per_second": null,
+      "runtime": "llama.cpp/Ollama",
+      "source": "fit_estimate",
+      "stability_passed": null,
+      "status": "estimated",
+      "sustained_tokens_per_second": null,
+      "sustained_tokens_per_second_confidence": "unavailable",
+      "sustained_tokens_per_second_source": "not_measured",
+      "time_to_first_token_ms": null,
+      "time_to_first_token_ms_confidence": "unavailable",
+      "time_to_first_token_ms_source": "not_measured",
+      "tokens_per_second": 80.0,
+      "tokens_per_second_confidence": "low",
+      "tokens_per_second_source": "fit_estimate",
+      "vram_total_gb": 24.0,
+      "warnings": [
+        "fixture uses fit estimate; no LLM benchmark was run"
+      ]
+    },
     "benchmark_profile": "profile_24gb",
     "benchmark_version": "2026.06-mvp",
     "challenge": null,

@@ -1,3 +1,4 @@
+use crate::ai_performance::{AiPerformanceInputs, calculate_ai_performance_report};
 use crate::disk::{DiskBenchmarkOptions, run_disk_benchmark};
 use crate::health::{calculate_reliability, load_reliability_report};
 use crate::llm::{LlmBenchmarkOptions, LlmBenchmarkReport, run_llm_benchmark};
@@ -8,6 +9,7 @@ use crate::network::{
 use crate::profiles::profile_for_vram;
 use crate::score::calculate_score;
 use crate::stability::{StabilityBenchmarkReport, run_stability_benchmark};
+use crate::verification::verify_provider_from_reports;
 use burd_hardware::{
     BENCHMARK_VERSION, SystemReport, build_hardware_fingerprint_report, build_system_report,
     detect_specs,
@@ -17,7 +19,8 @@ use burd_protocol::{
     AgentConfig, Challenge, FULL_REPORT_TTL_SECONDS, FullReport, KEY_ALGORITHM, PrivateKeyFile,
     ReportSignature, SIGNED_REPORT_TTL_SECONDS, SignedReport, VerifyReportResult,
     default_state_dir, evidence_freshness, evidence_freshness_at, hash_canonical, load_identity,
-    load_private_key, placeholder_signature, sign_message, verify_message,
+    load_latest_challenge_output, load_private_key, placeholder_signature, sign_message,
+    verify_message,
 };
 use chrono::{DateTime, Utc};
 use std::fs;
@@ -109,6 +112,50 @@ pub(crate) fn generate_full_report_from_snapshot(
         .map(|value| value.challenge_id.clone());
     let fingerprint = build_hardware_fingerprint_report(system);
     let timestamp = Utc::now().to_rfc3339();
+    let llm_benchmark_value = if let Some(value) = &llm_benchmark {
+        Some(serde_json::to_value(value).expect("llm benchmark serializes"))
+    } else {
+        Some(skipped("not run; use report --run-all or bench llm"))
+    };
+    let stability_value = if let Some(value) = &stability {
+        Some(serde_json::to_value(value).expect("stability report serializes"))
+    } else {
+        Some(skipped("not run; use report --run-all or bench stability"))
+    };
+    let network_value = if let Some(value) = &network {
+        Some(serde_json::to_value(value).expect("network report serializes"))
+    } else {
+        Some(skipped("not run; use report --run-all or bench network"))
+    };
+    let disk_value = if let Some(value) = &disk {
+        Some(serde_json::to_value(value).expect("disk report serializes"))
+    } else {
+        Some(skipped("not run; use report --run-all or bench disk"))
+    };
+    let latest_signed_result = load_latest_signed_report();
+    let latest_signed = latest_signed_result.as_ref().ok();
+    let verification = verify_provider_from_reports(
+        identity
+            .as_ref()
+            .map(|_| ())
+            .ok_or_else(|| "identity unavailable".to_string()),
+        system,
+        &score,
+        latest_signed_result.clone(),
+        load_latest_challenge_output(),
+    );
+    let history = crate::history::load_history_list().ok();
+    let ai_performance = calculate_ai_performance_report(AiPerformanceInputs {
+        system,
+        fit,
+        verification: Some(&verification),
+        latest_signed,
+        current_llm_benchmark: llm_benchmark_value.as_ref(),
+        current_measured_at: Some(timestamp.as_str()),
+        history: history.as_ref(),
+        now: Utc::now(),
+    });
+
     FullReport {
         identity,
         evidence: evidence_freshness(&timestamp, FULL_REPORT_TTL_SECONDS).ok(),
@@ -119,31 +166,18 @@ pub(crate) fn generate_full_report_from_snapshot(
         ),
         system: serde_json::to_value(system).expect("system report serializes"),
         fit: Some(serde_json::to_value(fit).expect("fit report serializes")),
-        llm_benchmark: if let Some(value) = &llm_benchmark {
-            Some(serde_json::to_value(value).expect("llm benchmark serializes"))
-        } else {
-            Some(skipped("not run; use report --run-all or bench llm"))
-        },
-        stability: if let Some(value) = &stability {
-            Some(serde_json::to_value(value).expect("stability report serializes"))
-        } else {
-            Some(skipped("not run; use report --run-all or bench stability"))
-        },
-        network: if let Some(value) = &network {
-            Some(serde_json::to_value(value).expect("network report serializes"))
-        } else {
-            Some(skipped("not run; use report --run-all or bench network"))
-        },
+        llm_benchmark: llm_benchmark_value,
+        stability: stability_value,
+        network: network_value,
         network_score: Some(
             serde_json::to_value(network_score).expect("network score report serializes"),
         ),
-        disk: if let Some(value) = &disk {
-            Some(serde_json::to_value(value).expect("disk report serializes"))
-        } else {
-            Some(skipped("not run; use report --run-all or bench disk"))
-        },
+        disk: disk_value,
         reliability: Some(
             serde_json::to_value(reliability).expect("reliability report serializes"),
+        ),
+        ai_performance: Some(
+            serde_json::to_value(ai_performance).expect("ai performance report serializes"),
         ),
         score: serde_json::to_value(score).expect("score serializes"),
         timestamp,
@@ -365,6 +399,7 @@ mod tests {
                 network_score: None,
                 disk: None,
                 reliability: None,
+                ai_performance: None,
                 score: serde_json::json!({"burd_compute_score": 0}),
                 timestamp: "2026-06-08T00:00:00Z".to_string(),
                 agent_version: "0.1.0".to_string(),

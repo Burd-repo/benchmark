@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod ai_performance;
 pub mod capability;
 pub mod disk;
 pub mod earnings;
@@ -28,6 +29,10 @@ pub(crate) mod test_fixtures;
 pub use actions::{
     ActionStatus, Task, TaskLogs, load_actions, load_logs, load_logs_for_task, logs_summary,
     record_action,
+};
+pub use ai_performance::{
+    AiPerformanceInputs, AiPerformanceReport, build_ai_performance_report,
+    calculate_ai_performance_report,
 };
 pub use burd_protocol::session::ProviderSessionStatusReport;
 pub use capability::{

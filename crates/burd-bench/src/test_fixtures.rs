@@ -1,3 +1,4 @@
+use crate::ai_performance::AiPerformanceReport;
 use crate::capability::CapabilitySpotVerificationReport;
 use crate::earnings::estimate_earnings;
 use crate::health::{ReliabilityComponents, ReliabilityReport, UptimeSummary};
@@ -131,6 +132,7 @@ pub(crate) fn full_report(challenge: Option<Challenge>) -> FullReport {
         network_score: Some(serde_json::to_value(network_score_report()).unwrap()),
         disk: Some(skipped("not run in fast contract fixture")),
         reliability: Some(serde_json::to_value(reliability_report()).unwrap()),
+        ai_performance: Some(ai_performance_estimated_value()),
         score: serde_json::to_value(score_report()).unwrap(),
         timestamp: FIXTURE_TIMESTAMP.to_string(),
         agent_version: "0.1.0-test".to_string(),
@@ -145,6 +147,47 @@ pub(crate) fn full_report(challenge: Option<Challenge>) -> FullReport {
     }
 }
 
+fn ai_performance_estimated_value() -> serde_json::Value {
+    serde_json::json!({
+        "status": "estimated",
+        "level": "high",
+        "profile": "llm_inference",
+        "source": "fit_estimate",
+        "confidence_level": "low",
+        "measured_at": null,
+        "expires_at": null,
+        "is_expired": false,
+        "model": "Burd Contract Model",
+        "provider": "fixture",
+        "runtime": "llama.cpp/Ollama",
+        "backend": "CUDA",
+        "driver": "555.42",
+        "cuda_version": null,
+        "gpu_name": "NVIDIA GeForce RTX 4090",
+        "vram_total_gb": 24.0,
+        "tokens_per_second": 80.0,
+        "tokens_per_second_source": "fit_estimate",
+        "tokens_per_second_confidence": "low",
+        "sustained_tokens_per_second": null,
+        "sustained_tokens_per_second_source": "not_measured",
+        "sustained_tokens_per_second_confidence": "unavailable",
+        "time_to_first_token_ms": null,
+        "time_to_first_token_ms_source": "not_measured",
+        "time_to_first_token_ms_confidence": "unavailable",
+        "requests_per_second": null,
+        "latency_p50_ms": null,
+        "latency_p95_ms": null,
+        "stability_passed": null,
+        "benchmark_runs": null,
+        "benchmark_profile": "profile_24gb",
+        "compatible_models": ["Burd Contract Model"],
+        "limited_models": [],
+        "max_recommended_model_class": "medium",
+        "components": {"fit_source": "contract fixture", "estimated": true},
+        "warnings": ["fixture uses fit estimate; no LLM benchmark was run"],
+        "notes": ["deterministic contract fixture"]
+    })
+}
 pub(crate) fn signed_report(challenge: Option<Challenge>) -> Result<SignedReport, String> {
     sign_full_report_at(full_report(challenge), FIXTURE_TIMESTAMP.to_string())
 }
@@ -253,6 +296,7 @@ pub(crate) fn provider_details() -> BurdProviderDetails {
         uptime,
         reliability: reliability_report(),
         network,
+        ai_performance: ai_performance_report(),
         capability_spot: capability_spot_report(),
         workload_eligibility: workload_eligibility_report(),
         stats: provider_stats(),
@@ -284,6 +328,23 @@ pub(crate) fn provider_details() -> BurdProviderDetails {
     }
 }
 
+pub(crate) fn ai_performance_report() -> AiPerformanceReport {
+    let signed = signed_report_with_llm_benchmark(true);
+    crate::ai_performance::calculate_ai_performance_report(
+        crate::ai_performance::AiPerformanceInputs {
+            system: &system_report(),
+            fit: &fit_report(),
+            verification: Some(&provider_verification()),
+            latest_signed: None,
+            current_llm_benchmark: signed.report.llm_benchmark.as_ref(),
+            current_measured_at: Some(FIXTURE_TIMESTAMP),
+            history: Some(&history_list()),
+            now: chrono::DateTime::parse_from_rfc3339("2026-06-09T00:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        },
+    )
+}
 pub(crate) fn capability_spot_report() -> CapabilitySpotVerificationReport {
     crate::capability::calculate_capability_spot_verification(
         &system_report(),

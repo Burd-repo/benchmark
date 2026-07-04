@@ -1,4 +1,4 @@
-# Local API
+﻿# Local API
 
 Run:
 
@@ -41,6 +41,7 @@ Endpoints:
 - `GET /api/v1/uptime`
 - `GET /api/v1/reliability`
 - `GET /api/v1/network-score`
+- `GET /api/v1/ai-performance`
 - `GET /api/v1/trust-score`
 - `GET /api/v1/capability-spot`
 - `GET /api/v1/workload-eligibility`
@@ -77,5 +78,7 @@ Public or lower-risk endpoints:
 
 - `GET /health`
 - read-only summaries such as system, provider, verification, history, uptime,
-  reliability, network score, trust score, capability spot, workload eligibility,
+  reliability, network score, AI performance, trust score, capability spot, workload eligibility,
   pricing, earnings, actions, and logs.
+
+AI performance is read-only and does not run benchmarks, start runtimes, or perform remote Proof of Capability.

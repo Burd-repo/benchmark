@@ -1,4 +1,4 @@
-<div align="left">
+﻿<div align="left">
 
 <a href="https://burd.ia">
   <img src="./public/burd-logo.svg" alt="Logo da Burd" title="Burd Benchmark" height="48" />
@@ -7,7 +7,7 @@
 <br />
 
 <p>
-  Produto local de validação da Burd para detectar hardware, executar benchmarks, calcular score, gerar relatórios assinados e preparar evidências locais para providers de compute.
+  Produto local de validaÃ§Ã£o da Burd para detectar hardware, executar benchmarks, calcular score, gerar relatÃ³rios assinados e preparar evidÃªncias locais para providers de compute.
 </p>
 
 [![status](https://img.shields.io/badge/status-active-2C5E8A)](https://github.com/Burd-repo/benchmark)
@@ -19,58 +19,59 @@
 
 ---
 
-## Sumário
+## SumÃ¡rio
 
-* [Visão geral](#visão-geral)
-* [Início rápido](#início-rápido)
+* [VisÃ£o geral](#visÃ£o-geral)
+* [InÃ­cio rÃ¡pido](#inÃ­cio-rÃ¡pido)
 * [Build](#build)
 * [Comandos principais](#comandos-principais)
 * [API local](#api-local)
 * [Identidade do Provider](#identidade-do-provider)
-* [Relatórios assinados](#relatórios-assinados)
+* [RelatÃ³rios assinados](#relatÃ³rios-assinados)
 * [Challenge local](#challenge-local)
 * [Readiness](#readiness)
 * [Score](#score)
+* [AI Performance Metrics](#ai-performance-metrics)
 * [Network score](#network-score)
 * [Reliability e uptime](#reliability-e-uptime)
-* [Histórico](#histórico)
+* [HistÃ³rico](#histÃ³rico)
 * [Payload de registro](#payload-de-registro)
-* [Regras de segurança](#regras-de-segurança)
+* [Regras de seguranÃ§a](#regras-de-seguranÃ§a)
 * [Diretrizes para Pull Request](#diretrizes-para-pull-request)
 * [Checklist de Pull Request](#checklist-de-pull-request)
-* [Convenção de commits](#convenção-de-commits)
-* [Não commitar](#não-commitar)
+* [ConvenÃ§Ã£o de commits](#convenÃ§Ã£o-de-commits)
+* [NÃ£o commitar](#nÃ£o-commitar)
 * [Notas para mantenedores](#notas-para-mantenedores)
-* [Licença](#licença)
+* [LicenÃ§a](#licenÃ§a)
 
 ---
 
-## Visão geral
+## VisÃ£o geral
 
-O **Burd Benchmark** gera o binário `burd-agent`, responsável pela validação local de máquinas que desejam atuar como providers.
+O **Burd Benchmark** gera o binÃ¡rio `burd-agent`, responsÃ¡vel pela validaÃ§Ã£o local de mÃ¡quinas que desejam atuar como providers.
 
-O agent é responsável por:
+O agent Ã© responsÃ¡vel por:
 
 * detectar hardware local;
 * identificar GPU, VRAM, CPU, RAM, disco e drivers;
 * estimar compatibilidade com workloads de IA;
 * executar benchmarks locais;
 * calcular o Burd Compute Score;
-* gerar relatórios assinados;
-* verificar relatórios;
+* gerar relatÃ³rios assinados;
+* verificar relatÃ³rios;
 * criar e validar challenges locais;
-* registrar histórico local;
+* registrar histÃ³rico local;
 * calcular readiness;
 * calcular reliability local a partir do historico de heartbeat;
 * calcular network score local a partir de benchmark finito;
-* expor uma API local para integração com interfaces.
+* expor uma API local para integraÃ§Ã£o com interfaces.
 
-Este repositório não é uma landing page institucional.
-O foco aqui é validação local, contratos de dados, score, evidências e API do provider.
+Este repositÃ³rio nÃ£o Ã© uma landing page institucional.
+O foco aqui Ã© validaÃ§Ã£o local, contratos de dados, score, evidÃªncias e API do provider.
 
 ---
 
-## Início rápido
+## InÃ­cio rÃ¡pido
 
 ```bash
 git clone https://github.com/Burd-repo/benchmark.git
@@ -84,19 +85,19 @@ No Windows PowerShell:
 .\target\debug\burd-agent.exe --help
 ```
 
-Validação local rápida:
+ValidaÃ§Ã£o local rÃ¡pida:
 
 ```powershell
 .\scripts\test-local.ps1
 ```
 
-Esse script executa verificações seguras e rápidas. Ele não inicia o servidor local, não roda loops de heartbeat e não executa benchmarks pesados.
+Esse script executa verificaÃ§Ãµes seguras e rÃ¡pidas. Ele nÃ£o inicia o servidor local, nÃ£o roda loops de heartbeat e nÃ£o executa benchmarks pesados.
 
 ---
 
 ## Build
 
-### Build padrão
+### Build padrÃ£o
 
 ```bash
 cargo build
@@ -114,7 +115,7 @@ cargo build --release
 cargo test --workspace
 ```
 
-### Formatação
+### FormataÃ§Ã£o
 
 ```bash
 cargo fmt --all --check
@@ -158,7 +159,7 @@ burd-agent score --json
 burd-agent network-score --json
 ```
 
-### Relatórios
+### RelatÃ³rios
 
 ```bash
 burd-agent report --json
@@ -193,7 +194,7 @@ burd-agent challenge run --file docs/examples/challenge.json --json
 burd-agent challenge verify --file signed-response.json --json
 ```
 
-### Sessão local
+### SessÃ£o local
 
 ```bash
 burd-agent session start --json
@@ -212,7 +213,7 @@ burd-agent reliability --json
 burd-agent registration-payload --json
 ```
 
-### Histórico e logs
+### HistÃ³rico e logs
 
 ```bash
 burd-agent history --json
@@ -229,7 +230,7 @@ burd-agent actions --json
 burd-agent serve --host 127.0.0.1 --port 8787
 ```
 
-Todos os comandos com `--json` devem escrever JSON válido em `stdout`, sem misturar logs no mesmo output.
+Todos os comandos com `--json` devem escrever JSON vÃ¡lido em `stdout`, sem misturar logs no mesmo output.
 
 ---
 
@@ -241,7 +242,7 @@ Para iniciar a API local:
 .\target\debug\burd-agent.exe serve --host 127.0.0.1 --port 8787
 ```
 
-A API fica disponível em:
+A API fica disponÃ­vel em:
 
 ```txt
 http://127.0.0.1:8787
@@ -263,6 +264,7 @@ GET  /api/v1/verification
 GET  /api/v1/uptime
 GET  /api/v1/reliability
 GET  /api/v1/network-score
+GET  /api/v1/ai-performance
 GET  /api/v1/history
 GET  /api/v1/registration-payload
 GET  /api/v1/pricing
@@ -295,7 +297,7 @@ Get-Process burd-agent -ErrorAction SilentlyContinue | Stop-Process -Force
 
 ## Identidade do Provider
 
-A identidade local é usada para assinar relatórios e comprovar a origem das evidências geradas pela máquina.
+A identidade local Ã© usada para assinar relatÃ³rios e comprovar a origem das evidÃªncias geradas pela mÃ¡quina.
 
 Comandos:
 
@@ -304,52 +306,52 @@ burd-agent identity init
 burd-agent identity show --json
 ```
 
-O agent grava configuração pública e mantém a chave privada separada.
+O agent grava configuraÃ§Ã£o pÃºblica e mantÃ©m a chave privada separada.
 
 Regras:
 
-* relatórios não devem expor chave privada;
-* raw data não deve expor chave privada;
-* payloads públicos não devem incluir secrets;
-* migrações devem preservar evidências válidas;
-* mudanças de identidade devem ser explícitas.
+* relatÃ³rios nÃ£o devem expor chave privada;
+* raw data nÃ£o deve expor chave privada;
+* payloads pÃºblicos nÃ£o devem incluir secrets;
+* migraÃ§Ãµes devem preservar evidÃªncias vÃ¡lidas;
+* mudanÃ§as de identidade devem ser explÃ­citas.
 
 ---
 
-## Relatórios assinados
+## RelatÃ³rios assinados
 
-Para gerar um relatório assinado completo:
+Para gerar um relatÃ³rio assinado completo:
 
 ```bash
 burd-agent report --run-all --signed --json
 ```
 
-Um relatório assinado pode conter:
+Um relatÃ³rio assinado pode conter:
 
-* hash canônico do relatório;
+* hash canÃ´nico do relatÃ³rio;
 * assinatura;
-* chave pública;
+* chave pÃºblica;
 * algoritmo da chave;
 * timestamp de assinatura;
-* resultado de verificação local;
-* versão de canonicalização;
+* resultado de verificaÃ§Ã£o local;
+* versÃ£o de canonicalizaÃ§Ã£o;
 * resumo de hardware;
 * score;
-* evidências do benchmark.
+* evidÃªncias do benchmark.
 
 Regras:
 
-* `report --run-all` deve registrar histórico local;
-* `report --run-all --signed` deve registrar histórico local;
-* relatórios expirados não devem contar como evidência válida;
-* assinatura inválida deve bloquear readiness;
-* relatório assinado não deve conter segredo.
+* `report --run-all` deve registrar histÃ³rico local;
+* `report --run-all --signed` deve registrar histÃ³rico local;
+* relatÃ³rios expirados nÃ£o devem contar como evidÃªncia vÃ¡lida;
+* assinatura invÃ¡lida deve bloquear readiness;
+* relatÃ³rio assinado nÃ£o deve conter segredo.
 
 ---
 
 ## Challenge local
 
-O challenge local valida evidências por meio de nonce, expiração, assinatura e relatório assinado.
+O challenge local valida evidÃªncias por meio de nonce, expiraÃ§Ã£o, assinatura e relatÃ³rio assinado.
 
 Comando recomendado:
 
@@ -357,16 +359,16 @@ Comando recomendado:
 burd-agent challenge run-local --json
 ```
 
-Esse comando cria, executa, assina, verifica e persiste a evidência local do challenge sem exigir arquivo intermediário.
+Esse comando cria, executa, assina, verifica e persiste a evidÃªncia local do challenge sem exigir arquivo intermediÃ¡rio.
 
 Regras:
 
-* challenge expirado não deve contar ponto de readiness;
+* challenge expirado nÃ£o deve contar ponto de readiness;
 * nonce deve ser validado;
-* assinatura do relatório deve ser validada;
+* assinatura do relatÃ³rio deve ser validada;
 * assinatura da resposta do challenge deve ser validada;
-* evidência válida deve ser persistida;
-* histórico sozinho não substitui evidência de challenge válida.
+* evidÃªncia vÃ¡lida deve ser persistida;
+* histÃ³rico sozinho nÃ£o substitui evidÃªncia de challenge vÃ¡lida.
 
 ---
 
@@ -384,13 +386,13 @@ burd-agent readiness --json
 O readiness considera:
 
 * identidade;
-* relatório assinado;
+* relatÃ³rio assinado;
 * challenge;
 * provider verification;
-* histórico;
+* histÃ³rico;
 * token da API local;
 * redaction de raw data;
-* validade e expiração das evidências.
+* validade e expiraÃ§Ã£o das evidÃªncias.
 
 Estados esperados:
 
@@ -403,13 +405,13 @@ uninitialized
 ```
 
 `ready_locally` significa que os checks locais passaram.
-Não significa aprovação externa, auditoria, listagem em marketplace ou garantia de receita.
+NÃ£o significa aprovaÃ§Ã£o externa, auditoria, listagem em marketplace ou garantia de receita.
 
 ---
 
 ## Score
 
-O Burd Compute Score é uma pontuação de `0` a `100`.
+O Burd Compute Score Ã© uma pontuaÃ§Ã£o de `0` a `100`.
 
 Pesos do MVP:
 
@@ -419,7 +421,7 @@ Pesos do MVP:
 15% estabilidade
 10% rede
 10% disco
-5% sinais de verificação
+5% sinais de verificaÃ§Ã£o
 ```
 
 Tiers:
@@ -433,9 +435,19 @@ Tiers:
 97-100  Burd Enterprise
 ```
 
-Preços e ganhos demonstrativos não devem ser tratados como promessa de receita.
+PreÃ§os e ganhos demonstrativos nÃ£o devem ser tratados como promessa de receita.
 
 ---
+
+## AI Performance Metrics
+
+O comando burd-agent ai-performance --json consolida metricas de performance de IA sem executar benchmark pesado automaticamente.
+
+A API local expoe o mesmo contrato em GET /api/v1/ai-performance.
+
+O relatorio separa metricas medidas (real_benchmark, signed_report, benchmark_history) de estimativas (fit_estimate) e dados ausentes (not_measured). Campos sem medicao confiavel retornam null ou origem not_measured/unavailable; estimativas de fit nunca sao tratadas como benchmark real. Evidencia expirada permanece visivel com is_expired true, warning e confianca reduzida.
+
+Este recurso nao inicia runtime externo, nao executa Proof of Capability remoto, nao contata backend, nao aprova marketplace e nao cria scheduler, jobs, leases, billing ou payouts.
 
 ## Network score
 
@@ -481,7 +493,7 @@ status              no_history, warming_up, reliable, degraded ou offline
 
 ---
 
-## Histórico
+## HistÃ³rico
 
 Comandos:
 
@@ -491,9 +503,9 @@ burd-agent history latest --json
 burd-agent history export --output history.json
 ```
 
-O histórico deve armazenar resumos de benchmark e evidências públicas.
+O histÃ³rico deve armazenar resumos de benchmark e evidÃªncias pÃºblicas.
 
-O histórico não deve conter:
+O histÃ³rico nÃ£o deve conter:
 
 ```txt
 private keys
@@ -513,24 +525,24 @@ burd-agent registration-payload --json
 burd-agent registration-payload --output registration.json
 ```
 
-O payload de registro é uma estrutura local para futura validação externa.
+O payload de registro Ã© uma estrutura local para futura validaÃ§Ã£o externa.
 
 Ele pode conter:
 
-* identidade pública;
-* hash do relatório assinado;
+* identidade pÃºblica;
+* hash do relatÃ³rio assinado;
 * score;
 * tier;
 * capabilities;
 * pricing demonstrativo;
-* resumo de verificação.
+* resumo de verificaÃ§Ã£o.
 
-Ele não deve submeter dados automaticamente.
-Ele não deve incluir segredos.
+Ele nÃ£o deve submeter dados automaticamente.
+Ele nÃ£o deve incluir segredos.
 
 ---
 
-## Regras de segurança
+## Regras de seguranÃ§a
 
 Nunca exponha, registre em log ou commite:
 
@@ -546,18 +558,18 @@ password
 valor bruto de token
 ```
 
-Rótulos seguros são permitidos:
+RÃ³tulos seguros sÃ£o permitidos:
 
 ```txt
 configurado
 ausente
-inválido
+invÃ¡lido
 rotacionado
 ativado
 desativado
 ```
 
-Arquivos públicos, payloads, logs, raw data e snapshots devem aplicar redaction quando necessário.
+Arquivos pÃºblicos, payloads, logs, raw data e snapshots devem aplicar redaction quando necessÃ¡rio.
 
 ---
 
@@ -565,17 +577,17 @@ Arquivos públicos, payloads, logs, raw data e snapshots devem aplicar redaction
 
 Antes de abrir um Pull Request, confirme:
 
-* a alteração tem um objetivo claro;
-* os comandos com `--json` continuam retornando JSON válido;
-* relatórios não expõem secrets;
-* raw data não expõe secrets;
+* a alteraÃ§Ã£o tem um objetivo claro;
+* os comandos com `--json` continuam retornando JSON vÃ¡lido;
+* relatÃ³rios nÃ£o expÃµem secrets;
+* raw data nÃ£o expÃµe secrets;
 * readiness reflete checks reais;
-* challenge válido é persistido corretamente;
-* evidências expiradas não contam como válidas;
-* histórico não contém credenciais;
-* mudanças de contrato JSON foram intencionais;
+* challenge vÃ¡lido Ã© persistido corretamente;
+* evidÃªncias expiradas nÃ£o contam como vÃ¡lidas;
+* histÃ³rico nÃ£o contÃ©m credenciais;
+* mudanÃ§as de contrato JSON foram intencionais;
 * testes relevantes foram executados;
-* arquivos temporários não foram commitados.
+* arquivos temporÃ¡rios nÃ£o foram commitados.
 
 Rode:
 
@@ -585,13 +597,13 @@ cargo test --workspace
 cargo build
 ```
 
-Se a alteração afetar API local, rode também:
+Se a alteraÃ§Ã£o afetar API local, rode tambÃ©m:
 
 ```powershell
 .\scripts\test-api.ps1
 ```
 
-Se a alteração afetar validação local, rode:
+Se a alteraÃ§Ã£o afetar validaÃ§Ã£o local, rode:
 
 ```powershell
 .\scripts\test-local.ps1
@@ -601,28 +613,28 @@ Se a alteração afetar validação local, rode:
 
 ## Checklist de Pull Request
 
-* [ ] A alteração tem propósito claro.
+* [ ] A alteraÃ§Ã£o tem propÃ³sito claro.
 * [ ] `cargo fmt --all --check` passa.
 * [ ] `cargo test --workspace` passa.
 * [ ] `cargo build` passa.
-* [ ] JSON de comandos com `--json` continua válido.
-* [ ] Nenhum segredo é exposto.
-* [ ] Nenhum token é registrado em log.
+* [ ] JSON de comandos com `--json` continua vÃ¡lido.
+* [ ] Nenhum segredo Ã© exposto.
+* [ ] Nenhum token Ã© registrado em log.
 * [ ] Raw/config continuam com redaction.
 * [ ] Readiness reflete checks reais.
-* [ ] Challenge válido é persistido quando necessário.
-* [ ] Evidências expiradas são tratadas corretamente.
-* [ ] Arquivos temporários não foram commitados.
-* [ ] Mensagem de commit segue a convenção do projeto.
+* [ ] Challenge vÃ¡lido Ã© persistido quando necessÃ¡rio.
+* [ ] EvidÃªncias expiradas sÃ£o tratadas corretamente.
+* [ ] Arquivos temporÃ¡rios nÃ£o foram commitados.
+* [ ] Mensagem de commit segue a convenÃ§Ã£o do projeto.
 
 ---
 
-## Convenção de commits
+## ConvenÃ§Ã£o de commits
 
-Use mensagens semânticas curtas:
+Use mensagens semÃ¢nticas curtas:
 
 ```txt
-tipo: descrição curta
+tipo: descriÃ§Ã£o curta
 ```
 
 Tipos aceitos:
@@ -641,29 +653,29 @@ refactor
 Exemplos:
 
 ```txt
-feat: adiciona persistência de challenge local
-fix: corrige cálculo de readiness
+feat: adiciona persistÃªncia de challenge local
+fix: corrige cÃ¡lculo de readiness
 fix: preserva redaction em raw data
 docs: atualiza guia do benchmark
-test: adiciona contrato de relatório assinado
+test: adiciona contrato de relatÃ³rio assinado
 chore: atualiza fixtures de snapshot
-refactor: simplifica geração de score
+refactor: simplifica geraÃ§Ã£o de score
 ```
 
-Evite mensagens genéricas como:
+Evite mensagens genÃ©ricas como:
 
 ```txt
 update
 ajustes
-correções
+correÃ§Ãµes
 final
 ```
 
 ---
 
-## Não commitar
+## NÃ£o commitar
 
-Não commite:
+NÃ£o commite:
 
 ```txt
 target/
@@ -682,7 +694,7 @@ agent.json
 agent.key
 ```
 
-Também não commite:
+TambÃ©m nÃ£o commite:
 
 ```txt
 segredos locais
@@ -690,35 +702,35 @@ estado local
 credenciais
 tokens
 chaves privadas
-relatórios gerados locais
+relatÃ³rios gerados locais
 payloads locais de teste
-arquivos temporários de challenge
+arquivos temporÃ¡rios de challenge
 ```
 
 ---
 
 ## Notas para mantenedores
 
-Ao revisar mudanças, preste atenção especial em:
+Ao revisar mudanÃ§as, preste atenÃ§Ã£o especial em:
 
 * contratos JSON;
-* validade de relatórios assinados;
-* expiração de evidências;
-* persistência de challenge;
-* cálculo de readiness;
+* validade de relatÃ³rios assinados;
+* expiraÃ§Ã£o de evidÃªncias;
+* persistÃªncia de challenge;
+* cÃ¡lculo de readiness;
 * redaction de raw/config;
 * status do token local;
 * compatibilidade da API local;
-* efeitos em histórico e payload de registro;
+* efeitos em histÃ³rico e payload de registro;
 * mensagens de erro de comandos CLI;
-* separação entre evidência local e aprovação externa.
+* separaÃ§Ã£o entre evidÃªncia local e aprovaÃ§Ã£o externa.
 
-Um Pull Request que exponha segredos, quebre JSON válido, confunda readiness local com aprovação externa ou altere contratos sem justificativa não deve ser mesclado.
+Um Pull Request que exponha segredos, quebre JSON vÃ¡lido, confunda readiness local com aprovaÃ§Ã£o externa ou altere contratos sem justificativa nÃ£o deve ser mesclado.
 
 ---
 
-## Licença
+## LicenÃ§a
 
-Este projeto é licenciado sob a licença **MIT**.
+Este projeto Ã© licenciado sob a licenÃ§a **MIT**.
 
 Consulte o arquivo [`LICENSE`](./LICENSE) para mais detalhes.

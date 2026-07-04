@@ -1,4 +1,4 @@
-# Provider Trust Layer
+﻿# Provider Trust Layer
 
 The Burd Provider Trust Layer is the incremental path from local provider
 validation to a future provider network. Its product thesis is:
@@ -37,7 +37,7 @@ policy decision.
 7. Local heuristic trust score.
 8. Local/mock AI capability spot verification.
 9. Workload eligibility.
-10. AI performance metric contracts.
+10. AI performance metric contracts. (implemented locally)
 11. Provider Console trust UI.
 12. Documentation consolidation.
 
@@ -131,6 +131,14 @@ Workload eligibility converts fit recommendations, capability spot verification,
 - `workload-eligibility --json` and `GET /api/v1/workload-eligibility` expose `local_status`, `marketplace_status_future`, per-workload decisions, confidence levels, reasons, blockers, warnings, and notes.
 - Provider details, raw data, and registration payloads surface the same workload eligibility report.
 - Local eligibility can be `eligible_locally`, `diagnostic_only`, `not_recommended`, or `blocked`; future marketplace eligibility remains stricter and stays blocked when compute, trust, signed evidence, or marketplace policy are insufficient.
+
+## PR 10 Summary
+
+AI Performance Metrics consolidates measured LLM benchmark evidence, current signed reports, benchmark history, capability context, and fit estimates into one local contract.
+
+- `ai-performance --json` and `GET /api/v1/ai-performance` expose status, level, source, confidence, measured timestamps, expiration, model/runtime/backend, tokens per second, TTFT, latency when measured, compatibility, warnings, and notes.
+- Provider details, raw data, registration payloads, full reports, and signed reports surface the same AI performance summary.
+- The report does not run benchmarks automatically, does not start runtimes, does not perform remote Proof of Capability, and does not imply marketplace approval or scheduler admission.
 
 ## Future Boundaries
 
