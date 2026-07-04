@@ -3,11 +3,12 @@ mod cli;
 use anyhow::Result;
 use burd_bench::{
     DiskBenchmarkOptions, LlmBenchmarkOptions, NetworkBenchmarkOptions, ReportRunOptions,
-    append_report_history, append_signed_report_history, build_capability_spot_verification,
-    build_provider_details, build_provider_readiness, build_provider_session_start,
-    build_provider_session_status, build_raw_data, build_registration_payload, build_trust_score,
-    build_workload_eligibility, calculate_network_score, calculate_pricing, calculate_score,
-    clear_history, clear_uptime_history, detect_health, estimate_earnings, export_history,
+    append_report_history, append_signed_report_history, build_ai_performance_report,
+    build_capability_spot_verification, build_provider_details, build_provider_readiness,
+    build_provider_session_start, build_provider_session_status, build_raw_data,
+    build_registration_payload, build_trust_score, build_workload_eligibility,
+    calculate_network_score, calculate_pricing, calculate_score, clear_history,
+    clear_uptime_history, detect_health, estimate_earnings, export_history,
     export_registration_payload, generate_full_report, generate_signed_report, heartbeat_once,
     load_actions, load_history_list, load_latest_history, load_logs, load_logs_for_task,
     load_network_score_report, load_reliability_report, load_signed_report_file,
@@ -396,6 +397,9 @@ fn run() -> Result<()> {
         }
         Commands::TrustScore { json: _ } => {
             print_json(&build_trust_score(AGENT_VERSION))?;
+        }
+        Commands::AiPerformance { json: _ } => {
+            print_json(&build_ai_performance_report(AGENT_VERSION))?;
         }
         Commands::CapabilitySpot { json: _ } => {
             print_json(&build_capability_spot_verification(AGENT_VERSION))?;

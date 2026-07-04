@@ -1,4 +1,4 @@
-# Current State
+﻿# Current State
 
 This document records the technical audit for the Provider Agent MVP before and
 after the June 2026 reliability pass.
@@ -113,6 +113,7 @@ after the June 2026 reliability pass.
 - Provider details, raw data, and registration payloads surface local trust score summaries.
 - Local/mock AI capability spot verification can be calculated from fit analysis, runtime readiness, signed evidence, optional local LLM benchmark proof, and local history depth through CLI and API.
 - Provider details, raw data, and registration payloads surface local/mock capability spot verification summaries.
+- Local AI performance metrics consolidate measured LLM benchmark evidence, signed reports, benchmark history, and fit estimates through CLI and API without running benchmarks automatically.
 - Local workload eligibility can be calculated from fit recommendations, capability spot verification, trust score, provider verification, reliability, compute score, and marketplace GPU policy through CLI and API.
 - Provider details, raw data, and registration payloads surface local and future-marketplace workload eligibility summaries.
 - Network benchmark includes latency aliases, request counts, status code,
@@ -179,6 +180,7 @@ after the June 2026 reliability pass.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
 - Backend-bound availability and scheduler enforcement of workload eligibility.
+- Remote Proof of Capability and backend-attested AI performance verification.
 
 ## Known Build Warnings
 

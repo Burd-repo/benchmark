@@ -430,6 +430,7 @@ mod tests {
             network_score: None,
             disk: None,
             reliability: None,
+            ai_performance: None,
             score: serde_json::json!({"burd_compute_score": 80.0, "tier": "Burd Pro"}),
             timestamp: "2026-06-08T00:00:00Z".to_string(),
             agent_version: "0.1.0".to_string(),

@@ -499,6 +499,7 @@ mod tests {
             network_score: None,
             disk: None,
             reliability: None,
+            ai_performance: None,
             score: serde_json::json!({"burd_compute_score": 0, "tier": "Not Eligible"}),
             timestamp: Utc::now().to_rfc3339(),
             agent_version: "0.1.0".to_string(),

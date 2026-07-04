@@ -1,122 +1,174 @@
-{
-  "identity": {
-    "provider_id": null,
-    "machine_id": "burd-example-machine",
-    "api_url": "https://api.burd.cloud",
-    "preferred_provider": "ollama",
-    "benchmark_profile": "profile_24gb",
-    "telemetry_enabled": false,
-    "created_at": "2026-06-08T00:00:00Z",
-    "public_key": "burd-public-key-placeholder-example"
-  },
-  "evidence": {
-    "issued_at": "2026-06-08T00:00:00Z",
-    "expires_at": "2026-06-15T00:00:00Z",
-    "is_expired": false,
-    "age_seconds": 0,
-    "ttl_seconds": 604800
-  },
-  "system": {
-    "os": "linux",
-    "architecture": "x86_64",
-    "primary_gpu_name": "NVIDIA GeForce RTX 4090",
-    "vram_total_gb": 24,
-    "backend_detected": "CUDA"
-  },
-  "fit": {
-    "source": "llmfit-core adapter",
-    "runnable_models": 3210
-  },
-  "llm_benchmark": {
-    "provider": "ollama",
-    "model": "llama3.2:3b",
-    "avg_tps": 88.4,
-    "passed": true
-  },
-  "stability": {
-    "passed": true,
-    "performance_drop_pct": 5
-  },
-  "network": {
-    "passed": true,
-    "avg_latency_ms": 22.4
-  },
-  "disk": {
-    "passed": true,
-    "sequential_write_mb_s": 1500
-  },
-  "reliability": {
-    "reliability_score": 85.6,
-    "uptime_score": 100,
-    "level": "Good",
-    "status": "warming_up",
-    "components": {
-      "uptime_1d": 100,
-      "uptime_7d": 100,
-      "uptime_30d": 100,
-      "sample_coverage": 4.2,
-      "latest_status": 100,
-      "failure_penalty": 0
-    },
-    "uptime": {
-      "uptime_1d": 1,
-      "uptime_7d": 1,
-      "uptime_30d": 1,
-      "uptime_score": 100,
-      "uptime_level": "Excellent",
-      "checks_total": 1,
-      "checks_failed": 0,
-      "current_status": "heartbeat_ok",
-      "last_online_at": "2026-06-08T00:00:00Z",
-      "last_failed_check_at": null
-    },
-    "checks_total": 1,
-    "checks_failed": 0,
-    "consecutive_failed_checks": 0,
-    "warnings": [
-      "fewer than 3 heartbeat checks; reliability score is warming up"
-    ],
-    "notes": [
-      "Local reliability is derived from local heartbeat history only."
-    ]
-  },
-  "score": {
-    "burd_compute_score": 86.7,
-    "tier": "Burd Pro",
-    "eligible": true,
-    "prices_are_demonstrative": true
-  },
-  "timestamp": "2026-06-08T00:00:00Z",
-  "agent_version": "0.1.0",
-  "benchmark_version": "2026.06-mvp",
-  "benchmark_profile": "profile_24gb",
-  "challenge": null,
-  "signature": {
-    "algorithm": "placeholder-ed25519",
-    "value": "placeholder-signature:burd-example-machine:no-challenge",
-    "status": "mocked"
-  },
-  "network_score": {
-    "network_score": 88.5,
-    "level": "Strong",
-    "status": "strong",
-    "source": "https://www.cloudflare.com/cdn-cgi/trace",
-    "components": {
-      "latency_score": 80,
-      "jitter_score": 90,
-      "loss_score": 100,
-      "dns_score": 95,
-      "success_rate": 100,
-      "avg_latency_ms": 80,
-      "jitter_ms": 5,
-      "loss_pct": 0,
-      "dns_resolution_ms": 10
-    },
-    "warnings": [],
-    "notes": [
-      "Local network score is derived from the latest finite network benchmark only.",
-      "Network score weights: 45% latency, 20% jitter, 25% loss/success, 10% DNS resolution.",
-      "Network score is not backend availability, public reachability, marketplace admission, or a payout guarantee."
-    ]
-  }
+﻿{
+    "identity":  {
+                     "provider_id":  null,
+                     "machine_id":  "burd-example-machine",
+                     "api_url":  "https://api.burd.cloud",
+                     "preferred_provider":  "ollama",
+                     "benchmark_profile":  "profile_24gb",
+                     "telemetry_enabled":  false,
+                     "created_at":  "2026-06-08T00:00:00Z",
+                     "public_key":  "burd-public-key-placeholder-example"
+                 },
+    "evidence":  {
+                     "issued_at":  "2026-06-08T00:00:00Z",
+                     "expires_at":  "2026-06-15T00:00:00Z",
+                     "is_expired":  false,
+                     "age_seconds":  0,
+                     "ttl_seconds":  604800
+                 },
+    "system":  {
+                   "os":  "linux",
+                   "architecture":  "x86_64",
+                   "primary_gpu_name":  "NVIDIA GeForce RTX 4090",
+                   "vram_total_gb":  24,
+                   "backend_detected":  "CUDA"
+               },
+    "fit":  {
+                "source":  "llmfit-core adapter",
+                "runnable_models":  3210
+            },
+    "llm_benchmark":  {
+                          "provider":  "ollama",
+                          "model":  "llama3.2:3b",
+                          "avg_tps":  88.4,
+                          "passed":  true
+                      },
+    "stability":  {
+                      "passed":  true,
+                      "performance_drop_pct":  5
+                  },
+    "network":  {
+                    "passed":  true,
+                    "avg_latency_ms":  22.4
+                },
+    "disk":  {
+                 "passed":  true,
+                 "sequential_write_mb_s":  1500
+             },
+    "reliability":  {
+                        "reliability_score":  85.6,
+                        "uptime_score":  100,
+                        "level":  "Good",
+                        "status":  "warming_up",
+                        "components":  {
+                                           "uptime_1d":  100,
+                                           "uptime_7d":  100,
+                                           "uptime_30d":  100,
+                                           "sample_coverage":  4.2,
+                                           "latest_status":  100,
+                                           "failure_penalty":  0
+                                       },
+                        "uptime":  {
+                                       "uptime_1d":  1,
+                                       "uptime_7d":  1,
+                                       "uptime_30d":  1,
+                                       "uptime_score":  100,
+                                       "uptime_level":  "Excellent",
+                                       "checks_total":  1,
+                                       "checks_failed":  0,
+                                       "current_status":  "heartbeat_ok",
+                                       "last_online_at":  "2026-06-08T00:00:00Z",
+                                       "last_failed_check_at":  null
+                                   },
+                        "checks_total":  1,
+                        "checks_failed":  0,
+                        "consecutive_failed_checks":  0,
+                        "warnings":  [
+                                         "fewer than 3 heartbeat checks; reliability score is warming up"
+                                     ],
+                        "notes":  [
+                                      "Local reliability is derived from local heartbeat history only."
+                                  ]
+                    },
+    "score":  {
+                  "burd_compute_score":  86.7,
+                  "tier":  "Burd Pro",
+                  "eligible":  true,
+                  "prices_are_demonstrative":  true
+              },
+    "timestamp":  "2026-06-08T00:00:00Z",
+    "agent_version":  "0.1.0",
+    "benchmark_version":  "2026.06-mvp",
+    "benchmark_profile":  "profile_24gb",
+    "challenge":  null,
+    "signature":  {
+                      "algorithm":  "placeholder-ed25519",
+                      "value":  "placeholder-signature:burd-example-machine:no-challenge",
+                      "status":  "mocked"
+                  },
+    "network_score":  {
+                          "network_score":  88.5,
+                          "level":  "Strong",
+                          "status":  "strong",
+                          "source":  "https://www.cloudflare.com/cdn-cgi/trace",
+                          "components":  {
+                                             "latency_score":  80,
+                                             "jitter_score":  90,
+                                             "loss_score":  100,
+                                             "dns_score":  95,
+                                             "success_rate":  100,
+                                             "avg_latency_ms":  80,
+                                             "jitter_ms":  5,
+                                             "loss_pct":  0,
+                                             "dns_resolution_ms":  10
+                                         },
+                          "warnings":  [
+
+                                       ],
+                          "notes":  [
+                                        "Local network score is derived from the latest finite network benchmark only.",
+                                        "Network score weights: 45% latency, 20% jitter, 25% loss/success, 10% DNS resolution.",
+                                        "Network score is not backend availability, public reachability, marketplace admission, or a payout guarantee."
+                                    ]
+                      },
+    "ai_performance":  {
+                           "status":  "estimated",
+                           "level":  "good",
+                           "profile":  "llm_inference",
+                           "source":  "fit_estimate",
+                           "confidence_level":  "low",
+                           "measured_at":  null,
+                           "expires_at":  null,
+                           "is_expired":  false,
+                           "model":  "example-fit-model",
+                           "provider":  "llmfit",
+                           "runtime":  "llama.cpp/Ollama",
+                           "backend":  "CUDA",
+                           "driver":  "555.42",
+                           "cuda_version":  null,
+                           "gpu_name":  "NVIDIA GeForce RTX 4090",
+                           "vram_total_gb":  24,
+                           "tokens_per_second":  80,
+                           "tokens_per_second_source":  "fit_estimate",
+                           "tokens_per_second_confidence":  "low",
+                           "sustained_tokens_per_second":  null,
+                           "sustained_tokens_per_second_source":  "not_measured",
+                           "sustained_tokens_per_second_confidence":  "unavailable",
+                           "time_to_first_token_ms":  null,
+                           "time_to_first_token_ms_source":  "not_measured",
+                           "time_to_first_token_ms_confidence":  "unavailable",
+                           "requests_per_second":  null,
+                           "latency_p50_ms":  null,
+                           "latency_p95_ms":  null,
+                           "stability_passed":  null,
+                           "benchmark_runs":  null,
+                           "benchmark_profile":  "profile_24gb",
+                           "compatible_models":  [
+                                                     "example-fit-model"
+                                                 ],
+                           "limited_models":  [
+
+                                              ],
+                           "max_recommended_model_class":  "medium",
+                           "components":  {
+                                              "fit_source":  "example",
+                                              "estimated":  true
+                                          },
+                           "warnings":  [
+                                            "example uses fit estimate; no benchmark was run"
+                                        ],
+                           "notes":  [
+                                         "Example AI performance payload; fit estimates are not measured benchmark proof"
+                                     ]
+                       }
 }

@@ -33,6 +33,7 @@ pub struct RawData {
     pub uptime: serde_json::Value,
     pub reliability: serde_json::Value,
     pub network: serde_json::Value,
+    pub ai_performance: serde_json::Value,
     pub capability_spot: serde_json::Value,
     pub workload_eligibility: serde_json::Value,
 }
@@ -92,6 +93,9 @@ pub(crate) fn build_raw_data_from_provider(
             .unwrap_or_else(|_| serde_json::json!({"error": "reliability serialization failed"})),
         network: serde_json::to_value(&provider.network)
             .unwrap_or_else(|_| serde_json::json!({"error": "network serialization failed"})),
+        ai_performance: serde_json::to_value(&provider.ai_performance).unwrap_or_else(
+            |_| serde_json::json!({"error": "ai performance serialization failed"}),
+        ),
         capability_spot: serde_json::to_value(&provider.capability_spot).unwrap_or_else(
             |_| serde_json::json!({"error": "capability spot serialization failed"}),
         ),
@@ -157,6 +161,7 @@ mod tests {
             uptime: serde_json::json!({}),
             reliability: serde_json::json!({}),
             network: serde_json::json!({}),
+            ai_performance: serde_json::json!({}),
             capability_spot: serde_json::json!({}),
             workload_eligibility: serde_json::json!({}),
         };

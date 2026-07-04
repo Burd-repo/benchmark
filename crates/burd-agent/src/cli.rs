@@ -112,6 +112,11 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show consolidated AI performance metrics without running a benchmark.
+    AiPerformance {
+        #[arg(long)]
+        json: bool,
+    },
     /// Run local/mock AI capability spot verification from fit, runtime, signed evidence, and optional live benchmark proof.
     CapabilitySpot {
         #[arg(long)]

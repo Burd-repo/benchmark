@@ -1,4 +1,7 @@
 use crate::actions::logs_summary;
+use crate::ai_performance::{
+    AiPerformanceInputs, AiPerformanceReport, calculate_ai_performance_report,
+};
 use crate::capability::{CapabilitySpotVerificationReport, calculate_capability_spot_verification};
 use crate::earnings::{EarningsReport, estimate_earnings};
 use crate::health::{
@@ -55,6 +58,7 @@ pub struct BurdProviderDetails {
     pub uptime: UptimeSummary,
     pub reliability: ReliabilityReport,
     pub network: NetworkScoreReport,
+    pub ai_performance: AiPerformanceReport,
     pub capability_spot: CapabilitySpotVerificationReport,
     pub workload_eligibility: WorkloadEligibilityReport,
     pub stats: ProviderStats,
@@ -157,6 +161,16 @@ pub fn build_provider_details(agent_version: &str, host_uri: &str) -> BurdProvid
         load_latest_challenge_output(),
     );
     let history = load_history_list().ok();
+    let ai_performance = calculate_ai_performance_report(AiPerformanceInputs {
+        system: &system,
+        fit: &fit,
+        verification: Some(&verification),
+        latest_signed: latest_signed_report.as_ref(),
+        current_llm_benchmark: None,
+        current_measured_at: None,
+        history: history.as_ref(),
+        now: chrono::Utc::now(),
+    });
     let capability_spot = calculate_capability_spot_verification(
         &system,
         &fit,
@@ -232,6 +246,7 @@ pub fn build_provider_details(agent_version: &str, host_uri: &str) -> BurdProvid
         uptime: health.uptime.clone(),
         reliability,
         network,
+        ai_performance,
         capability_spot,
         workload_eligibility,
         stats: stats_from_system(&system, health.disk_free_gb),

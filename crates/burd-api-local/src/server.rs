@@ -6,10 +6,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_bench::{
     ReportRunOptions, append_report_history, append_signed_report_history,
-    build_capability_spot_verification, build_provider_details, build_provider_readiness,
-    build_raw_data, build_registration_payload, build_trust_score, build_workload_eligibility,
-    calculate_network_score, calculate_pricing, calculate_reliability, calculate_score,
-    estimate_earnings, generate_full_report, generate_signed_report, load_actions,
+    build_ai_performance_report, build_capability_spot_verification, build_provider_details,
+    build_provider_readiness, build_raw_data, build_registration_payload, build_trust_score,
+    build_workload_eligibility, calculate_network_score, calculate_pricing, calculate_reliability,
+    calculate_score, estimate_earnings, generate_full_report, generate_signed_report, load_actions,
     load_history_list, load_logs, load_network_score_report, load_reliability_report,
     load_uptime_summary, record_action, save_latest_report, verify_provider,
 };
@@ -95,6 +95,7 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/reliability", get(reliability))
         .route("/api/v1/network-score", get(network_score))
         .route("/api/v1/trust-score", get(trust_score))
+        .route("/api/v1/ai-performance", get(ai_performance))
         .route("/api/v1/capability-spot", get(capability_spot))
         .route("/api/v1/workload-eligibility", get(workload_eligibility))
         .route("/api/v1/history", get(history))
@@ -224,6 +225,12 @@ async fn network_score() -> Json<serde_json::Value> {
 
 async fn trust_score(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(serde_json::json!(build_trust_score(&state.agent_version)))
+}
+
+async fn ai_performance(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!(build_ai_performance_report(
+        &state.agent_version
+    )))
 }
 
 async fn capability_spot(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
