@@ -12,8 +12,8 @@ future marketplace decision.
 | Signed report | 7 days |
 | Challenge and challenge response | 24 hours |
 | Readiness | Derived from current report and challenge status |
-| Provider session | Future PR |
-| Spot verification | Future PR |
+| Provider session | Expires at the stored `expires_at` and is re-evaluated on `session status` or heartbeat |
+| Capability spot / spot verification | Local/mock signal derived from current evidence; future remote spot checks should use short TTLs |
 
 ## Freshness Contract
 
@@ -64,7 +64,7 @@ Registration payloads include an `evidence` summary. An expired signed report
 does not supply the signed benchmark score/tier used by registration; current
 local provider values remain available for diagnostics.
 
-## Compatibility
+## Session And Workload Impact`r`n`r`nExpired signed reports, expired challenge evidence, fingerprint mismatch, or expired sessions keep readiness, trust, and workload eligibility conservative. They do not imply tampering by themselves, but they prevent old evidence from being treated as current proof for future marketplace paths.`r`n`r`n## Compatibility
 
 Legacy JSON without freshness fields can still be parsed. When trusted issuance
 dates exist, current freshness is derived during verification and loading.

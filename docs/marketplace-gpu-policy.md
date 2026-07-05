@@ -61,3 +61,9 @@ payloads, and `burd-agent fingerprint --json`.
 Marketplace policy is separate from Compute Score and local Readiness. A strong
 AMD GPU may keep useful local compute diagnostics while remaining ineligible
 for the paid marketplace MVP.
+
+## Future Paid Marketplace Requirements
+
+The local policy is only the hardware gate. A future paid marketplace path should also require current signed evidence, valid challenge or spot evidence, readiness, trust, reliability, active session state, recent heartbeat, and workload-specific eligibility.
+
+Local diagnostics remain useful for unsupported hardware, but unsupported hardware must not be labeled as marketplace approved.

@@ -57,3 +57,7 @@ folder.
 - Heartbeat once prepares the local data consumed by `reliability --json` and `GET /api/v1/reliability`.
 - Provider details, raw data, registration payloads, and readiness may surface
   the latest heartbeat summary when one exists.
+
+## Suspicious Usage Boundary
+
+The local heartbeat contract reserves utilization fields for GPU load, VRAM used/free, CPU load, memory, and network state. Missing utilization values are `null`. Future policy may use these fields to warn or block providers that claim availability while the GPU is occupied by external workloads, but the local MVP does not enforce marketplace blocking from utilization alone.
