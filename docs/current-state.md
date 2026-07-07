@@ -239,3 +239,19 @@ starting the API server or depending on host state:
 - Dedicated docs cover reliability score, network score, trust score, local/mock spot verification, and workload eligibility contracts.
 - README and current docs clarify the NVIDIA/CUDA-only marketplace MVP policy, AMD/ROCm/Vulkan local-diagnostic behavior, evidence expiration, session invalidation, heartbeat boundaries, and future scheduler/marketplace consumption.
 - The documentation keeps backend registry, remote Proof of Capability, marketplace listings, jobs, leases, orchestration, Pix, billing, and payouts out of the local MVP.
+
+## BN-00 - Architecture Freeze
+
+- BN-00 freezes the first Burd Network backend boundary without implementing
+  backend runtime code.
+- `docs/bn-00-architecture-freeze.md` records scope, non-goals, backend
+  direction, and the BN-01 gate.
+- `docs/adr/0001-control-plane-modular-monolith.md` accepts the Rust modular
+  monolith control plane with PostgreSQL, object storage, simple queue, and
+  outbound provider connections.
+- `docs/remote-protocol-v1.md` defines the initial `/v1` enrollment, session,
+  evidence, challenge, telemetry, error, idempotency, and audit contracts.
+- `docs/remote-authority-matrix.md` defines which fields are agent-claimed,
+  agent-signed evidence, backend-attested, backend-derived, or never accepted.
+- `docs/threat-model.md` defines assets, actors, trust boundaries, threats,
+  controls, privacy boundaries, and residual risk for BN-01 through BN-09.
