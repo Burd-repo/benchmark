@@ -136,7 +136,7 @@ Workload eligibility converts fit recommendations, capability spot verification,
 
 AI Performance Metrics consolidates measured LLM benchmark evidence, current signed reports, benchmark history, capability context, and fit estimates into one local contract.
 
-- i-performance --json and GET /api/v1/ai-performance expose status, level, source, confidence, measured timestamps, expiration, model/runtime/backend, tokens per second, TTFT, latency when measured, compatibility, warnings, and notes.
+- `ai-performance --json` and `GET /api/v1/ai-performance` expose status, level, source, confidence, measured timestamps, expiration, model/runtime/backend, tokens per second, TTFT, latency when measured, compatibility, warnings, and notes.
 - Provider details, raw data, registration payloads, full reports, and signed reports surface the same AI performance summary.
 - The report does not run benchmarks automatically, does not start runtimes, does not perform remote Proof of Capability, and does not imply marketplace approval or scheduler admission.
 

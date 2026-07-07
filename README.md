@@ -472,6 +472,10 @@ Ela separa conceitos que nao devem ser misturados:
 Documentacao detalhada:
 
 * [`docs/provider-trust-layer.md`](docs/provider-trust-layer.md)
+* [`docs/bn-00-architecture-freeze.md`](docs/bn-00-architecture-freeze.md)
+* [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
+* [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
+* [`docs/threat-model.md`](docs/threat-model.md)
 * [`docs/reliability-score.md`](docs/reliability-score.md)
 * [`docs/network-score.md`](docs/network-score.md)
 * [`docs/trust-score.md`](docs/trust-score.md)

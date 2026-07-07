@@ -35,6 +35,27 @@ Flow:
    benchmark plausibility and antifraud signals.
 6. Marketplace accepts, rejects or requests manual review.
 
+## Burd Network Control Plane
+
+BN-00 freezes the first remote backend boundary before implementation. The
+target is a Rust modular monolith backed by PostgreSQL, object storage, and a
+simple queue. The agent connects outbound to the backend through an
+authenticated control channel.
+
+The backend is authoritative for registry state, server-side evidence
+expiration, challenge issuance, nonce use, remote session state, revocation,
+global trust, policy decisions, and audit history. Provider-sent scores,
+regions, online flags, expiration flags, and eligibility flags are evidence or
+claims only.
+
+See:
+
+- [`bn-00-architecture-freeze.md`](bn-00-architecture-freeze.md)
+- [`remote-protocol-v1.md`](remote-protocol-v1.md)
+- [`remote-authority-matrix.md`](remote-authority-matrix.md)
+- [`threat-model.md`](threat-model.md)
+- [`adr/0001-control-plane-modular-monolith.md`](adr/0001-control-plane-modular-monolith.md)
+
 ## Marketplace Readiness
 
 This repository prepares the data model and local validation flow. It does not
