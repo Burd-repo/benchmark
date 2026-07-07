@@ -174,7 +174,7 @@ after the June 2026 reliability pass.
 - Burd audit service and production antifraud.
 - Marketplace listings, leases, jobs, orchestration, scheduler, and containers.
 - Real earnings, payouts, billing, Pix, and financial settlement.
-- Remote database or production cloud backend.
+- Production cloud deployment and complete remote backend operations.
 - Reputation and provider marketplace ranking.
 - Hardware attestation through TPM/HSM/OS keychain.
 - Production marketplace policy that evolves beyond the initial local
@@ -255,3 +255,23 @@ starting the API server or depending on host state:
   agent-signed evidence, backend-attested, backend-derived, or never accepted.
 - `docs/threat-model.md` defines assets, actors, trust boundaries, threats,
   controls, privacy boundaries, and residual risk for BN-01 through BN-09.
+
+## BN-01 - Backend Foundation
+
+- `crates/burd-control-plane` adds the first Rust backend foundation crate.
+- The control plane exposes `GET /health`, `GET /ready`, `GET /openapi.json`,
+  `POST /v1/providers`, and `GET /v1/providers/{provider_id}`.
+- Configuration is environment-driven through `BURD_CONTROL_*` variables.
+- PostgreSQL migrations create the initial registry, evidence, session,
+  idempotency, and audit tables.
+- Provider creation persists a real provider row, writes an audit event, and
+  stores an idempotency result.
+- Mutating provider creation requires `Idempotency-Key` and uses the BN-00 error
+  envelope for failures.
+- A lightweight in-memory rate limiter protects the HTTP surface.
+- Unit tests cover config parsing, error codes, migrations, OpenAPI, rate
+  limiting, request hashing, and health routing. The PostgreSQL persistence test
+  is isolated by schema and ignored unless a test database URL is provided.
+- BN-01 does not implement remote enrollment, device credentials, control
+  channel, backend-issued challenges, telemetry ingestion, trust policy,
+  scheduler, jobs, marketplace, billing, Pix, or payouts.

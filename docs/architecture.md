@@ -22,6 +22,8 @@ Flow:
 - `burd-hardware`: Burd-shaped system report around llmfit hardware detection.
 - `burd-llmfit`: adapter around `llmfit-core`.
 - `burd-bench`: LLM, stability, network, disk, profile, score and report logic.
+- `burd-control-plane`: BN-01 Rust backend foundation for registry,
+  migrations, health, readiness, idempotency, audit, and OpenAPI.
 - `burd-protocol`: identity, challenge, signed report and report envelope types.
 - `burd-api-local`: local HTTP API and static benchmark UI serving.
 
@@ -37,7 +39,8 @@ Flow:
 
 ## Burd Network Control Plane
 
-BN-00 freezes the first remote backend boundary before implementation. The
+BN-00 freezes the first remote backend boundary. BN-01 adds the first backend
+foundation crate without remote provider operation yet. The
 target is a Rust modular monolith backed by PostgreSQL, object storage, and a
 simple queue. The agent connects outbound to the backend through an
 authenticated control channel.
@@ -51,6 +54,7 @@ claims only.
 See:
 
 - [`bn-00-architecture-freeze.md`](bn-00-architecture-freeze.md)
+- [`bn-01-backend-foundation.md`](bn-01-backend-foundation.md)
 - [`remote-protocol-v1.md`](remote-protocol-v1.md)
 - [`remote-authority-matrix.md`](remote-authority-matrix.md)
 - [`threat-model.md`](threat-model.md)
