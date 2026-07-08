@@ -1,0 +1,23 @@
+[package]
+name = "burd-control-plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "burd-control-plane"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+burd-protocol = { path = "../burd-protocol" }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tower.workspace = true

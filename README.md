@@ -473,6 +473,7 @@ Documentacao detalhada:
 
 * [`docs/provider-trust-layer.md`](docs/provider-trust-layer.md)
 * [`docs/bn-00-architecture-freeze.md`](docs/bn-00-architecture-freeze.md)
+* [`docs/bn-01-backend-foundation.md`](docs/bn-01-backend-foundation.md)
 * [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
 * [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
 * [`docs/threat-model.md`](docs/threat-model.md)
@@ -482,7 +483,8 @@ Documentacao detalhada:
 * [`docs/spot-verification.md`](docs/spot-verification.md)
 * [`docs/workload-eligibility.md`](docs/workload-eligibility.md)
 
-A camada local nao implementa backend real, registry, marketplace real, jobs, leases, scheduler, billing, Pix ou payouts.
+A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts.
+O BN-01 inicia o backend real em `crates/burd-control-plane`, ainda sem providers remotos operando.
 
 ## Hardware fingerprint e marketplace policy
 
