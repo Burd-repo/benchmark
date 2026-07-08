@@ -1,5 +1,5 @@
 use crate::config::ControlPlaneConfig;
-use crate::db::{Database, NewAuditEvent, ProviderRecord};
+use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};
 use crate::error::{ApiError, ErrorCode};
 use crate::openapi;
 use crate::rate_limit::RateLimiter;
@@ -106,6 +106,14 @@ async fn ready(State(state): State<Arc<AppState>>) -> Result<Json<ReadyResponse>
         .iter()
         .map(|migration| migration.version)
         .collect::<Vec<_>>();
+    if !migrations_are_current(&applied, &expected) {
+        return Err(ApiError::database(
+            format!(
+                "control plane migrations are incomplete; applied={applied:?}, expected={expected:?}"
+            ),
+            request_id,
+        ));
+    }
 
     Ok(Json(ReadyResponse {
         status: "ready",
@@ -130,64 +138,30 @@ async fn create_provider(
     let idempotency_key = required_idempotency_key(&headers, &request_id)?;
     let request_hash = hash_canonical(&payload)
         .map_err(|error| ApiError::invalid_request(error, request_id.clone()))?;
-    let scope = "POST /v1/providers";
 
-    if let Some(record) = state
+    let outcome = state
         .db
-        .get_idempotency_record(scope, &idempotency_key)
-        .await
-        .map_err(|error| ApiError::database(error, request_id.clone()))?
-    {
-        if record.request_hash != request_hash {
-            return Err(ApiError::idempotency_conflict(request_id));
-        }
-        let value = serde_json::from_str::<serde_json::Value>(&record.response_json)
-            .map_err(|error| ApiError::invalid_request(error.to_string(), request_id.clone()))?;
-        let status = StatusCode::from_u16(record.status_code).unwrap_or(StatusCode::OK);
-        return Ok((status, Json(value)).into_response());
-    }
-
-    let provider = state
-        .db
-        .create_provider(payload.user_id, payload.display_name)
-        .await
-        .map_err(|error| ApiError::database(error, request_id.clone()))?;
-    let audit_event_id = state
-        .db
-        .insert_audit_event(NewAuditEvent {
-            request_id: &request_id,
-            actor_type: "system",
-            actor_id: None,
-            entity_type: "provider",
-            entity_id: &provider.provider_id,
-            event_type: "provider.created",
-            idempotency_key: Some(idempotency_key.clone()),
-            summary: "provider registry record created",
-            metadata_json: "{}",
+        .create_provider_idempotently(CreateProviderCommand {
+            request_id: request_id.clone(),
+            scope: "POST /v1/providers".to_string(),
+            idempotency_key,
+            request_hash,
+            user_id: payload.user_id,
+            display_name: payload.display_name,
         })
         .await
         .map_err(|error| ApiError::database(error, request_id.clone()))?;
 
-    let response = serde_json::json!(ProviderEnvelope {
-        request_id: request_id.clone(),
-        audit_event_id: Some(audit_event_id),
-        provider,
-    });
-    let response_json = serde_json::to_string(&response)
-        .map_err(|error| ApiError::invalid_request(error.to_string(), request_id.clone()))?;
-    state
-        .db
-        .put_idempotency_record(
-            scope,
-            &idempotency_key,
-            &request_hash,
-            StatusCode::CREATED.as_u16(),
-            &response_json,
-        )
-        .await
-        .map_err(|error| ApiError::database(error, request_id.clone()))?;
-
-    Ok((StatusCode::CREATED, Json(response)).into_response())
+    match outcome {
+        CreateProviderOutcome::Response(record) => {
+            let value = serde_json::from_str::<serde_json::Value>(&record.response_json).map_err(
+                |error| ApiError::invalid_request(error.to_string(), request_id.clone()),
+            )?;
+            let status = StatusCode::from_u16(record.status_code).unwrap_or(StatusCode::OK);
+            Ok((status, Json(value)).into_response())
+        }
+        CreateProviderOutcome::Conflict => Err(ApiError::idempotency_conflict(request_id)),
+    }
 }
 
 async fn get_provider(
@@ -259,6 +233,14 @@ fn new_request_id() -> String {
     format!("req_{}", Uuid::new_v4())
 }
 
+fn migrations_are_current(applied: &[String], expected: &[&str]) -> bool {
+    applied.len() == expected.len()
+        && applied
+            .iter()
+            .map(String::as_str)
+            .eq(expected.iter().copied())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +285,15 @@ mod tests {
         let hash = hash_canonical(&payload).unwrap();
         assert_eq!(hash.len(), 64);
         assert!(hash.chars().all(|character| character.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn readiness_requires_every_expected_migration() {
+        assert!(migrations_are_current(&["0001".to_string()], &["0001"]));
+        assert!(!migrations_are_current(&[], &["0001"]));
+        assert!(!migrations_are_current(
+            &["0001".to_string(), "unexpected".to_string()],
+            &["0001"]
+        ));
     }
 }

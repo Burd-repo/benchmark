@@ -19,8 +19,9 @@ Implemented in `crates/burd-control-plane`:
 - Static `GET /openapi.json` contract.
 - Initial provider registry persistence through `POST /v1/providers` and
   `GET /v1/providers/{provider_id}`.
-- Unit tests plus an ignored PostgreSQL integration test that uses an isolated
-  schema.
+- Unit tests plus a PostgreSQL integration test that uses an isolated schema
+  and runs against a PostgreSQL service in CI.
+- Transactional provider creation, audit persistence, and idempotency replay.
 
 ## Non-Goals
 
@@ -104,8 +105,10 @@ Fetch it:
 GET /v1/providers/{provider_id}
 ```
 
-The create path persists a provider row, writes an audit event, stores the
-idempotency result, and returns a request ID.
+The create path persists a provider row, writes an audit event, and stores the
+idempotency result in one database transaction. Repeating the same key and body
+replays the original response; changing the body returns an idempotency
+conflict.
 
 ## Validation
 
@@ -115,10 +118,11 @@ Default local tests do not require PostgreSQL:
 cargo test -p burd-control-plane
 ```
 
-The isolated database integration test is ignored by default. To run it, provide
-a PostgreSQL URL with permission to create/drop schemas:
+The isolated database integration test is ignored during the default local test
+suite and runs explicitly in CI. To run it locally, provide a PostgreSQL URL
+with permission to create/drop schemas:
 
 ```powershell
 $env:BURD_CONTROL_TEST_DATABASE_URL = "postgres://postgres:postgres@127.0.0.1:5432/burd_test"
-cargo test -p burd-control-plane -- --ignored migrates_and_persists_provider_with_isolated_schema
+cargo test -p burd-control-plane db::tests::migrates_and_persists_provider_transactionally -- --ignored --exact
 ```
