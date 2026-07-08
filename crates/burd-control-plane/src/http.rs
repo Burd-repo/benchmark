@@ -1,5 +1,6 @@
 use crate::config::ControlPlaneConfig;
 use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};
+use crate::enrollment::EnrollmentError;
 use crate::error::{ApiError, ErrorCode};
 use crate::openapi;
 use crate::rate_limit::RateLimiter;
@@ -9,7 +10,10 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use burd_protocol::hash_canonical;
+use burd_protocol::{
+    EnrollmentProofRequest, KeyRotationProofRequest, StartEnrollmentRequest,
+    StartKeyRotationRequest, hash_canonical, sha256_hex,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -73,6 +77,32 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/openapi.json", get(openapi_json))
         .route("/v1/providers", post(create_provider))
         .route("/v1/providers/{provider_id}", get(get_provider))
+        .route(
+            "/v1/providers/{provider_id}/enrollment-tokens",
+            post(issue_enrollment_token),
+        )
+        .route(
+            "/v1/providers/{provider_id}/devices",
+            get(list_provider_devices),
+        )
+        .route("/v1/enrollments", post(start_enrollment))
+        .route(
+            "/v1/enrollments/{enrollment_id}/proof",
+            post(complete_enrollment),
+        )
+        .route(
+            "/v1/devices/{device_id}/credentials",
+            post(refresh_device_credential),
+        )
+        .route(
+            "/v1/devices/{device_id}/key-rotations",
+            post(start_key_rotation),
+        )
+        .route(
+            "/v1/devices/{device_id}/key-rotations/{rotation_id}/proof",
+            post(complete_key_rotation),
+        )
+        .route("/v1/devices/{device_id}/revoke", post(revoke_device))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_middleware,
@@ -135,6 +165,7 @@ async fn create_provider(
     Json(payload): Json<CreateProviderRequest>,
 ) -> Result<Response, ApiError> {
     let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
     let idempotency_key = required_idempotency_key(&headers, &request_id)?;
     let request_hash = hash_canonical(&payload)
         .map_err(|error| ApiError::invalid_request(error, request_id.clone()))?;
@@ -190,6 +221,152 @@ async fn get_provider(
     })))
 }
 
+async fn issue_enrollment_token(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .issue_enrollment_token(
+            &provider_id,
+            &request_id,
+            state.config.enrollment_token_ttl_seconds,
+        )
+        .await
+        .map_err(|error| enrollment_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn start_enrollment(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<StartEnrollmentRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let response = state
+        .db
+        .start_enrollment(
+            &request_id,
+            &payload,
+            state.config.enrollment_proof_ttl_seconds,
+        )
+        .await
+        .map_err(|error| enrollment_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::ACCEPTED, Json(response)).into_response())
+}
+
+async fn complete_enrollment(
+    State(state): State<Arc<AppState>>,
+    Path(enrollment_id): Path<String>,
+    Json(payload): Json<EnrollmentProofRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let response = state
+        .db
+        .complete_enrollment(
+            &enrollment_id,
+            &request_id,
+            &payload,
+            state.config.device_credential_ttl_seconds,
+        )
+        .await
+        .map_err(|error| enrollment_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn list_provider_devices(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let devices = state
+        .db
+        .list_provider_devices(&provider_id)
+        .await
+        .map_err(|error| enrollment_api_error(error, request_id.clone()))?;
+    Ok(Json(serde_json::json!({
+        "request_id": request_id,
+        "devices": devices,
+    })))
+}
+
+async fn refresh_device_credential(
+    State(state): State<Arc<AppState>>,
+    Path(device_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let credential = required_bearer_token(&headers, &request_id)?;
+    let response = state
+        .db
+        .refresh_device_credential(
+            &device_id,
+            &credential,
+            &request_id,
+            state.config.device_credential_ttl_seconds,
+        )
+        .await
+        .map_err(|error| enrollment_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn start_key_rotation(
+    State(state): State<Arc<AppState>>,
+    Path(device_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<StartKeyRotationRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let credential = required_bearer_token(&headers, &request_id)?;
+    let response = state
+        .db
+        .start_key_rotation(
+            &device_id,
+            &credential,
+            &request_id,
+            &payload,
+            state.config.enrollment_proof_ttl_seconds,
+        )
+        .await
+        .map_err(|error| enrollment_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::ACCEPTED, Json(response)).into_response())
+}
+
+async fn complete_key_rotation(
+    State(state): State<Arc<AppState>>,
+    Path((device_id, rotation_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<KeyRotationProofRequest>,
+) -> Result<Json<burd_protocol::KeyRotationProofResponse>, ApiError> {
+    let request_id = new_request_id();
+    let credential = required_bearer_token(&headers, &request_id)?;
+    let response = state
+        .db
+        .complete_key_rotation(&device_id, &rotation_id, &credential, &request_id, &payload)
+        .await
+        .map_err(|error| enrollment_api_error(error, request_id.clone()))?;
+    Ok(Json(response))
+}
+
+async fn revoke_device(
+    State(state): State<Arc<AppState>>,
+    Path(device_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::DeviceRevocationResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .revoke_device(&device_id, &request_id)
+        .await
+        .map_err(|error| enrollment_api_error(error, request_id.clone()))?;
+    Ok(Json(response))
+}
+
 async fn rate_limit_middleware(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -229,6 +406,109 @@ fn required_idempotency_key(headers: &HeaderMap, request_id: &str) -> Result<Str
         })
 }
 
+fn required_bearer_token(headers: &HeaderMap, request_id: &str) -> Result<String, ApiError> {
+    headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                ErrorCode::Unauthorized,
+                "Authorization: Bearer credential is required",
+                request_id,
+            )
+        })
+}
+
+fn authorize_admin(
+    headers: &HeaderMap,
+    config: &ControlPlaneConfig,
+    request_id: &str,
+) -> Result<(), ApiError> {
+    let token = required_bearer_token(headers, request_id)?;
+    let candidate = sha256_hex(token.as_bytes());
+    if constant_time_eq(candidate.as_bytes(), config.admin_token_hash.as_bytes()) {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::Unauthorized,
+            "admin credential is invalid",
+            request_id,
+        ))
+    }
+}
+
+fn enrollment_api_error(error: EnrollmentError, request_id: String) -> ApiError {
+    match error {
+        EnrollmentError::Database(error) => ApiError::database(error, request_id),
+        EnrollmentError::NotFound(message) => ApiError::new(
+            StatusCode::NOT_FOUND,
+            ErrorCode::NotFound,
+            message,
+            request_id,
+        ),
+        EnrollmentError::Invalid(message) => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::InvalidRequest,
+            message,
+            request_id,
+        ),
+        EnrollmentError::Unauthorized => ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::Unauthorized,
+            "device or enrollment credential is invalid",
+            request_id,
+        ),
+        EnrollmentError::Expired => ApiError::new(
+            StatusCode::GONE,
+            ErrorCode::Expired,
+            "enrollment, nonce, or credential has expired",
+            request_id,
+        ),
+        EnrollmentError::Revoked => ApiError::new(
+            StatusCode::FORBIDDEN,
+            ErrorCode::Revoked,
+            "device, key, or enrollment has been revoked",
+            request_id,
+        ),
+        EnrollmentError::NonceReused => ApiError::new(
+            StatusCode::CONFLICT,
+            ErrorCode::NonceReused,
+            "nonce has already been used",
+            request_id,
+        ),
+        EnrollmentError::Conflict(message) => ApiError::new(
+            StatusCode::CONFLICT,
+            ErrorCode::Conflict,
+            message,
+            request_id,
+        ),
+        EnrollmentError::SignatureInvalid => ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::SignatureInvalid,
+            "Ed25519 proof signature is invalid",
+            request_id,
+        ),
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
 fn new_request_id() -> String {
     format!("req_{}", Uuid::new_v4())
 }
@@ -248,16 +528,24 @@ mod tests {
     use axum::http::{Method, Request};
     use tower::ServiceExt;
 
-    #[tokio::test]
-    async fn health_endpoint_does_not_require_database_connection() {
-        let config = ControlPlaneConfig {
+    fn test_config(database_url: &str) -> ControlPlaneConfig {
+        ControlPlaneConfig {
             environment: "test".to_string(),
             host: "127.0.0.1".to_string(),
             port: 0,
-            database_url: "postgres://localhost/unavailable".to_string(),
+            database_url: database_url.to_string(),
             database_schema: None,
             rate_limit_per_minute: 120,
-        };
+            admin_token_hash: sha256_hex(b"test-admin"),
+            enrollment_token_ttl_seconds: 600,
+            enrollment_proof_ttl_seconds: 300,
+            device_credential_ttl_seconds: 900,
+        }
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_does_not_require_database_connection() {
+        let config = test_config("postgres://localhost/unavailable");
         let db = Database::new(config.database_url.clone(), None).unwrap();
         let response = router(Arc::new(AppState::new(config, db)))
             .oneshot(
@@ -276,6 +564,25 @@ mod tests {
         assert_eq!(value["service"], "burd-control-plane");
     }
 
+    #[tokio::test]
+    async fn provider_creation_requires_admin_before_database_access() {
+        let config = test_config("postgres://localhost/unavailable");
+        let db = Database::new(config.database_url.clone(), None).unwrap();
+        let response = router(Arc::new(AppState::new(config, db)))
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/providers")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", "provider-1")
+                    .body(Body::from(r#"{"display_name":"Provider"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
     #[test]
     fn create_provider_request_hash_is_stable() {
         let payload = CreateProviderRequest {
@@ -289,11 +596,31 @@ mod tests {
 
     #[test]
     fn readiness_requires_every_expected_migration() {
-        assert!(migrations_are_current(&["0001".to_string()], &["0001"]));
-        assert!(!migrations_are_current(&[], &["0001"]));
-        assert!(!migrations_are_current(
-            &["0001".to_string(), "unexpected".to_string()],
-            &["0001"]
+        assert!(migrations_are_current(
+            &["0001".to_string(), "0002".to_string()],
+            &["0001", "0002"]
         ));
+        assert!(!migrations_are_current(
+            &["0001".to_string()],
+            &["0001", "0002"]
+        ));
+        assert!(!migrations_are_current(
+            &[
+                "0001".to_string(),
+                "0002".to_string(),
+                "unexpected".to_string()
+            ],
+            &["0001", "0002"]
+        ));
+    }
+
+    #[test]
+    fn admin_authorization_uses_hashed_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer test-admin".parse().unwrap());
+        let config = test_config("postgres://localhost/test");
+        assert!(authorize_admin(&headers, &config, "req_test").is_ok());
+        headers.insert("authorization", "Bearer wrong".parse().unwrap());
+        assert!(authorize_admin(&headers, &config, "req_test").is_err());
     }
 }

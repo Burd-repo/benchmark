@@ -1,6 +1,6 @@
 use crate::report::ReportSignature;
 use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::Serialize;
 use serde_json::Value;
@@ -46,6 +46,20 @@ pub fn verify_message(
     let verifying_key = VerifyingKey::from_bytes(&public)
         .map_err(|error| format!("invalid public key: {error}"))?;
     Ok(verifying_key.verify(message, &signature).is_ok())
+}
+
+pub fn validate_public_key(public_key_base64: &str) -> Result<(), String> {
+    let public = decode_fixed::<32>(public_key_base64, "public key")?;
+    VerifyingKey::from_bytes(&public)
+        .map(|_| ())
+        .map_err(|error| format!("invalid public key: {error}"))
+}
+
+pub fn random_token(prefix: &str) -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| format!("failed to generate random token: {error}"))?;
+    Ok(format!("{prefix}_{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
 
 pub fn canonical_json_value(value: &Value) -> Result<String, String> {
@@ -167,5 +181,15 @@ mod tests {
             verify_message(&keys.public_key_base64, message, &signature).unwrap(),
             "signature should verify"
         );
+    }
+
+    #[test]
+    fn generated_tokens_are_url_safe_and_unique() {
+        let first = random_token("burd_test").unwrap();
+        let second = random_token("burd_test").unwrap();
+        assert!(first.starts_with("burd_test_"));
+        assert!(!first.contains('+'));
+        assert!(!first.contains('/'));
+        assert_ne!(first, second);
     }
 }

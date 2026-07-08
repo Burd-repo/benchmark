@@ -180,6 +180,19 @@ burd-agent identity rotate-key --confirm
 burd-agent identity migrate --confirm
 ```
 
+### Enrollment remoto
+
+```powershell
+burd-agent identity init
+$env:BURD_ENROLLMENT_TOKEN = "<one-time-token>"
+burd-agent enrollment enroll --control-plane-url http://127.0.0.1:8080
+burd-agent enrollment status --json
+burd-agent enrollment refresh-credential --json
+```
+
+O fluxo remoto prova posse da chave Ed25519 sem transmitir a chave privada. Veja
+[`docs/bn-02-provider-enrollment.md`](docs/bn-02-provider-enrollment.md).
+
 ### Token local da API
 
 ```bash

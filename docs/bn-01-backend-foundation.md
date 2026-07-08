@@ -44,6 +44,7 @@ Required:
 
 ```text
 BURD_CONTROL_DATABASE_URL=postgres://user:password@host:5432/database
+BURD_CONTROL_ADMIN_TOKEN=<bootstrap-admin-secret>
 ```
 
 Optional:
@@ -63,6 +64,7 @@ Run locally:
 
 ```powershell
 $env:BURD_CONTROL_DATABASE_URL = "postgres://postgres:postgres@127.0.0.1:5432/burd"
+$env:BURD_CONTROL_ADMIN_TOKEN = "local-admin-secret"
 cargo run -p burd-control-plane
 ```
 
@@ -124,5 +126,5 @@ with permission to create/drop schemas:
 
 ```powershell
 $env:BURD_CONTROL_TEST_DATABASE_URL = "postgres://postgres:postgres@127.0.0.1:5432/burd_test"
-cargo test -p burd-control-plane db::tests::migrates_and_persists_provider_transactionally -- --ignored --exact
+cargo test -p burd-control-plane -- --ignored
 ```
