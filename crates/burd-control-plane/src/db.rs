@@ -2,7 +2,7 @@ use crate::migrations::MIGRATIONS;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use tokio_postgres::{Client, NoTls, Row};
+use tokio_postgres::{Client, NoTls, Row, Transaction};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -26,6 +26,29 @@ pub struct IdempotencyRecord {
     pub request_hash: String,
     pub status_code: u16,
     pub response_json: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateProviderCommand {
+    pub request_id: String,
+    pub scope: String,
+    pub idempotency_key: String,
+    pub request_hash: String,
+    pub user_id: Option<String>,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreateProviderOutcome {
+    Response(IdempotencyRecord),
+    Conflict,
+}
+
+#[derive(Debug, Serialize)]
+struct ProviderEnvelope {
+    request_id: String,
+    audit_event_id: Option<String>,
+    provider: ProviderRecord,
 }
 
 #[derive(Debug)]
@@ -67,14 +90,21 @@ impl Database {
     }
 
     pub async fn migrate(&self) -> Result<(), DbError> {
-        let client = self.connect().await?;
-        client
+        let mut client = self.connect().await?;
+        let transaction = client.transaction().await?;
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtext('burd_control_plane_migrations'))",
+                &[],
+            )
+            .await?;
+        transaction
             .batch_execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);",
             )
             .await?;
         for migration in MIGRATIONS {
-            let exists = client
+            let exists = transaction
                 .query_opt(
                     "SELECT version FROM schema_migrations WHERE version = $1",
                     &[&migration.version],
@@ -84,8 +114,8 @@ impl Database {
             if exists {
                 continue;
             }
-            client.batch_execute(migration.sql).await?;
-            client
+            transaction.batch_execute(migration.sql).await?;
+            transaction
                 .execute(
                     "INSERT INTO schema_migrations (version, name, applied_at) VALUES ($1, $2, $3)",
                     &[
@@ -96,6 +126,7 @@ impl Database {
                 )
                 .await?;
         }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -116,22 +147,51 @@ impl Database {
         Ok(rows.into_iter().map(|row| row.get("version")).collect())
     }
 
-    pub async fn create_provider(
+    pub async fn create_provider_idempotently(
         &self,
-        user_id: Option<String>,
-        display_name: Option<String>,
-    ) -> Result<ProviderRecord, DbError> {
-        let client = self.connect().await?;
+        command: CreateProviderCommand,
+    ) -> Result<CreateProviderOutcome, DbError> {
+        let mut client = self.connect().await?;
+        let transaction = client.transaction().await?;
         let now = Utc::now().to_rfc3339();
+        let reserved = transaction
+            .execute(
+                "INSERT INTO idempotency_keys (scope, idempotency_key, request_hash, status_code, response_json, created_at) VALUES ($1, $2, $3, 0, '', $4) ON CONFLICT (scope, idempotency_key) DO NOTHING",
+                &[
+                    &command.scope,
+                    &command.idempotency_key,
+                    &command.request_hash,
+                    &now,
+                ],
+            )
+            .await?
+            == 1;
+
+        if !reserved {
+            let row = transaction
+                .query_one(
+                    "SELECT request_hash, status_code, response_json FROM idempotency_keys WHERE scope = $1 AND idempotency_key = $2 FOR UPDATE",
+                    &[&command.scope, &command.idempotency_key],
+                )
+                .await?;
+            let record = idempotency_from_row(row);
+            transaction.commit().await?;
+            return if record.request_hash == command.request_hash {
+                Ok(CreateProviderOutcome::Response(record))
+            } else {
+                Ok(CreateProviderOutcome::Conflict)
+            };
+        }
+
         let provider = ProviderRecord {
             provider_id: format!("provider_{}", Uuid::new_v4()),
-            user_id,
-            display_name,
+            user_id: command.user_id,
+            display_name: command.display_name,
             status: "enrolled".to_string(),
             created_at: now.clone(),
             updated_at: now,
         };
-        client
+        transaction
             .execute(
                 "INSERT INTO providers (provider_id, user_id, display_name, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)",
                 &[
@@ -144,7 +204,47 @@ impl Database {
                 ],
             )
             .await?;
-        Ok(provider)
+
+        let audit_event_id = insert_audit_event(
+            &transaction,
+            NewAuditEvent {
+                request_id: &command.request_id,
+                actor_type: "system",
+                actor_id: None,
+                entity_type: "provider",
+                entity_id: &provider.provider_id,
+                event_type: "provider.created",
+                idempotency_key: Some(command.idempotency_key.clone()),
+                summary: "provider registry record created",
+                metadata_json: "{}",
+            },
+        )
+        .await?;
+        let response_json = serde_json::to_string(&ProviderEnvelope {
+            request_id: command.request_id,
+            audit_event_id: Some(audit_event_id),
+            provider,
+        })
+        .map_err(|error| DbError::new(error.to_string()))?;
+        let status_code = 201_i32;
+        transaction
+            .execute(
+                "UPDATE idempotency_keys SET status_code = $1, response_json = $2 WHERE scope = $3 AND idempotency_key = $4",
+                &[
+                    &status_code,
+                    &response_json,
+                    &command.scope,
+                    &command.idempotency_key,
+                ],
+            )
+            .await?;
+        transaction.commit().await?;
+
+        Ok(CreateProviderOutcome::Response(IdempotencyRecord {
+            request_hash: command.request_hash,
+            status_code: status_code as u16,
+            response_json,
+        }))
     }
 
     pub async fn get_provider(&self, provider_id: &str) -> Result<Option<ProviderRecord>, DbError> {
@@ -156,74 +256,6 @@ impl Database {
             )
             .await?;
         Ok(row.map(provider_from_row))
-    }
-
-    pub async fn insert_audit_event(&self, event: NewAuditEvent<'_>) -> Result<String, DbError> {
-        let client = self.connect().await?;
-        let audit_event_id = format!("audit_{}", Uuid::new_v4());
-        client
-            .execute(
-                "INSERT INTO audit_events (audit_event_id, request_id, actor_type, actor_id, entity_type, entity_id, event_type, occurred_at, idempotency_key, summary, metadata_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-                &[
-                    &audit_event_id,
-                    &event.request_id,
-                    &event.actor_type,
-                    &event.actor_id,
-                    &event.entity_type,
-                    &event.entity_id,
-                    &event.event_type,
-                    &Utc::now().to_rfc3339(),
-                    &event.idempotency_key,
-                    &event.summary,
-                    &event.metadata_json,
-                ],
-            )
-            .await?;
-        Ok(audit_event_id)
-    }
-
-    pub async fn get_idempotency_record(
-        &self,
-        scope: &str,
-        key: &str,
-    ) -> Result<Option<IdempotencyRecord>, DbError> {
-        let client = self.connect().await?;
-        let row = client
-            .query_opt(
-                "SELECT request_hash, status_code, response_json FROM idempotency_keys WHERE scope = $1 AND idempotency_key = $2",
-                &[&scope, &key],
-            )
-            .await?;
-        Ok(row.map(|row| IdempotencyRecord {
-            request_hash: row.get("request_hash"),
-            status_code: row.get::<_, i32>("status_code") as u16,
-            response_json: row.get("response_json"),
-        }))
-    }
-
-    pub async fn put_idempotency_record(
-        &self,
-        scope: &str,
-        key: &str,
-        request_hash: &str,
-        status_code: u16,
-        response_json: &str,
-    ) -> Result<(), DbError> {
-        let client = self.connect().await?;
-        client
-            .execute(
-                "INSERT INTO idempotency_keys (scope, idempotency_key, request_hash, status_code, response_json, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (scope, idempotency_key) DO NOTHING",
-                &[
-                    &scope,
-                    &key,
-                    &request_hash,
-                    &(status_code as i32),
-                    &response_json,
-                    &Utc::now().to_rfc3339(),
-                ],
-            )
-            .await?;
-        Ok(())
     }
 
     pub async fn drop_schema_for_test(&self) -> Result<(), DbError> {
@@ -266,6 +298,32 @@ impl Database {
     }
 }
 
+async fn insert_audit_event(
+    transaction: &Transaction<'_>,
+    event: NewAuditEvent<'_>,
+) -> Result<String, DbError> {
+    let audit_event_id = format!("audit_{}", Uuid::new_v4());
+    transaction
+        .execute(
+            "INSERT INTO audit_events (audit_event_id, request_id, actor_type, actor_id, entity_type, entity_id, event_type, occurred_at, idempotency_key, summary, metadata_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            &[
+                &audit_event_id,
+                &event.request_id,
+                &event.actor_type,
+                &event.actor_id,
+                &event.entity_type,
+                &event.entity_id,
+                &event.event_type,
+                &Utc::now().to_rfc3339(),
+                &event.idempotency_key,
+                &event.summary,
+                &event.metadata_json,
+            ],
+        )
+        .await?;
+    Ok(audit_event_id)
+}
+
 pub struct NewAuditEvent<'a> {
     pub request_id: &'a str,
     pub actor_type: &'a str,
@@ -286,6 +344,14 @@ fn provider_from_row(row: Row) -> ProviderRecord {
         status: row.get("status"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+fn idempotency_from_row(row: Row) -> IdempotencyRecord {
+    IdempotencyRecord {
+        request_hash: row.get("request_hash"),
+        status_code: row.get::<_, i32>("status_code") as u16,
+        response_json: row.get("response_json"),
     }
 }
 
@@ -325,26 +391,67 @@ mod tests {
 
     #[tokio::test]
     #[ignore]
-    async fn migrates_and_persists_provider_with_isolated_schema() {
-        let Ok(url) = std::env::var("BURD_CONTROL_TEST_DATABASE_URL") else {
-            eprintln!("set BURD_CONTROL_TEST_DATABASE_URL to run this integration test");
-            return;
-        };
+    async fn migrates_and_persists_provider_transactionally() {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
+            .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
         let schema = format!("burd_test_{}", Uuid::new_v4().simple());
         let db = Database::new(url, Some(schema)).unwrap();
         db.migrate().await.unwrap();
 
-        let provider = db
-            .create_provider(None, Some("Integration Provider".to_string()))
+        assert_eq!(db.migration_versions().await.unwrap(), vec!["0001"]);
+
+        let command = CreateProviderCommand {
+            request_id: "req_integration".to_string(),
+            scope: "POST /v1/providers".to_string(),
+            idempotency_key: "provider-create-integration".to_string(),
+            request_hash: "hash-one".to_string(),
+            user_id: None,
+            display_name: Some("Integration Provider".to_string()),
+        };
+        let first = db
+            .create_provider_idempotently(command.clone())
             .await
             .unwrap();
-        let loaded = db
-            .get_provider(&provider.provider_id)
+        let CreateProviderOutcome::Response(first) = first else {
+            panic!("first request must create the provider");
+        };
+        assert_eq!(first.status_code, 201);
+        let response: serde_json::Value = serde_json::from_str(&first.response_json).unwrap();
+        let provider_id = response["provider"]["provider_id"].as_str().unwrap();
+
+        let loaded = db.get_provider(provider_id).await.unwrap().unwrap();
+        assert_eq!(loaded.provider_id, provider_id);
+        assert_eq!(loaded.status, "enrolled");
+
+        let replayed = db
+            .create_provider_idempotently(command.clone())
+            .await
+            .unwrap();
+        let CreateProviderOutcome::Response(replayed) = replayed else {
+            panic!("same request must replay the stored response");
+        };
+        assert_eq!(replayed.response_json, first.response_json);
+
+        let mut conflicting = command;
+        conflicting.request_hash = "hash-two".to_string();
+        assert_eq!(
+            db.create_provider_idempotently(conflicting).await.unwrap(),
+            CreateProviderOutcome::Conflict
+        );
+
+        let client = db.connect().await.unwrap();
+        let provider_count: i64 = client
+            .query_one("SELECT COUNT(*) FROM providers", &[])
             .await
             .unwrap()
-            .unwrap();
-        assert_eq!(loaded.provider_id, provider.provider_id);
-        assert_eq!(loaded.status, "enrolled");
+            .get(0);
+        let audit_count: i64 = client
+            .query_one("SELECT COUNT(*) FROM audit_events", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(provider_count, 1);
+        assert_eq!(audit_count, 1);
 
         db.drop_schema_for_test().await.unwrap();
     }

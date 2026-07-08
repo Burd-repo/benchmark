@@ -7,6 +7,6 @@ pub mod openapi;
 pub mod rate_limit;
 
 pub use config::ControlPlaneConfig;
-pub use db::{Database, ProviderRecord};
+pub use db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};
 pub use error::{ApiError, ErrorCode};
 pub use http::{AppState, router};
