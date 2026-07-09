@@ -269,6 +269,7 @@ Returns:
 - `heartbeat_interval_seconds`
 - `missed_heartbeat_limit`
 - `sequence_start`
+- `telemetry_sequence_start`
 - `control_url`
 - `resume_token`
 
@@ -283,25 +284,27 @@ session resume token are sent in headers, never in the URL:
   `payload`;
 - sequence gaps, duplicates, and stale sessions are audit events.
 
-BN-03 client message types:
+BN-04 client message types:
 
 - `heartbeat`
-
-Reserved client message types for BN-04 and later:
-
 - `telemetry_batch`
+
+Reserved client message types for BN-06 and later:
+
 - `challenge_ack`
 - `challenge_started`
 - `challenge_submitted`
 
-BN-03 server message types:
+BN-04 server message types:
 
 - `session_ready`
 - `session_revoked`
 - `heartbeat_ack`
+- `telemetry_ack`
+- `telemetry_rejected`
 - `error`
 
-Reserved server message types for BN-04 and later:
+Reserved server message types for BN-06 and later:
 
 - `challenge_issued`
 - `policy_update`
@@ -410,21 +413,23 @@ Backend behavior:
 ## Telemetry API
 
 Telemetry is normally sent through the control channel as `telemetry_batch`.
-BN-01 may also expose an HTTP fallback:
+BN-04 also exposes an authenticated HTTP fallback:
 
 ### `POST /v1/sessions/{session_id}/telemetry-batches`
 
 Request fields:
 
-- `provider_id`
-- `device_id`
 - `session_id`
-- `sequence_start`
-- `sequence_end`
-- `hardware_fingerprint`
-- `samples`
-- `batch_hash`
-- `signature`
+- `device_id`
+- `sequence`
+- `sent_at`
+- `message_type: telemetry_batch`
+- `payload`, containing the complete `SignedTelemetryBatch`
+
+The signed payload contains provider, device, and session IDs; control and
+sample sequence ranges; hardware fingerprint; collector and collection window;
+samples; canonical batch hash; active public-key ID; canonicalization version;
+and Ed25519 signature.
 
 Samples may include GPU UUID, PCI IDs, compute capability, driver, CUDA
 runtime/driver, VRAM total/used/free, GPU utilization, memory utilization,

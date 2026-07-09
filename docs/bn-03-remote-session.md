@@ -66,6 +66,6 @@ The backend periodically expires stale sessions independently of requests.
 
 ## Deferred
 
-Telemetry batches, backend challenges, remote trust policy, regional probes,
+Backend challenges, remote trust policy, regional probes,
 jobs, and scheduling remain deferred to BN-04 and later. BN-03 accepts only
 heartbeat messages on the control channel.

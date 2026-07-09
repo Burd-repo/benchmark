@@ -17,6 +17,10 @@ pub struct ControlPlaneConfig {
     pub remote_session_ttl_seconds: u32,
     pub heartbeat_interval_seconds: u32,
     pub missed_heartbeat_limit: u32,
+    pub telemetry_max_samples_per_batch: u32,
+    pub telemetry_min_batch_interval_seconds: u32,
+    pub telemetry_clock_skew_seconds: u32,
+    pub telemetry_retention_days: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +99,25 @@ impl ControlPlaneConfig {
             lookup("BURD_CONTROL_MISSED_HEARTBEAT_LIMIT").unwrap_or_else(|| "3".to_string()),
             "BURD_CONTROL_MISSED_HEARTBEAT_LIMIT",
         )?;
+        let telemetry_max_samples_per_batch = parse_u32(
+            lookup("BURD_CONTROL_TELEMETRY_MAX_SAMPLES_PER_BATCH")
+                .unwrap_or_else(|| "64".to_string()),
+            "BURD_CONTROL_TELEMETRY_MAX_SAMPLES_PER_BATCH",
+        )?;
+        let telemetry_min_batch_interval_seconds = parse_u32(
+            lookup("BURD_CONTROL_TELEMETRY_MIN_BATCH_INTERVAL_SECONDS")
+                .unwrap_or_else(|| "5".to_string()),
+            "BURD_CONTROL_TELEMETRY_MIN_BATCH_INTERVAL_SECONDS",
+        )?;
+        let telemetry_clock_skew_seconds = parse_u32(
+            lookup("BURD_CONTROL_TELEMETRY_CLOCK_SKEW_SECONDS")
+                .unwrap_or_else(|| "300".to_string()),
+            "BURD_CONTROL_TELEMETRY_CLOCK_SKEW_SECONDS",
+        )?;
+        let telemetry_retention_days = parse_u32(
+            lookup("BURD_CONTROL_TELEMETRY_RETENTION_DAYS").unwrap_or_else(|| "7".to_string()),
+            "BURD_CONTROL_TELEMETRY_RETENTION_DAYS",
+        )?;
 
         Ok(Self {
             environment: lookup("BURD_CONTROL_ENV").unwrap_or_else(|| "local".to_string()),
@@ -111,6 +134,10 @@ impl ControlPlaneConfig {
             remote_session_ttl_seconds,
             heartbeat_interval_seconds,
             missed_heartbeat_limit,
+            telemetry_max_samples_per_batch,
+            telemetry_min_batch_interval_seconds,
+            telemetry_clock_skew_seconds,
+            telemetry_retention_days,
         })
     }
 }
@@ -172,6 +199,10 @@ mod tests {
         assert_eq!(config.remote_session_ttl_seconds, 900);
         assert_eq!(config.heartbeat_interval_seconds, 15);
         assert_eq!(config.missed_heartbeat_limit, 3);
+        assert_eq!(config.telemetry_max_samples_per_batch, 64);
+        assert_eq!(config.telemetry_min_batch_interval_seconds, 5);
+        assert_eq!(config.telemetry_clock_skew_seconds, 300);
+        assert_eq!(config.telemetry_retention_days, 7);
         assert_eq!(config.admin_token_hash, sha256_hex(b"admin-secret"));
         assert!(!config.admin_token_hash.contains("admin-secret"));
     }

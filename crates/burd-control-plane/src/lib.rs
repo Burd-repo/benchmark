@@ -7,6 +7,7 @@ pub mod migrations;
 pub mod openapi;
 pub mod rate_limit;
 pub mod remote_session;
+pub mod telemetry;
 
 pub use config::ControlPlaneConfig;
 pub use db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};

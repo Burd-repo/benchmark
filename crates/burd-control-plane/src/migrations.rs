@@ -21,6 +21,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "remote_sessions",
         sql: include_str!("../migrations/0003_remote_sessions.sql"),
     },
+    Migration {
+        version: "0004",
+        name: "gpu_telemetry",
+        sql: include_str!("../migrations/0004_gpu_telemetry.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -63,5 +68,12 @@ mod tests {
         let sql = MIGRATIONS[2].sql;
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS session_heartbeats"));
         assert!(sql.contains("idx_provider_sessions_active_device"));
+    }
+
+    #[test]
+    fn gpu_telemetry_migration_declares_bn04_tables() {
+        let sql = MIGRATIONS[3].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS telemetry_batches"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS gpu_telemetry_samples"));
     }
 }

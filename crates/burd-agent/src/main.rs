@@ -348,9 +348,16 @@ fn run() -> Result<()> {
         Commands::RemoteSession { command } => match command {
             RemoteSessionCommands::Connect {
                 max_reconnect_delay_seconds,
+                telemetry,
+                telemetry_batch_samples,
             } => {
-                let result = remote_session::connect(AGENT_VERSION, max_reconnect_delay_seconds)
-                    .map_err(anyhow::Error::msg)?;
+                let result = remote_session::connect(
+                    AGENT_VERSION,
+                    max_reconnect_delay_seconds,
+                    telemetry,
+                    telemetry_batch_samples,
+                )
+                .map_err(anyhow::Error::msg)?;
                 print_json(&result)?;
             }
             RemoteSessionCommands::Status { json: _ } => {

@@ -64,6 +64,8 @@ pub struct StartRemoteSessionResponse {
     pub heartbeat_interval_seconds: u32,
     pub missed_heartbeat_limit: u32,
     pub sequence_start: u64,
+    #[serde(default)]
+    pub telemetry_sequence_start: u64,
     pub control_url: String,
 }
 
@@ -143,6 +145,8 @@ pub struct RemoteSessionState {
     pub heartbeat_interval_seconds: u32,
     pub missed_heartbeat_limit: u32,
     pub sequence_last: u64,
+    #[serde(default)]
+    pub telemetry_sequence_last: u64,
     pub control_url: String,
 }
 
@@ -155,6 +159,7 @@ pub struct RemoteSessionStateStatus {
     pub heartbeat_interval_seconds: u32,
     pub missed_heartbeat_limit: u32,
     pub sequence_last: u64,
+    pub telemetry_sequence_last: u64,
     pub control_url: String,
     pub resume_token_present: bool,
 }
@@ -183,6 +188,7 @@ pub fn save_remote_session(
         heartbeat_interval_seconds: response.heartbeat_interval_seconds,
         missed_heartbeat_limit: response.missed_heartbeat_limit,
         sequence_last: response.sequence_start,
+        telemetry_sequence_last: response.telemetry_sequence_start,
         control_url: response.control_url.clone(),
     };
     write_remote_session(&state)?;
@@ -192,6 +198,11 @@ pub fn save_remote_session(
 pub fn update_remote_session_sequence(sequence_last: u64) -> Result<(), String> {
     let mut state = load_remote_session()?;
     state.sequence_last = sequence_last;
+    write_remote_session(&state)
+}
+pub fn update_remote_telemetry_sequence(sequence_last: u64) -> Result<(), String> {
+    let mut state = load_remote_session()?;
+    state.telemetry_sequence_last = sequence_last;
     write_remote_session(&state)
 }
 
@@ -217,6 +228,7 @@ fn show_remote_session_from(state: &RemoteSessionState) -> RemoteSessionStateSta
         heartbeat_interval_seconds: state.heartbeat_interval_seconds,
         missed_heartbeat_limit: state.missed_heartbeat_limit,
         sequence_last: state.sequence_last,
+        telemetry_sequence_last: state.telemetry_sequence_last,
         control_url: state.control_url.clone(),
         resume_token_present: !state.resume_token.is_empty(),
     }
@@ -259,6 +271,7 @@ mod tests {
             heartbeat_interval_seconds: 15,
             missed_heartbeat_limit: 3,
             sequence_last: 4,
+            telemetry_sequence_last: 2,
             control_url: "wss://api.burd.cloud/v1/sessions/session_test/control".to_string(),
         };
         let value = serde_json::to_value(show_remote_session_from(&state)).unwrap();

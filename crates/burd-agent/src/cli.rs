@@ -307,6 +307,10 @@ pub enum RemoteSessionCommands {
     Connect {
         #[arg(long, default_value_t = 30)]
         max_reconnect_delay_seconds: u64,
+        #[arg(long)]
+        telemetry: bool,
+        #[arg(long, default_value_t = 8)]
+        telemetry_batch_samples: usize,
     },
     /// Read the backend-authoritative state of the persisted remote session.
     Status {

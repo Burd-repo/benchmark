@@ -21,6 +21,7 @@ pub enum SessionError {
     Unauthorized,
     Expired,
     Revoked,
+    SignatureInvalid,
     Conflict(String),
 }
 
@@ -34,6 +35,7 @@ impl fmt::Display for SessionError {
             Self::Unauthorized => formatter.write_str("session credential is invalid"),
             Self::Expired => formatter.write_str("session has expired"),
             Self::Revoked => formatter.write_str("session has been revoked"),
+            Self::SignatureInvalid => formatter.write_str("Ed25519 signature is invalid"),
         }
     }
 }
@@ -195,7 +197,7 @@ impl Database {
             let resume_hash = sha256_hex(resume.resume_token.as_bytes());
             let row = transaction
                 .query_opt(
-                    "SELECT session_id, provider_id, device_id, status, sequence_last, resume_token_hash, expires_at FROM provider_sessions WHERE session_id = $1 FOR UPDATE",
+                    "SELECT session_id, provider_id, device_id, status, sequence_last, resume_token_hash, expires_at, COALESCE((SELECT MAX(sample_sequence_end) FROM telemetry_batches WHERE session_id = provider_sessions.session_id), 0) AS telemetry_sequence_last FROM provider_sessions WHERE session_id = $1 FOR UPDATE",
                     &[&resume.session_id],
                 )
                 .await?
@@ -229,6 +231,8 @@ impl Database {
                 heartbeat_interval_seconds: policy.heartbeat_interval_seconds,
                 missed_heartbeat_limit: policy.missed_heartbeat_limit,
                 sequence_start: sequence_last,
+                telemetry_sequence_start: row.get::<_, i64>("telemetry_sequence_last").max(0)
+                    as u64,
                 control_url,
             }
         } else {
@@ -262,6 +266,7 @@ impl Database {
                 heartbeat_interval_seconds: policy.heartbeat_interval_seconds,
                 missed_heartbeat_limit: policy.missed_heartbeat_limit,
                 sequence_start: 0,
+                telemetry_sequence_start: 0,
                 control_url,
             }
         };
@@ -710,6 +715,7 @@ mod tests {
         let credential = "burd_device_test_secret";
         let credential_hash = sha256_hex(credential.as_bytes());
         let credential_expires = (Utc::now() + Duration::minutes(30)).to_rfc3339();
+        let keys = burd_protocol::generate_keypair().unwrap();
         let client = db.connect().await.unwrap();
         client.execute(
             "INSERT INTO providers (provider_id, status, created_at, updated_at) VALUES ('provider_test', 'enrolled', $1, $1)",
@@ -720,8 +726,8 @@ mod tests {
             &[&now],
         ).await.unwrap();
         client.execute(
-            "INSERT INTO provider_public_keys (public_key_id, provider_id, device_id, public_key, key_algorithm, status, created_at) VALUES ('key_test', 'provider_test', 'device_test', 'public_test', 'ed25519', 'active', $1)",
-            &[&now],
+            "INSERT INTO provider_public_keys (public_key_id, provider_id, device_id, public_key, key_algorithm, status, created_at) VALUES ('key_test', 'provider_test', 'device_test', $1, 'ed25519', 'active', $2)",
+            &[&keys.public_key_base64, &now],
         ).await.unwrap();
         client.execute(
             "INSERT INTO device_credentials (credential_id, provider_id, device_id, credential_hash, status, issued_at, expires_at) VALUES ('credential_test', 'provider_test', 'device_test', $1, 'active', $2, $3)",
@@ -799,13 +805,106 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.status, RemoteSessionStatus::Online);
+
+        let telemetry_time = Utc::now().to_rfc3339();
+        let telemetry_payload = burd_protocol::TelemetryBatchPayload {
+            schema_version: burd_protocol::TELEMETRY_SCHEMA_VERSION.to_string(),
+            provider_id: "provider_test".to_string(),
+            device_id: "device_test".to_string(),
+            session_id: started.session_id.clone(),
+            control_sequence: 2,
+            sample_sequence_start: 1,
+            sample_sequence_end: 1,
+            hardware_fingerprint: "sha256:fingerprint".to_string(),
+            collector: "nvidia-smi-csv-v1".to_string(),
+            collected_at_start: telemetry_time.clone(),
+            collected_at_end: telemetry_time.clone(),
+            samples: vec![burd_protocol::GpuTelemetrySample {
+                sample_sequence: 1,
+                observed_at: telemetry_time,
+                gpu_uuid: "GPU-test".to_string(),
+                gpu_name: "NVIDIA RTX 4090".to_string(),
+                pci_bus_id: "00000000:01:00.0".to_string(),
+                pci_vendor_id: Some("10de".to_string()),
+                pci_device_id: Some("2684".to_string()),
+                compute_capability: Some("8.9".to_string()),
+                driver_version: "576.80".to_string(),
+                cuda_driver_version: Some("12.9".to_string()),
+                cuda_runtime_version: None,
+                vram_total_mib: 24564,
+                vram_used_mib: Some(1024),
+                vram_free_mib: Some(23540),
+                gpu_utilization_percent: Some(20.0),
+                memory_utilization_percent: Some(10.0),
+                temperature_celsius: Some(45.0),
+                power_draw_watts: Some(80.0),
+                power_limit_watts: Some(450.0),
+                graphics_clock_mhz: Some(2100),
+                sm_clock_mhz: Some(2100),
+                memory_clock_mhz: Some(10501),
+                performance_state: Some("P2".to_string()),
+                throttle_reasons: vec![],
+                ecc_corrected_errors: None,
+                ecc_uncorrected_errors: None,
+                processes: vec![],
+                container_id: None,
+                job_id: None,
+            }],
+        };
+        let batch_hash = burd_protocol::telemetry_batch_hash(&telemetry_payload).unwrap();
+        let signature_message = burd_protocol::telemetry_batch_signature_message(
+            &telemetry_payload,
+            &batch_hash,
+            "key_test",
+        )
+        .unwrap();
+        let signature =
+            burd_protocol::sign_message(&keys.secret_key_base64, signature_message.as_bytes())
+                .unwrap();
+        let telemetry_message = ClientControlMessage {
+            session_id: started.session_id.clone(),
+            device_id: "device_test".to_string(),
+            sequence: 2,
+            sent_at: Utc::now().to_rfc3339(),
+            message_type: "telemetry_batch".to_string(),
+            payload: serde_json::to_value(burd_protocol::SignedTelemetryBatch {
+                payload: telemetry_payload,
+                batch_hash: batch_hash.clone(),
+                public_key_id: "key_test".to_string(),
+                signature,
+                canonicalization_version: burd_protocol::TELEMETRY_CANONICALIZATION_VERSION
+                    .to_string(),
+            })
+            .unwrap(),
+        };
+        let telemetry = db
+            .ingest_gpu_telemetry(
+                "req_telemetry",
+                &authorized,
+                &telemetry_message,
+                crate::telemetry::TelemetryPolicy {
+                    max_samples_per_batch: 64,
+                    min_batch_interval_seconds: 1,
+                    clock_skew_seconds: 300,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(telemetry.status, "accepted");
+        assert_eq!(telemetry.batch_hash, batch_hash);
+        let latest = db
+            .latest_gpu_telemetry("req_latest", &authorized)
+            .await
+            .unwrap();
+        assert_eq!(latest.samples[0].gpu_uuid, "GPU-test");
+
         let gap = db
-            .record_remote_heartbeat("req_hb_3", &authorized, &heartbeat(3), 900)
+            .record_remote_heartbeat("req_hb_4", &authorized, &heartbeat(4), 900)
             .await
             .unwrap();
         assert_eq!(gap.status, RemoteSessionStatus::Degraded);
         assert!(matches!(
-            db.record_remote_heartbeat("req_replay", &authorized, &heartbeat(3), 900)
+            db.record_remote_heartbeat("req_replay", &authorized, &heartbeat(4), 900)
                 .await,
             Err(SessionError::Conflict(_))
         ));
@@ -837,7 +936,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resumed.sequence_start, 3);
+        assert_eq!(resumed.sequence_start, 4);
+        assert_eq!(resumed.telemetry_sequence_start, 1);
         let revoked = db
             .revoke_remote_session(&started.session_id, "req_revoke")
             .await

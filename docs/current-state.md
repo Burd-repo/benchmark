@@ -315,3 +315,22 @@ starting the API server or depending on host state:
 - BN-03 does not implement GPU telemetry, backend-issued challenges, Proof of
   Capability, trust policy, jobs, scheduler, marketplace, billing, Pix, or
   payouts.
+## BN-04 - Signed GPU Telemetry
+
+- The agent collects NVIDIA GPU identity and live metrics through grouped,
+  structured `nvidia-smi` CSV queries that tolerate unsupported optional fields.
+- GPU UUID, PCI identity, compute capability, driver/CUDA compatibility, VRAM,
+  utilization, temperature, power, clocks, throttle reasons, ECC, and redacted
+  compute-process data are represented in the versioned telemetry contract.
+- Telemetry batches bind provider, device, session, fingerprint, control
+  sequence, sample sequence range, canonical hash, active key ID, and Ed25519
+  signature.
+- The control plane verifies signatures and physical ranges, enforces batch
+  size/frequency/clock policy, persists normalized samples transactionally, and
+  returns `telemetry_ack` over WebSocket or HTTP fallback.
+- Process paths are reduced to basenames; command lines are not collected.
+- Server-time retention removes old batches and cascades their samples.
+- `burd-agent remote-session connect --telemetry` enables collection without
+  making telemetry a replacement for heartbeat liveness.
+- BN-04 does not implement DCGM, challenge-bound telemetry windows, regional
+  probes, global trust/antifraud, jobs, scheduler, marketplace, or billing.

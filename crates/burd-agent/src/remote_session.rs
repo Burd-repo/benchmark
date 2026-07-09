@@ -1,11 +1,15 @@
 use crate::remote_enrollment::{join_url, post_json, refresh_credential};
 use burd_bench::build_registration_payload;
+use burd_hardware::collect_nvidia_telemetry;
 use burd_protocol::{
-    ClientControlMessage, HeartbeatPayload, RemoteEnrollmentState, RemoteSessionRecord,
-    RemoteSessionResume, RemoteSessionState, RemoteSessionStateStatus, ServerControlMessage,
-    StartRemoteSessionRequest, StartRemoteSessionResponse, clear_remote_session,
-    load_remote_enrollment, load_remote_session, save_remote_session, show_remote_session,
-    update_remote_session_sequence,
+    ClientControlMessage, GpuTelemetrySample, HeartbeatPayload, RemoteEnrollmentState,
+    RemoteSessionRecord, RemoteSessionResume, RemoteSessionState, RemoteSessionStateStatus,
+    ServerControlMessage, SignedTelemetryBatch, StartRemoteSessionRequest,
+    StartRemoteSessionResponse, TELEMETRY_CANONICALIZATION_VERSION, TELEMETRY_SCHEMA_VERSION,
+    TelemetryBatchPayload, TelemetryBatchReceipt, clear_remote_session, load_identity,
+    load_private_key, load_remote_enrollment, load_remote_session, save_remote_session,
+    show_remote_session, sign_message, telemetry_batch_hash, telemetry_batch_signature_message,
+    update_remote_session_sequence, update_remote_telemetry_sequence,
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use futures_util::{SinkExt, StreamExt};
@@ -18,7 +22,13 @@ use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 pub fn connect(
     agent_version: &str,
     max_reconnect_delay_seconds: u64,
+    telemetry: bool,
+    telemetry_batch_samples: usize,
 ) -> Result<RemoteSessionStateStatus, String> {
+    if !(1..=64).contains(&telemetry_batch_samples) {
+        return Err("telemetry_batch_samples must be between 1 and 64".to_string());
+    }
+    let telemetry_enabled = telemetry || load_identity()?.telemetry_enabled;
     ensure_credential_fresh()?;
     start_or_resume(agent_version)?;
     let runtime = tokio::runtime::Runtime::new()
@@ -26,6 +36,8 @@ pub fn connect(
     runtime.block_on(run_control_loop(
         agent_version.to_string(),
         max_reconnect_delay_seconds.max(1),
+        telemetry_enabled,
+        telemetry_batch_samples,
     ))?;
     show_remote_session()
 }
@@ -102,12 +114,21 @@ fn start_or_resume(agent_version: &str) -> Result<RemoteSessionStateStatus, Stri
 async fn run_control_loop(
     agent_version: String,
     max_reconnect_delay_seconds: u64,
+    telemetry_enabled: bool,
+    telemetry_batch_samples: usize,
 ) -> Result<(), String> {
     let mut backoff = 1_u64;
     loop {
         let enrollment = ensure_credential_fresh()?;
         let session = load_remote_session()?;
-        match run_one_connection(enrollment, session).await {
+        match run_one_connection(
+            enrollment,
+            session,
+            telemetry_enabled,
+            telemetry_batch_samples,
+        )
+        .await
+        {
             Ok(ConnectionOutcome::Stopped) => return Ok(()),
             Ok(ConnectionOutcome::Terminal(reason)) => return Err(reason),
             Err(error) => {
@@ -150,6 +171,8 @@ enum ConnectionOutcome {
 async fn run_one_connection(
     mut enrollment: RemoteEnrollmentState,
     session: RemoteSessionState,
+    telemetry_enabled: bool,
+    telemetry_batch_samples: usize,
 ) -> Result<ConnectionOutcome, String> {
     let mut request = session
         .control_url
@@ -190,6 +213,10 @@ async fn run_one_connection(
             .saturating_mul(u64::from(session.missed_heartbeat_limit))
             .max(1),
     );
+    let mut telemetry_samples = Vec::<GpuTelemetrySample>::new();
+    let mut telemetry_sequence = session.telemetry_sequence_last;
+    let mut telemetry_unavailable_logged = false;
+    let mut telemetry_active = telemetry_enabled;
 
     loop {
         tokio::select! {
@@ -257,6 +284,141 @@ async fn run_one_connection(
             other => return Err(format!("unexpected control message {other}")),
         }
 
+        if telemetry_active {
+            let next_sample_sequence = telemetry_sequence
+                .checked_add(telemetry_samples.len() as u64 + 1)
+                .ok_or_else(|| "GPU telemetry sequence overflow".to_string())?;
+            match tokio::task::spawn_blocking(move || {
+                collect_nvidia_telemetry(next_sample_sequence)
+            })
+            .await
+            .map_err(|error| format!("GPU telemetry collection task failed: {error}"))?
+            {
+                Ok(collection) => {
+                    telemetry_unavailable_logged = false;
+                    for warning in collection.warnings {
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "gpu_telemetry_partial",
+                                "warning": warning,
+                            })
+                        );
+                    }
+                    telemetry_samples.extend(collection.samples);
+                    if telemetry_samples.len() > 64 {
+                        return Err("GPU telemetry batch exceeded 64 samples".to_string());
+                    }
+                    if telemetry_samples.len() >= telemetry_batch_samples {
+                        sequence = sequence.saturating_add(1);
+                        let signed = build_signed_telemetry_batch(
+                            &enrollment,
+                            &session,
+                            sequence,
+                            collection.collector,
+                            &telemetry_samples,
+                        )?;
+                        let batch_hash = signed.batch_hash.clone();
+                        let telemetry_message = ClientControlMessage {
+                            session_id: session.session_id.clone(),
+                            device_id: enrollment.device_id.clone(),
+                            sequence,
+                            sent_at: Utc::now().to_rfc3339(),
+                            message_type: "telemetry_batch".to_string(),
+                            payload: serde_json::to_value(signed).map_err(|error| {
+                                format!("failed to serialize telemetry batch: {error}")
+                            })?,
+                        };
+                        socket
+                            .send(Message::Text(
+                                serde_json::to_string(&telemetry_message)
+                                    .map_err(|error| {
+                                        format!("failed to serialize telemetry message: {error}")
+                                    })?
+                                    .into(),
+                            ))
+                            .await
+                            .map_err(|error| format!("failed to send telemetry batch: {error}"))?;
+                        let response = tokio::select! {
+                            _ = tokio::signal::ctrl_c() => {
+                                let _ = socket.close(None).await;
+                                return Ok(ConnectionOutcome::Stopped);
+                            }
+                            response = receive_server_message(&mut socket, response_timeout) => response?
+                        };
+                        match response.message_type.as_str() {
+                            "telemetry_ack" => {
+                                let receipt: TelemetryBatchReceipt =
+                                    serde_json::from_value(response.payload).map_err(|error| {
+                                        format!("invalid telemetry acknowledgement: {error}")
+                                    })?;
+                                let expected_sample_end = telemetry_samples
+                                    .last()
+                                    .map(|sample| sample.sample_sequence)
+                                    .ok_or_else(|| "telemetry batch is empty".to_string())?;
+                                if receipt.control_sequence_ack != sequence
+                                    || receipt.sample_sequence_end != expected_sample_end
+                                    || receipt.batch_hash != batch_hash
+                                {
+                                    return Err(
+                                        "telemetry acknowledgement does not match sent batch"
+                                            .to_string(),
+                                    );
+                                }
+                                update_remote_session_sequence(sequence)?;
+                                update_remote_telemetry_sequence(expected_sample_end)?;
+                                telemetry_sequence = expected_sample_end;
+                                telemetry_samples.clear();
+                            }
+                            "telemetry_rejected" => {
+                                let message = response.payload["message"]
+                                    .as_str()
+                                    .unwrap_or("control plane rejected telemetry batch");
+                                eprintln!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "event": "gpu_telemetry_rejected",
+                                        "error": message,
+                                    })
+                                );
+                                sequence = response.sequence_ack;
+                                update_remote_session_sequence(sequence)?;
+                                telemetry_samples.clear();
+                                telemetry_active = false;
+                            }
+                            "session_revoked" => {
+                                return Ok(ConnectionOutcome::Terminal(
+                                    "remote session was revoked by the control plane".to_string(),
+                                ));
+                            }
+                            "error" => {
+                                let message = response.payload["message"]
+                                    .as_str()
+                                    .unwrap_or("control plane rejected telemetry batch");
+                                return Err(message.to_string());
+                            }
+                            other => {
+                                return Err(format!(
+                                    "unexpected telemetry control message {other}"
+                                ));
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    if !telemetry_unavailable_logged {
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "gpu_telemetry_unavailable",
+                                "error": error,
+                            })
+                        );
+                        telemetry_unavailable_logged = true;
+                    }
+                }
+            }
+        }
         if credential_refresh_due(&enrollment)? {
             enrollment = tokio::task::spawn_blocking(|| {
                 refresh_credential()?;
@@ -266,6 +428,49 @@ async fn run_one_connection(
             .map_err(|error| format!("credential refresh task failed: {error}"))??;
         }
     }
+}
+
+fn build_signed_telemetry_batch(
+    enrollment: &RemoteEnrollmentState,
+    session: &RemoteSessionState,
+    control_sequence: u64,
+    collector: String,
+    samples: &[GpuTelemetrySample],
+) -> Result<SignedTelemetryBatch, String> {
+    let first = samples
+        .first()
+        .ok_or_else(|| "telemetry batch requires at least one sample".to_string())?;
+    let last = samples
+        .last()
+        .ok_or_else(|| "telemetry batch requires at least one sample".to_string())?;
+    let identity = load_identity()?;
+    let private_key = load_private_key(&identity)?;
+    let payload = TelemetryBatchPayload {
+        schema_version: TELEMETRY_SCHEMA_VERSION.to_string(),
+        provider_id: enrollment.provider_id.clone(),
+        device_id: enrollment.device_id.clone(),
+        session_id: session.session_id.clone(),
+        control_sequence,
+        sample_sequence_start: first.sample_sequence,
+        sample_sequence_end: last.sample_sequence,
+        hardware_fingerprint: build_registration_payload(env!("CARGO_PKG_VERSION"))
+            .hardware_fingerprint,
+        collector,
+        collected_at_start: first.observed_at.clone(),
+        collected_at_end: last.observed_at.clone(),
+        samples: samples.to_vec(),
+    };
+    let batch_hash = telemetry_batch_hash(&payload)?;
+    let message =
+        telemetry_batch_signature_message(&payload, &batch_hash, &enrollment.public_key_id)?;
+    let signature = sign_message(&private_key.secret_key_base64, message.as_bytes())?;
+    Ok(SignedTelemetryBatch {
+        payload,
+        batch_hash,
+        public_key_id: enrollment.public_key_id.clone(),
+        signature,
+        canonicalization_version: TELEMETRY_CANONICALIZATION_VERSION.to_string(),
+    })
 }
 
 async fn receive_server_message<S>(

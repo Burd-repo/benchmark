@@ -8,6 +8,7 @@ use crate::remote_session::{
     AuthorizedSession, ControlChannelLease, ControlChannelRegistry, RemoteSessionPolicy,
     SessionError,
 };
+use crate::telemetry::TelemetryPolicy;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -124,6 +125,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/sessions/{session_id}/revoke",
             post(revoke_remote_session),
+        )
+        .route(
+            "/v1/sessions/{session_id}/telemetry-batches",
+            post(ingest_gpu_telemetry),
+        )
+        .route(
+            "/v1/sessions/{session_id}/telemetry/latest",
+            get(latest_gpu_telemetry),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -452,6 +461,51 @@ async fn record_remote_heartbeat(
         .map_err(|error| session_api_error(error, request_id))
 }
 
+async fn ingest_gpu_telemetry(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Json(message): Json<ClientControlMessage>,
+) -> Result<Json<burd_protocol::TelemetryBatchReceipt>, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    state
+        .db
+        .ingest_gpu_telemetry(
+            &request_id,
+            &authorized,
+            &message,
+            telemetry_policy(&state.config),
+        )
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn latest_gpu_telemetry(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::LatestTelemetryResponse>, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, true).await?;
+    state
+        .db
+        .latest_gpu_telemetry(&request_id, &authorized)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+fn telemetry_policy(config: &ControlPlaneConfig) -> TelemetryPolicy {
+    TelemetryPolicy {
+        max_samples_per_batch: config.telemetry_max_samples_per_batch,
+        min_batch_interval_seconds: config.telemetry_min_batch_interval_seconds,
+        clock_skew_seconds: config.telemetry_clock_skew_seconds,
+    }
+}
 async fn upgrade_control_channel(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -608,36 +662,96 @@ async fn handle_control_channel(
                                 break "invalid_message".to_string();
                             }
                         };
-                        let heartbeat_request_id = new_request_id();
-                        match state.db.record_remote_heartbeat(
-                            &heartbeat_request_id,
-                            &authorized,
-                            &message,
-                            state.config.remote_session_ttl_seconds,
-                        ).await {
-                            Ok(receipt) => {
-                                let response = ServerControlMessage {
-                                    request_id: heartbeat_request_id,
-                                    session_id: session_id.clone(),
-                                    sequence_ack: receipt.sequence_ack,
-                                    server_time: receipt.server_time.clone(),
-                                    message_type: "heartbeat_ack".to_string(),
-                                    payload: serde_json::to_value(receipt).unwrap_or_default(),
-                                };
-                                if send_server_message(&mut socket, &response).await.is_err() {
-                                    break "send_failed".to_string();
-                                }                                heartbeat_deadline =
-                                    tokio::time::Instant::now() + heartbeat_timeout;
-
+                        let control_request_id = new_request_id();
+                        match message.message_type.as_str() {
+                            "heartbeat" => {
+                                match state.db.record_remote_heartbeat(
+                                    &control_request_id,
+                                    &authorized,
+                                    &message,
+                                    state.config.remote_session_ttl_seconds,
+                                ).await {
+                                    Ok(receipt) => {
+                                        let response = ServerControlMessage {
+                                            request_id: control_request_id,
+                                            session_id: session_id.clone(),
+                                            sequence_ack: receipt.sequence_ack,
+                                            server_time: receipt.server_time.clone(),
+                                            message_type: "heartbeat_ack".to_string(),
+                                            payload: serde_json::to_value(receipt).unwrap_or_default(),
+                                        };
+                                        if send_server_message(&mut socket, &response).await.is_err() {
+                                            break "send_failed".to_string();
+                                        }
+                                        heartbeat_deadline =
+                                            tokio::time::Instant::now() + heartbeat_timeout;
+                                    }
+                                    Err(error) => {
+                                        let _ = send_control_error(
+                                            &mut socket,
+                                            &control_request_id,
+                                            &session_id,
+                                            error.to_string(),
+                                        ).await;
+                                        break "heartbeat_rejected".to_string();
+                                    }
+                                }
                             }
-                            Err(error) => {
+                            "telemetry_batch" => {
+                                match state.db.ingest_gpu_telemetry(
+                                    &control_request_id,
+                                    &authorized,
+                                    &message,
+                                    telemetry_policy(&state.config),
+                                ).await {
+                                    Ok(receipt) => {
+                                        let response = ServerControlMessage {
+                                            request_id: control_request_id,
+                                            session_id: session_id.clone(),
+                                            sequence_ack: receipt.control_sequence_ack,
+                                            server_time: receipt.server_received_at.clone(),
+                                            message_type: "telemetry_ack".to_string(),
+                                            payload: serde_json::to_value(receipt).unwrap_or_default(),
+                                        };
+                                        if send_server_message(&mut socket, &response).await.is_err() {
+                                            break "send_failed".to_string();
+                                        }
+                                    }
+                                    Err(error) => {
+                                        let sequence_ack = state
+                                            .db
+                                            .get_remote_session(
+                                                &session_id,
+                                                &authorized,
+                                                &control_request_id,
+                                            )
+                                            .await
+                                            .map(|session| session.sequence_last)
+                                            .unwrap_or(0);
+                                        let response = ServerControlMessage {
+                                            request_id: control_request_id,
+                                            session_id: session_id.clone(),
+                                            sequence_ack,
+                                            server_time: chrono::Utc::now().to_rfc3339(),
+                                            message_type: "telemetry_rejected".to_string(),
+                                            payload: serde_json::json!({
+                                                "message": error.to_string(),
+                                            }),
+                                        };
+                                        if send_server_message(&mut socket, &response).await.is_err() {
+                                            break "send_failed".to_string();
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
                                 let _ = send_control_error(
                                     &mut socket,
-                                    &heartbeat_request_id,
+                                    &control_request_id,
                                     &session_id,
-                                    error.to_string(),
+                                    "unsupported control message type".to_string(),
                                 ).await;
-                                break "heartbeat_rejected".to_string();
+                                break "invalid_message".to_string();
                             }
                         }
                     }
@@ -897,6 +1011,12 @@ fn session_api_error(error: SessionError, request_id: String) -> ApiError {
             "remote session or device has been revoked",
             request_id,
         ),
+        SessionError::SignatureInvalid => ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::SignatureInvalid,
+            "telemetry Ed25519 signature is invalid",
+            request_id,
+        ),
         SessionError::Conflict(message) => ApiError::new(
             StatusCode::CONFLICT,
             ErrorCode::Conflict,
@@ -951,6 +1071,10 @@ mod tests {
             remote_session_ttl_seconds: 900,
             heartbeat_interval_seconds: 15,
             missed_heartbeat_limit: 3,
+            telemetry_max_samples_per_batch: 64,
+            telemetry_min_batch_interval_seconds: 5,
+            telemetry_clock_skew_seconds: 300,
+            telemetry_retention_days: 7,
         }
     }
 
@@ -1008,12 +1132,17 @@ mod tests {
     #[test]
     fn readiness_requires_every_expected_migration() {
         assert!(migrations_are_current(
-            &["0001".to_string(), "0002".to_string(), "0003".to_string()],
-            &["0001", "0002", "0003"]
+            &[
+                "0001".to_string(),
+                "0002".to_string(),
+                "0003".to_string(),
+                "0004".to_string()
+            ],
+            &["0001", "0002", "0003", "0004"]
         ));
         assert!(!migrations_are_current(
             &["0001".to_string()],
-            &["0001", "0002", "0003"]
+            &["0001", "0002", "0003", "0004"]
         ));
         assert!(!migrations_are_current(
             &[
@@ -1021,7 +1150,7 @@ mod tests {
                 "0002".to_string(),
                 "unexpected".to_string()
             ],
-            &["0001", "0002", "0003"]
+            &["0001", "0002", "0003", "0004"]
         ));
     }
 
