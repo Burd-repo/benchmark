@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use uuid::Uuid;
 
+pub const PROOF_CHALLENGE_SCHEMA_VERSION: &str = "burd-proof-capability-challenge-v1";
+pub const PROOF_CHALLENGE_RESPONSE_SCHEMA_VERSION: &str = "burd-proof-capability-response-v1";
+pub const PROOF_CHALLENGE_CANONICALIZATION_VERSION: &str = "burd-json-c14n-v1";
+pub const PROOF_CHALLENGE_SIGNATURE_DOMAIN: &str = "burd.proof-capability-response.v1";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Challenge {
     pub challenge_id: String,
@@ -103,6 +107,172 @@ pub struct ChallengeRunOutput {
     pub verification: ChallengeVerification,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IssueProofChallengeRequest {
+    pub provider_id: String,
+    pub device_id: String,
+    pub session_id: String,
+    pub profile_version: String,
+    pub required_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_gpu_uuid: Option<String>,
+    pub required_backend: String,
+    pub model_artifact_hash: String,
+    pub prompt_seed: String,
+    #[serde(default)]
+    pub required_proofs: Vec<String>,
+    pub min_tokens_per_second: f64,
+    pub max_ttft_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProofCapabilityChallenge {
+    pub schema_version: String,
+    pub challenge_id: String,
+    pub nonce: String,
+    pub provider_id: String,
+    pub device_id: String,
+    pub session_id: String,
+    pub profile_version: String,
+    pub required_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_gpu_uuid: Option<String>,
+    pub required_backend: String,
+    pub model_artifact_hash: String,
+    pub prompt_seed: String,
+    #[serde(default)]
+    pub required_proofs: Vec<String>,
+    pub min_tokens_per_second: f64,
+    pub max_ttft_ms: u64,
+    pub issued_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProofCapabilityMetrics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_per_second: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttft_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_allocated_mib: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vram_resident_mib: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemm_gflops: Option<f64>,
+    #[serde(default)]
+    pub cuda_runtime_detected: bool,
+    pub backend_proof: String,
+    #[serde(default)]
+    pub contention_detected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProofCapabilityResponsePayload {
+    pub schema_version: String,
+    pub challenge_id: String,
+    pub nonce: String,
+    pub provider_id: String,
+    pub device_id: String,
+    pub session_id: String,
+    pub profile_version: String,
+    pub hardware_fingerprint: String,
+    pub gpu_uuid: String,
+    pub backend: String,
+    pub model_artifact_hash: String,
+    pub prompt_seed: String,
+    pub driver_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_driver_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cuda_runtime_version: Option<String>,
+    pub metrics: ProofCapabilityMetrics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry_window_hash: Option<String>,
+    pub started_at: String,
+    pub completed_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SignedProofCapabilityResponse {
+    pub payload: ProofCapabilityResponsePayload,
+    pub response_hash: String,
+    pub public_key_id: String,
+    pub signature: String,
+    pub canonicalization_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProofChallengeVerification {
+    pub schema_version: String,
+    pub challenge_id: String,
+    pub checked_at: String,
+    pub response_hash_valid: bool,
+    pub signature_valid: bool,
+    pub provider_bound: bool,
+    pub device_bound: bool,
+    pub session_bound: bool,
+    pub fingerprint_bound: bool,
+    pub gpu_bound: bool,
+    pub backend_bound: bool,
+    pub artifact_bound: bool,
+    pub prompt_bound: bool,
+    pub metrics_satisfied: bool,
+    pub expired_by_server: bool,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProofChallengeRecord {
+    pub challenge: ProofCapabilityChallenge,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_object_key: Option<String>,
+    pub issued_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledged_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expired_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<ProofChallengeVerification>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IssueProofChallengeResponse {
+    pub request_id: String,
+    pub challenge: ProofCapabilityChallenge,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NextProofChallengeResponse {
+    pub request_id: String,
+    pub challenge: ProofCapabilityChallenge,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubmitProofChallengeResponse {
+    pub request_id: String,
+    pub challenge_id: String,
+    pub status: String,
+    pub response_hash: String,
+    pub server_received_at: String,
+    pub verification: ProofChallengeVerification,
+}
 #[derive(Debug, Clone, Serialize)]
 struct ChallengeResponsePayload<'a> {
     challenge_id: &'a str,
@@ -122,6 +292,23 @@ struct ChallengeResponsePayloadWithFingerprint<'a> {
     hardware_fingerprint: &'a str,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ProofChallengeResponseSignatureClaims<'a> {
+    domain: &'static str,
+    response_hash: &'a str,
+    challenge_id: &'a str,
+    nonce: &'a str,
+    provider_id: &'a str,
+    device_id: &'a str,
+    session_id: &'a str,
+    profile_version: &'a str,
+    hardware_fingerprint: &'a str,
+    gpu_uuid: &'a str,
+    backend: &'a str,
+    model_artifact_hash: &'a str,
+    prompt_seed: &'a str,
+    public_key_id: &'a str,
+}
 pub fn mock_challenge(profile: &str) -> Challenge {
     let issued = Utc::now();
     Challenge {
@@ -164,6 +351,35 @@ pub fn mock_challenge(profile: &str) -> Challenge {
         min_benchmark_version: "2026.06-mvp".to_string(),
         policy: ChallengePolicy::default(),
     }
+}
+
+pub fn proof_capability_response_hash(
+    payload: &ProofCapabilityResponsePayload,
+) -> Result<String, String> {
+    hash_canonical(payload)
+}
+
+pub fn proof_capability_response_signature_message(
+    payload: &ProofCapabilityResponsePayload,
+    response_hash: &str,
+    public_key_id: &str,
+) -> Result<String, String> {
+    canonical_json(&ProofChallengeResponseSignatureClaims {
+        domain: PROOF_CHALLENGE_SIGNATURE_DOMAIN,
+        response_hash,
+        challenge_id: &payload.challenge_id,
+        nonce: &payload.nonce,
+        provider_id: &payload.provider_id,
+        device_id: &payload.device_id,
+        session_id: &payload.session_id,
+        profile_version: &payload.profile_version,
+        hardware_fingerprint: &payload.hardware_fingerprint,
+        gpu_uuid: &payload.gpu_uuid,
+        backend: &payload.backend,
+        model_artifact_hash: &payload.model_artifact_hash,
+        prompt_seed: &payload.prompt_seed,
+        public_key_id,
+    })
 }
 
 pub fn challenge_response_message(
@@ -564,6 +780,82 @@ mod tests {
                 .errors
                 .iter()
                 .any(|error| error.contains("required test missing"))
+        );
+    }
+
+    fn proof_payload() -> ProofCapabilityResponsePayload {
+        ProofCapabilityResponsePayload {
+            schema_version: PROOF_CHALLENGE_RESPONSE_SCHEMA_VERSION.to_string(),
+            challenge_id: "challenge_1".to_string(),
+            nonce: "nonce_1".to_string(),
+            provider_id: "provider_1".to_string(),
+            device_id: "device_1".to_string(),
+            session_id: "session_1".to_string(),
+            profile_version: "poc-cuda-llm-v1".to_string(),
+            hardware_fingerprint: "sha256:fingerprint".to_string(),
+            gpu_uuid: "GPU-test".to_string(),
+            backend: "cuda".to_string(),
+            model_artifact_hash: "sha256:model".to_string(),
+            prompt_seed: "seed_1".to_string(),
+            driver_version: "576.80".to_string(),
+            cuda_driver_version: Some("12.9".to_string()),
+            cuda_runtime_version: Some("12.8".to_string()),
+            metrics: ProofCapabilityMetrics {
+                tokens_per_second: Some(42.0),
+                ttft_ms: Some(120),
+                vram_allocated_mib: Some(4096),
+                vram_resident_mib: Some(4096),
+                gemm_gflops: Some(9500.0),
+                cuda_runtime_detected: true,
+                backend_proof: "cuda-device-query".to_string(),
+                contention_detected: false,
+            },
+            telemetry_window_hash: Some("sha256:telemetry-window".to_string()),
+            started_at: "2026-07-09T00:00:00Z".to_string(),
+            completed_at: "2026-07-09T00:00:05Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn proof_capability_hash_changes_with_payload() {
+        let payload = proof_payload();
+        let hash = proof_capability_response_hash(&payload).unwrap();
+        let mut changed = payload.clone();
+        changed.gpu_uuid = "GPU-other".to_string();
+        let changed_hash = proof_capability_response_hash(&changed).unwrap();
+
+        assert_ne!(hash, changed_hash);
+    }
+
+    #[test]
+    fn proof_capability_signature_binds_payload() {
+        let keys = generate_keypair().unwrap();
+        let payload = proof_payload();
+        let hash = proof_capability_response_hash(&payload).unwrap();
+        let message =
+            proof_capability_response_signature_message(&payload, &hash, "key_1").unwrap();
+        let signature = sign_message(&keys.secret_key_base64, message.as_bytes()).unwrap();
+
+        assert!(
+            crate::signature::verify_message(
+                &keys.public_key_base64,
+                message.as_bytes(),
+                &signature
+            )
+            .unwrap()
+        );
+
+        let mut changed = payload.clone();
+        changed.hardware_fingerprint = "sha256:other".to_string();
+        let changed_message =
+            proof_capability_response_signature_message(&changed, &hash, "key_1").unwrap();
+        assert!(
+            !crate::signature::verify_message(
+                &keys.public_key_base64,
+                changed_message.as_bytes(),
+                &signature,
+            )
+            .unwrap()
         );
     }
 }

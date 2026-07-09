@@ -368,11 +368,18 @@ verification state.
 
 Admin endpoint that marks an evidence record as revoked. Revocation updates
 registry metadata and audit history; it does not delete the stored envelope.
+
 ## Challenge API
+
+BN-06 implements active proof-of-capability challenges for an already enrolled
+provider device with an active remote session. It does not implement recurring
+risk-based scheduling; BN-07 owns recurrence.
 
 ### `POST /v1/challenges`
 
-Issues a backend challenge for a provider/device/session.
+Admin endpoint that issues a backend-attested proof challenge. The target
+session must be `online` or `degraded`, and `required_fingerprint` must match
+the backend session fingerprint.
 
 Request fields:
 
@@ -381,51 +388,73 @@ Request fields:
 - `session_id`
 - `profile_version`
 - `required_fingerprint`
-- `required_gpu_uuid`
-- `required_backend`
+- `required_gpu_uuid`, optional
+- `required_backend`, initially `cuda`
 - `model_artifact_hash`
 - `prompt_seed`
+- `required_proofs`, optional
 - `min_tokens_per_second`
 - `max_ttft_ms`
+- `expires_in_seconds`, optional and capped by backend config
 
-Returns the backend-attested challenge:
+Returns `ProofCapabilityChallenge` with backend-generated `challenge_id`,
+`nonce`, `issued_at`, `expires_at`, and the required proof fields.
 
-- `challenge_id`
-- `nonce`
-- `profile_version`
-- `issued_at`
-- `expires_at`
-- required proof fields
+### `GET /v1/sessions/{session_id}/challenges/next`
 
-### `POST /v1/challenges/{challenge_id}/responses`
+Device endpoint authenticated with the remote-session headers. It returns the
+oldest non-expired `issued` or `acknowledged` challenge for the session and
+marks newly delivered challenges as `acknowledged`.
 
-Submits a signed challenge response.
+### `POST /v1/sessions/{session_id}/challenges/{challenge_id}/response`
 
-Request fields:
+Device endpoint that submits `SignedProofCapabilityResponse`.
 
+The signed payload contains:
+
+- `schema_version: burd-proof-capability-response-v1`
 - `challenge_id`
 - `nonce`
 - `provider_id`
 - `device_id`
 - `session_id`
-- `response_hash`
-- `signature`
-- `public_key_id`
+- `profile_version`
 - `hardware_fingerprint`
 - `gpu_uuid`
-- `driver`
-- `cuda`
+- `backend`
+- `model_artifact_hash`
+- `prompt_seed`
+- `driver_version`
+- optional CUDA driver/runtime versions
 - `metrics`
-- `telemetry_window_hash`
+- optional `telemetry_window_hash`
 - `started_at`
 - `completed_at`
 
+The envelope contains:
+
+- `payload`
+- `response_hash`, the canonical hash of `payload`
+- `public_key_id`
+- `signature`
+- `canonicalization_version: burd-json-c14n-v1`
+
+The signature message uses domain `burd.proof-capability-response.v1` and binds
+response hash, challenge ID, nonce, provider, device, session, profile,
+fingerprint, GPU UUID, backend, artifact hash, prompt seed, and public key ID.
+
 Backend behavior:
 
-- rejects unknown, expired, revoked, or reused nonces;
-- verifies signature and response hash;
-- checks required fingerprint, GPU UUID, backend, artifact hash, and metrics;
-- binds response to accepted telemetry window when available;
+- rejects unknown, terminal, or expired challenges;
+- recalculates the response hash;
+- verifies Ed25519 with the active backend device key;
+- binds response to provider, device, session, fingerprint, GPU UUID, backend,
+  artifact hash, and prompt seed;
+- checks execution timestamps against challenge issue/expiry and server clock;
+- evaluates initial CUDA runtime, VRAM residency, GEMM, short LLM inference,
+  contention, and telemetry-window proof fields;
+- stores the complete signed response in object storage;
+- stores response metadata and verification JSON in PostgreSQL;
 - sets challenge state to `verified`, `failed`, or `expired`.
 
 ## Telemetry API
