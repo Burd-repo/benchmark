@@ -26,6 +26,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "gpu_telemetry",
         sql: include_str!("../migrations/0004_gpu_telemetry.sql"),
     },
+    Migration {
+        version: "0005",
+        name: "remote_evidence_registry",
+        sql: include_str!("../migrations/0005_remote_evidence_registry.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -75,5 +80,12 @@ mod tests {
         let sql = MIGRATIONS[3].sql;
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS telemetry_batches"));
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS gpu_telemetry_samples"));
+    }
+
+    #[test]
+    fn remote_evidence_migration_extends_evidence_records() {
+        let sql = MIGRATIONS[4].sql;
+        assert!(sql.contains("ADD COLUMN IF NOT EXISTS session_id"));
+        assert!(sql.contains("idx_evidence_records_evidence_hash"));
     }
 }

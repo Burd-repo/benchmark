@@ -170,7 +170,7 @@ after the June 2026 reliability pass.
 
 ## Still Mocked Or Future
 
-- Backend-issued challenges and backend verification.
+- Backend-issued challenges, remote Proof of Capability, and challenge verification.
 - Burd audit service and production antifraud.
 - Marketplace listings, leases, jobs, orchestration, scheduler, and containers.
 - Real earnings, payouts, billing, Pix, and financial settlement.
@@ -334,3 +334,27 @@ starting the API server or depending on host state:
   making telemetry a replacement for heartbeat liveness.
 - BN-04 does not implement DCGM, challenge-bound telemetry windows, regional
   probes, global trust/antifraud, jobs, scheduler, marketplace, or billing.
+
+## BN-05 - Remote Evidence Registry
+
+- The control plane accepts signed evidence through
+  `POST /v1/sessions/{session_id}/evidence-records` using the same device
+  credential, session token, and device ID headers as remote session APIs.
+- `SignedReport` envelopes are verified server-side for canonical report hash,
+  envelope hash, Ed25519 signature, active backend key binding, enrolled
+  machine ID, backend/local provider binding, and session hardware fingerprint.
+- The backend recalculates evidence freshness from `signed_at` and server time;
+  it does not trust `is_expired` or `signature_valid_locally` sent by the agent.
+- Complete signed envelopes are stored in filesystem-backed object storage for
+  local/dev deployments, controlled by `BURD_CONTROL_OBJECT_STORAGE_DIR`.
+- PostgreSQL `evidence_records` metadata now includes session, public key,
+  report hash, fingerprint, subject, revocation, and verification fields.
+- Evidence hashes are globally deduplicated; replaying the same envelope returns
+  the existing record with `duplicate=true`.
+- Admin endpoints list, read, and revoke evidence records. Revocation updates
+  metadata and audit history without deleting the stored envelope.
+- Accepted signed reports also create hardware snapshot rows for later policy,
+  trust, and antifraud consumers.
+- BN-05 does not implement backend-issued challenges, active Proof of
+  Capability, recurring verification, trust/antifraud scoring, jobs, scheduler,
+  marketplace, billing, Pix, or payouts.

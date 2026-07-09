@@ -25,9 +25,11 @@ pub use enrollment::{
     save_remote_enrollment, show_remote_enrollment, update_remote_credential,
 };
 pub use evidence::{
-    CHALLENGE_TTL_SECONDS, EvidenceFreshness, FULL_REPORT_TTL_SECONDS, SIGNED_REPORT_TTL_SECONDS,
-    evidence_freshness, evidence_freshness_at, evidence_freshness_from_window,
-    evidence_freshness_from_window_at,
+    CHALLENGE_TTL_SECONDS, EVIDENCE_CANONICALIZATION_VERSION, EVIDENCE_REGISTRY_SCHEMA_VERSION,
+    EvidenceFreshness, EvidenceRecord, EvidenceVerification, FULL_REPORT_TTL_SECONDS,
+    ListEvidenceResponse, RevokeEvidenceRequest, RevokeEvidenceResponse, SIGNED_REPORT_TTL_SECONDS,
+    SubmitEvidenceRequest, SubmitEvidenceResponse, evidence_freshness, evidence_freshness_at,
+    evidence_freshness_from_window, evidence_freshness_from_window_at,
 };
 pub use identity::{
     AgentConfig, AgentIdentityPublic, AgentStatePaths, ApiTokenStatus, IdentityInitResult,

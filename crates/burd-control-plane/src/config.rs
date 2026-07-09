@@ -9,6 +9,7 @@ pub struct ControlPlaneConfig {
     pub port: u16,
     pub database_url: String,
     pub database_schema: Option<String>,
+    pub object_storage_dir: String,
     pub rate_limit_per_minute: u32,
     pub admin_token_hash: String,
     pub enrollment_token_ttl_seconds: u32,
@@ -61,6 +62,9 @@ impl ControlPlaneConfig {
                     "BURD_CONTROL_DATABASE_URL or DATABASE_URL must point to PostgreSQL",
                 )
             })?;
+        let object_storage_dir = lookup("BURD_CONTROL_OBJECT_STORAGE_DIR")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "./.burd-control-objects".to_string());
         let admin_token = lookup("BURD_CONTROL_ADMIN_TOKEN")
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| ConfigError::new("BURD_CONTROL_ADMIN_TOKEN is required"))?;
@@ -126,6 +130,7 @@ impl ControlPlaneConfig {
             database_url,
             database_schema: lookup("BURD_CONTROL_DATABASE_SCHEMA")
                 .filter(|value| !value.trim().is_empty()),
+            object_storage_dir,
             rate_limit_per_minute,
             admin_token_hash: sha256_hex(admin_token.as_bytes()),
             enrollment_token_ttl_seconds,
@@ -192,6 +197,7 @@ mod tests {
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 8080);
         assert_eq!(config.database_url, "postgres://localhost/burd");
+        assert_eq!(config.object_storage_dir, "./.burd-control-objects");
         assert_eq!(config.rate_limit_per_minute, 120);
         assert_eq!(config.enrollment_token_ttl_seconds, 600);
         assert_eq!(config.enrollment_proof_ttl_seconds, 300);
