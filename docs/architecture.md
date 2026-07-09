@@ -22,9 +22,9 @@ Flow:
 - `burd-hardware`: Burd-shaped system report around llmfit hardware detection.
 - `burd-llmfit`: adapter around `llmfit-core`.
 - `burd-bench`: LLM, stability, network, disk, profile, score and report logic.
-- `burd-control-plane`: BN-01 Rust backend foundation for registry,
-  migrations, health, readiness, idempotency, audit, and OpenAPI.
-- `burd-protocol`: identity, challenge, signed report and report envelope types.
+- `burd-control-plane`: BN-01/BN-02 Rust backend for registry, enrollment,
+  device identity, migrations, health, readiness, idempotency, audit, and OpenAPI.
+- `burd-protocol`: identity, enrollment proof, challenge, signed report and report envelope types.
 - `burd-api-local`: local HTTP API and static benchmark UI serving.
 
 ## Future Backend Flow
@@ -39,11 +39,11 @@ Flow:
 
 ## Burd Network Control Plane
 
-BN-00 freezes the first remote backend boundary. BN-01 adds the first backend
-foundation crate without remote provider operation yet. The
-target is a Rust modular monolith backed by PostgreSQL, object storage, and a
-simple queue. The agent connects outbound to the backend through an
-authenticated control channel.
+BN-00 freezes the first remote backend boundary. BN-01 adds the backend
+foundation. BN-02 adds remote provider enrollment, Ed25519 possession proof,
+short-lived device credentials, key rotation, and revocation. The target is a
+Rust modular monolith backed by PostgreSQL, object storage, and a simple queue.
+The authenticated outbound control channel remains BN-03.
 
 The backend is authoritative for registry state, server-side evidence
 expiration, challenge issuance, nonce use, remote session state, revocation,
@@ -55,6 +55,7 @@ See:
 
 - [`bn-00-architecture-freeze.md`](bn-00-architecture-freeze.md)
 - [`bn-01-backend-foundation.md`](bn-01-backend-foundation.md)
+- [`bn-02-provider-enrollment.md`](bn-02-provider-enrollment.md)
 - [`remote-protocol-v1.md`](remote-protocol-v1.md)
 - [`remote-authority-matrix.md`](remote-authority-matrix.md)
 - [`threat-model.md`](threat-model.md)

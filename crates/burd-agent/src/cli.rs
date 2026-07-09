@@ -66,6 +66,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: IdentityCommands,
     },
+    /// Enroll this agent with the Burd control plane.
+    Enrollment {
+        #[command(subcommand)]
+        command: EnrollmentCommands,
+    },
     /// Create, run or verify benchmark challenges.
     Challenge {
         #[command(subcommand)]
@@ -269,6 +274,25 @@ pub enum IdentityCommands {
     RotateKey {
         #[arg(long)]
         confirm: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EnrollmentCommands {
+    /// Complete remote enrollment using BURD_ENROLLMENT_TOKEN.
+    Enroll {
+        #[arg(long, default_value = "https://api.burd.cloud")]
+        control_plane_url: String,
+    },
+    /// Show remote identity and credential expiry without exposing the credential.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rotate the short-lived device credential.
+    RefreshCredential {
+        #[arg(long)]
+        json: bool,
     },
 }
 

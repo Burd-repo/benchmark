@@ -57,7 +57,7 @@ pub struct DbError {
 }
 
 impl DbError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }
@@ -187,7 +187,7 @@ impl Database {
             provider_id: format!("provider_{}", Uuid::new_v4()),
             user_id: command.user_id,
             display_name: command.display_name,
-            status: "enrolled".to_string(),
+            status: "unregistered".to_string(),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -273,7 +273,7 @@ impl Database {
         Ok(())
     }
 
-    async fn connect(&self) -> Result<Client, DbError> {
+    pub(crate) async fn connect(&self) -> Result<Client, DbError> {
         let (client, connection) = tokio_postgres::connect(&self.database_url, NoTls).await?;
         tokio::spawn(async move {
             if let Err(error) = connection.await {
@@ -298,7 +298,7 @@ impl Database {
     }
 }
 
-async fn insert_audit_event(
+pub(crate) async fn insert_audit_event(
     transaction: &Transaction<'_>,
     event: NewAuditEvent<'_>,
 ) -> Result<String, DbError> {
@@ -324,7 +324,7 @@ async fn insert_audit_event(
     Ok(audit_event_id)
 }
 
-pub struct NewAuditEvent<'a> {
+pub(crate) struct NewAuditEvent<'a> {
     pub request_id: &'a str,
     pub actor_type: &'a str,
     pub actor_id: Option<String>,
@@ -398,7 +398,7 @@ mod tests {
         let db = Database::new(url, Some(schema)).unwrap();
         db.migrate().await.unwrap();
 
-        assert_eq!(db.migration_versions().await.unwrap(), vec!["0001"]);
+        assert_eq!(db.migration_versions().await.unwrap(), vec!["0001", "0002"]);
 
         let command = CreateProviderCommand {
             request_id: "req_integration".to_string(),
@@ -421,7 +421,7 @@ mod tests {
 
         let loaded = db.get_provider(provider_id).await.unwrap().unwrap();
         assert_eq!(loaded.provider_id, provider_id);
-        assert_eq!(loaded.status, "enrolled");
+        assert_eq!(loaded.status, "unregistered");
 
         let replayed = db
             .create_provider_idempotently(command.clone())

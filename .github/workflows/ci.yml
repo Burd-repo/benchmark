@@ -48,7 +48,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Verify PostgreSQL migrations and provider persistence
-        run: cargo test -p burd-control-plane db::tests::migrates_and_persists_provider_transactionally -- --ignored --exact
+        run: cargo test -p burd-control-plane -- --ignored
 
       - name: Precompile fast contract tests
         run: cargo test -p burd-bench --lib --no-run

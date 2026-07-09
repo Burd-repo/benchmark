@@ -1,4 +1,5 @@
 mod cli;
+mod remote_enrollment;
 
 use anyhow::Result;
 use burd_bench::{
@@ -24,13 +25,13 @@ use burd_protocol::{
     Challenge, ChallengeResponse, ChallengeRunOutput, challenge_response_message_with_fingerprint,
     create_api_token, evidence_freshness_from_window, init_identity, load_identity,
     load_private_key, migrate_identity, mock_challenge, rotate_api_token, rotate_identity_key,
-    save_latest_challenge_output, show_api_token_status, show_identity, sign_message,
-    verify_challenge_response,
+    save_latest_challenge_output, show_api_token_status, show_identity, show_remote_enrollment,
+    sign_message, verify_challenge_response,
 };
 use clap::Parser;
 use cli::{
-    ApiTokenCommands, BenchCommands, ChallengeCommands, Cli, Commands, HistoryCommands,
-    IdentityCommands, UptimeCommands,
+    ApiTokenCommands, BenchCommands, ChallengeCommands, Cli, Commands, EnrollmentCommands,
+    HistoryCommands, IdentityCommands, UptimeCommands,
 };
 use serde::Deserialize;
 use std::path::Path;
@@ -303,6 +304,42 @@ fn run() -> Result<()> {
                     "Rotate signing key",
                     "Rotated local Ed25519 signing key.",
                     vec![format!("provider_id: {}", result.provider_id)],
+                );
+                print_json(&result)?;
+            }
+        },
+        Commands::Enrollment { command } => match command {
+            EnrollmentCommands::Enroll { control_plane_url } => {
+                let token = std::env::var("BURD_ENROLLMENT_TOKEN").map_err(|_| {
+                    anyhow::anyhow!(
+                        "BURD_ENROLLMENT_TOKEN is required and is consumed as a one-time secret"
+                    )
+                })?;
+                let result = remote_enrollment::enroll(&control_plane_url, token, AGENT_VERSION)
+                    .map_err(anyhow::Error::msg)?;
+                let _ = record_action(
+                    "remote enrollment",
+                    "completed",
+                    "Enroll provider device",
+                    "Completed backend Ed25519 possession proof.",
+                    vec![
+                        format!("provider_id: {}", result.provider_id),
+                        format!("device_id: {}", result.device_id),
+                    ],
+                );
+                print_json(&result)?;
+            }
+            EnrollmentCommands::Status { json: _ } => {
+                print_json(&show_remote_enrollment().map_err(anyhow::Error::msg)?)?;
+            }
+            EnrollmentCommands::RefreshCredential { json: _ } => {
+                let result = remote_enrollment::refresh_credential().map_err(anyhow::Error::msg)?;
+                let _ = record_action(
+                    "device credential refresh",
+                    "completed",
+                    "Refresh device credential",
+                    "Rotated the short-lived backend device credential.",
+                    vec![format!("device_id: {}", result.device_id)],
                 );
                 print_json(&result)?;
             }

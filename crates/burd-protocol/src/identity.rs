@@ -357,7 +357,12 @@ pub fn rotate_identity_key(confirm: bool) -> Result<IdentityStatus, String> {
     if !confirm {
         return Err("key rotation requires --confirm".to_string());
     }
-
+    if default_state_dir().join("remote-enrollment.json").exists() {
+        return Err(
+            "local-only key rotation is blocked for an enrolled device; use the control-plane key rotation protocol"
+                .to_string(),
+        );
+    }
     let path = default_config_path();
     let mut config = load_identity()?;
     let keypair = generate_keypair()?;

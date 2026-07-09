@@ -216,7 +216,36 @@ Returns:
 - `credential_expires_at`
 - `status: pending_verification`
 
-The private key is never transmitted.
+The private key is never transmitted. The signed canonical proof uses the
+`burd.enrollment-proof.v1` domain and binds `enrollment_id`, backend
+`provider_id`, `machine_id`, nonce, public key, hardware fingerprint, and
+server-issued expiry.
+
+### `POST /v1/devices/{device_id}/credentials`
+
+Rotates the short-lived device bearer credential. The current credential is
+required; successful rotation revokes it in the same transaction and returns
+the replacement once.
+
+### `POST /v1/devices/{device_id}/key-rotations`
+
+Starts coordinated key rotation under the current device credential. The
+backend stores the proposed public key and returns a nonce and expiry.
+
+### `POST /v1/devices/{device_id}/key-rotations/{rotation_id}/proof`
+
+Verifies canonical `burd.key-rotation-proof.v1` claims signed by the proposed
+new key. Success activates the new key and revokes the previous key atomically.
+
+### `GET /v1/providers/{provider_id}/devices`
+
+Returns backend device state and active public-key IDs without credentials or
+raw key material.
+
+### `POST /v1/devices/{device_id}/revoke`
+
+An administrative action that revokes the device, identity, active key,
+credentials, and pending rotations.
 
 ## Session And Control Channel API
 

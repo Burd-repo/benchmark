@@ -275,3 +275,24 @@ starting the API server or depending on host state:
 - BN-01 does not implement remote enrollment, device credentials, control
   channel, backend-issued challenges, telemetry ingestion, trust policy,
   scheduler, jobs, marketplace, billing, Pix, or payouts.
+
+## BN-02 - Remote Provider Enrollment And Identity
+
+- The control plane issues short-lived one-time enrollment tokens behind an
+  admin bearer credential.
+- The agent submits its public key, machine ID, registration payload, versions,
+  and hardware fingerprint, then signs a backend-issued nonce.
+- Canonical `burd.enrollment-proof.v1` claims bind provider, enrollment,
+  machine, key, fingerprint, nonce, and server expiry.
+- Successful proof creates backend-attested provider/device IDs, an active
+  Ed25519 key, audit history, and a short-lived device credential.
+- PostgreSQL stores only token and credential hashes, never raw values.
+- Credential refresh, device listing, key rotation, and cascading device
+  revocation are implemented.
+- `burd-agent enrollment enroll`, `status`, and `refresh-credential` implement
+  the agent side without exposing credentials in status or action logs.
+- PostgreSQL integration tests cover enrollment, replay rejection, credential
+  rotation, key rotation, and revocation in isolated schemas.
+- BN-02 does not implement the remote session/control channel, heartbeat,
+  telemetry, Proof of Capability, trust policy, jobs, scheduler, marketplace,
+  billing, Pix, or payouts.

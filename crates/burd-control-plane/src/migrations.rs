@@ -5,11 +5,18 @@ pub struct Migration {
     pub sql: &'static str,
 }
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: "0001",
-    name: "initial_control_plane",
-    sql: include_str!("../migrations/0001_initial.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: "0001",
+        name: "initial_control_plane",
+        sql: include_str!("../migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: "0002",
+        name: "provider_enrollment",
+        sql: include_str!("../migrations/0002_provider_enrollment.sql"),
+    },
+];
 
 #[cfg(test)]
 mod tests {
@@ -28,6 +35,19 @@ mod tests {
             "evidence_records",
             "provider_sessions",
             "audit_events",
+        ] {
+            assert!(sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")));
+        }
+    }
+
+    #[test]
+    fn enrollment_migration_declares_bn02_tables() {
+        let sql = MIGRATIONS[1].sql;
+        for table in [
+            "enrollment_tokens",
+            "device_enrollments",
+            "device_credentials",
+            "key_rotation_challenges",
         ] {
             assert!(sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")));
         }
