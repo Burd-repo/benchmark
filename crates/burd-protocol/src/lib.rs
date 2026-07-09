@@ -2,6 +2,7 @@ pub mod challenge;
 pub mod enrollment;
 pub mod evidence;
 pub mod identity;
+pub mod remote_session;
 pub mod report;
 pub mod session;
 pub mod signature;
@@ -33,6 +34,13 @@ pub use identity::{
     default_config_path, default_state_dir, init_identity, load_identity, load_private_key,
     migrate_identity, redacted_config_value, rotate_api_token, rotate_identity_key,
     show_api_token_status, show_identity, verify_api_token,
+};
+pub use remote_session::{
+    ClientControlMessage, HeartbeatPayload, HeartbeatReceipt, RemoteSessionRecord,
+    RemoteSessionResume, RemoteSessionRevocationResponse, RemoteSessionState,
+    RemoteSessionStateStatus, RemoteSessionStatus, ServerControlMessage, StartRemoteSessionRequest,
+    StartRemoteSessionResponse, clear_remote_session, load_remote_session, new_resume_token,
+    remote_session_path, save_remote_session, show_remote_session, update_remote_session_sequence,
 };
 pub use report::{FullReport, ReportSignature, SignedReport, VerifyReportResult};
 pub use session::{

@@ -74,7 +74,7 @@ pub fn refresh_credential() -> Result<RemoteEnrollmentStatus, String> {
     update_remote_credential(&response)
 }
 
-fn post_json<TRequest, TResponse>(
+pub(crate) fn post_json<TRequest, TResponse>(
     url: &str,
     payload: &TRequest,
     bearer: Option<&str>,
@@ -112,7 +112,7 @@ where
         .map_err(|error| format!("invalid control plane response contract: {error}"))
 }
 
-fn join_url(base: &str, path: &str) -> String {
+pub(crate) fn join_url(base: &str, path: &str) -> String {
     format!("{}{}", base.trim_end_matches('/'), path)
 }
 

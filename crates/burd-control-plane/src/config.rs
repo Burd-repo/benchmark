@@ -14,6 +14,9 @@ pub struct ControlPlaneConfig {
     pub enrollment_token_ttl_seconds: u32,
     pub enrollment_proof_ttl_seconds: u32,
     pub device_credential_ttl_seconds: u32,
+    pub remote_session_ttl_seconds: u32,
+    pub heartbeat_interval_seconds: u32,
+    pub missed_heartbeat_limit: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +83,18 @@ impl ControlPlaneConfig {
                 .unwrap_or_else(|| "900".to_string()),
             "BURD_CONTROL_DEVICE_CREDENTIAL_TTL_SECONDS",
         )?;
+        let remote_session_ttl_seconds = parse_u32(
+            lookup("BURD_CONTROL_SESSION_TTL_SECONDS").unwrap_or_else(|| "900".to_string()),
+            "BURD_CONTROL_SESSION_TTL_SECONDS",
+        )?;
+        let heartbeat_interval_seconds = parse_u32(
+            lookup("BURD_CONTROL_HEARTBEAT_INTERVAL_SECONDS").unwrap_or_else(|| "15".to_string()),
+            "BURD_CONTROL_HEARTBEAT_INTERVAL_SECONDS",
+        )?;
+        let missed_heartbeat_limit = parse_u32(
+            lookup("BURD_CONTROL_MISSED_HEARTBEAT_LIMIT").unwrap_or_else(|| "3".to_string()),
+            "BURD_CONTROL_MISSED_HEARTBEAT_LIMIT",
+        )?;
 
         Ok(Self {
             environment: lookup("BURD_CONTROL_ENV").unwrap_or_else(|| "local".to_string()),
@@ -93,6 +108,9 @@ impl ControlPlaneConfig {
             enrollment_token_ttl_seconds,
             enrollment_proof_ttl_seconds,
             device_credential_ttl_seconds,
+            remote_session_ttl_seconds,
+            heartbeat_interval_seconds,
+            missed_heartbeat_limit,
         })
     }
 }
@@ -151,6 +169,9 @@ mod tests {
         assert_eq!(config.enrollment_token_ttl_seconds, 600);
         assert_eq!(config.enrollment_proof_ttl_seconds, 300);
         assert_eq!(config.device_credential_ttl_seconds, 900);
+        assert_eq!(config.remote_session_ttl_seconds, 900);
+        assert_eq!(config.heartbeat_interval_seconds, 15);
+        assert_eq!(config.missed_heartbeat_limit, 3);
         assert_eq!(config.admin_token_hash, sha256_hex(b"admin-secret"));
         assert!(!config.admin_token_hash.contains("admin-secret"));
     }

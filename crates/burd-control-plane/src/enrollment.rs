@@ -55,10 +55,10 @@ impl From<tokio_postgres::Error> for EnrollmentError {
 }
 
 #[derive(Debug)]
-struct DeviceAuth {
-    provider_id: String,
-    device_id: String,
-    public_key_id: String,
+pub(crate) struct DeviceAuth {
+    pub(crate) provider_id: String,
+    pub(crate) device_id: String,
+    pub(crate) public_key_id: String,
 }
 
 impl Database {
@@ -812,7 +812,7 @@ impl Database {
     }
 }
 
-async fn authenticate_device(
+pub(crate) async fn authenticate_device(
     transaction: &Transaction<'_>,
     device_id: &str,
     credential: &str,

@@ -71,6 +71,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: EnrollmentCommands,
     },
+    /// Maintain the authenticated outbound control-plane session.
+    RemoteSession {
+        #[command(subcommand)]
+        command: RemoteSessionCommands,
+    },
     /// Create, run or verify benchmark challenges.
     Challenge {
         #[command(subcommand)]
@@ -296,6 +301,19 @@ pub enum EnrollmentCommands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum RemoteSessionCommands {
+    /// Connect to the backend and maintain sequenced heartbeats until interrupted.
+    Connect {
+        #[arg(long, default_value_t = 30)]
+        max_reconnect_delay_seconds: u64,
+    },
+    /// Read the backend-authoritative state of the persisted remote session.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
 #[derive(Debug, Subcommand)]
 pub enum ChallengeCommands {
     /// Create a mock backend challenge.

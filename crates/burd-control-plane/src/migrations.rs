@@ -16,6 +16,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "provider_enrollment",
         sql: include_str!("../migrations/0002_provider_enrollment.sql"),
     },
+    Migration {
+        version: "0003",
+        name: "remote_sessions",
+        sql: include_str!("../migrations/0003_remote_sessions.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -51,5 +56,12 @@ mod tests {
         ] {
             assert!(sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")));
         }
+    }
+
+    #[test]
+    fn remote_session_migration_declares_bn03_heartbeats() {
+        let sql = MIGRATIONS[2].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS session_heartbeats"));
+        assert!(sql.contains("idx_provider_sessions_active_device"));
     }
 }

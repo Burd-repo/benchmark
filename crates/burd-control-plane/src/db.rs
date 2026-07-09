@@ -398,7 +398,10 @@ mod tests {
         let db = Database::new(url, Some(schema)).unwrap();
         db.migrate().await.unwrap();
 
-        assert_eq!(db.migration_versions().await.unwrap(), vec!["0001", "0002"]);
+        assert_eq!(
+            db.migration_versions().await.unwrap(),
+            vec!["0001", "0002", "0003"]
+        );
 
         let command = CreateProviderCommand {
             request_id: "req_integration".to_string(),

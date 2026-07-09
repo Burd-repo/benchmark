@@ -20,6 +20,22 @@ async fn run() -> Result<(), String> {
         .parse()
         .map_err(|error| format!("invalid bind address: {error}"))?;
     let state = Arc::new(AppState::new(config.clone(), db));
+    let expiration_db = state.db.clone();
+    let expiration_interval = config.heartbeat_interval_seconds;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(u64::from(
+            expiration_interval,
+        )));
+        loop {
+            interval.tick().await;
+            if let Err(error) = expiration_db.expire_stale_remote_sessions().await {
+                log_json(
+                    "session_expiration_error",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
+    });
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|error| format!("failed to bind {addr}: {error}"))?;

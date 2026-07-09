@@ -95,13 +95,11 @@ State authority:
 
 ```text
 none
--> starting
--> active
--> degraded
--> resuming
--> expired
--> revoked
--> offline
+-> pending_connection
+-> online
+-> degraded | offline
+-> online
+-> expired | revoked
 ```
 
 Rules:
@@ -269,13 +267,15 @@ Returns:
 - `status`
 - `expires_at`
 - `heartbeat_interval_seconds`
+- `missed_heartbeat_limit`
 - `sequence_start`
 - `control_url`
+- `resume_token`
 
 ### `GET /v1/sessions/{session_id}/control`
 
-Upgrades to WebSocket or gRPC stream. The exact transport can be selected in
-BN-01, but the message contract is stable:
+Upgrades to the BN-03 WebSocket control channel. Device authentication and the
+session resume token are sent in headers, never in the URL:
 
 - every client message includes `session_id`, `device_id`, `sequence`, `sent_at`,
   `type`, and `payload`;
@@ -283,21 +283,28 @@ BN-01, but the message contract is stable:
   `payload`;
 - sequence gaps, duplicates, and stale sessions are audit events.
 
-Required initial client message types:
+BN-03 client message types:
 
 - `heartbeat`
+
+Reserved client message types for BN-04 and later:
+
 - `telemetry_batch`
 - `challenge_ack`
 - `challenge_started`
 - `challenge_submitted`
-- `session_resume`
 
-Required server message types:
+BN-03 server message types:
+
+- `session_ready`
+- `session_revoked`
+- `heartbeat_ack`
+- `error`
+
+Reserved server message types for BN-04 and later:
 
 - `challenge_issued`
-- `session_revoked`
 - `policy_update`
-- `heartbeat_ack`
 
 ### `POST /v1/sessions/{session_id}/heartbeats`
 

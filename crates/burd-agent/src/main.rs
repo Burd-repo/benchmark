@@ -1,5 +1,6 @@
 mod cli;
 mod remote_enrollment;
+mod remote_session;
 
 use anyhow::Result;
 use burd_bench::{
@@ -31,7 +32,7 @@ use burd_protocol::{
 use clap::Parser;
 use cli::{
     ApiTokenCommands, BenchCommands, ChallengeCommands, Cli, Commands, EnrollmentCommands,
-    HistoryCommands, IdentityCommands, UptimeCommands,
+    HistoryCommands, IdentityCommands, RemoteSessionCommands, UptimeCommands,
 };
 use serde::Deserialize;
 use std::path::Path;
@@ -342,6 +343,18 @@ fn run() -> Result<()> {
                     vec![format!("device_id: {}", result.device_id)],
                 );
                 print_json(&result)?;
+            }
+        },
+        Commands::RemoteSession { command } => match command {
+            RemoteSessionCommands::Connect {
+                max_reconnect_delay_seconds,
+            } => {
+                let result = remote_session::connect(AGENT_VERSION, max_reconnect_delay_seconds)
+                    .map_err(anyhow::Error::msg)?;
+                print_json(&result)?;
+            }
+            RemoteSessionCommands::Status { json: _ } => {
+                print_json(&remote_session::status().map_err(anyhow::Error::msg)?)?;
             }
         },
         Commands::Challenge { command } => match command {
