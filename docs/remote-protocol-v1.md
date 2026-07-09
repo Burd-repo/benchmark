@@ -316,40 +316,58 @@ same sequence and server-time rules as the control channel.
 
 ## Evidence API
 
-### `POST /v1/evidence-records`
+### `POST /v1/sessions/{session_id}/evidence-records`
 
-Submits signed evidence for backend verification and storage.
+Submits signed evidence for backend verification and registry storage. The
+request uses the authenticated remote-session headers:
 
-Request fields:
+- `Authorization: Bearer <device credential>`;
+- `X-Burd-Session-Token`;
+- `X-Burd-Device-Id`.
 
-- `provider_id`
-- `device_id`
-- `session_id`
-- `evidence_type`
-- `canonicalization_version`
-- `hash`
-- `signed_envelope`
-- `signature`
-- `public_key_id`
-- `hardware_fingerprint`
-- `agent_claimed_issued_at`
+Initial BN-05 request fields:
+
+- `evidence_type`, defaulting to `signed_report`;
+- `session_id`, optional duplicate binding to the path session;
+- `subject_id`, optional future challenge/capability/benchmark subject;
+- `metadata`, optional non-secret JSON;
+- `signed_report`, the complete `SignedReport` envelope.
 
 Backend behavior:
 
-- recalculates canonical hash when possible;
-- verifies signature with the active public key;
-- stores full envelope in object storage;
+- authenticates the device credential and session resume token;
+- requires a nonterminal remote session;
+- recalculates the canonical report hash;
+- recalculates the canonical evidence envelope hash;
+- verifies Ed25519 with the active backend device key;
+- binds provider, device, machine ID, session, active key, and hardware
+  fingerprint;
+- stores the complete signed envelope in object storage;
 - stores hash, object pointer, status, timestamps, and verification result in
   PostgreSQL;
-- recalculates freshness from server policy and server time;
-- emits audit events for accepted, rejected, expired, duplicate, and revoked
-  evidence.
+- deduplicates by `evidence_hash`;
+- emits audit events for accepted and rejected evidence.
+
+The backend never trusts `is_expired` from the agent. It recalculates evidence
+freshness from `signed_at`, server policy, and server time. Expired but
+otherwise valid evidence can be stored with `status=expired`; invalid hash,
+signature, key binding, provider binding, device binding, or fingerprint is
+rejected.
+
+### `GET /v1/providers/{provider_id}/evidence-records`
+
+Admin endpoint that lists evidence metadata and backend verification state for a
+provider. It does not return full object-storage envelopes by default.
 
 ### `GET /v1/evidence-records/{evidence_id}`
 
-Returns metadata and backend verification state. It does not need to return the
-full object-storage envelope by default.
+Admin endpoint that returns one evidence metadata record and backend
+verification state.
 
+### `POST /v1/evidence-records/{evidence_id}/revoke`
+
+Admin endpoint that marks an evidence record as revoked. Revocation updates
+registry metadata and audit history; it does not delete the stored envelope.
 ## Challenge API
 
 ### `POST /v1/challenges`

@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-04 control plane API for provider identity, remote sessions, signed GPU telemetry ingestion, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-05 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -221,6 +221,48 @@ pub fn document() -> serde_json::Value {
                         "404": { "description": "no telemetry has been accepted" }
                     }
                 }
+            },
+            "/v1/sessions/{session_id}/evidence-records": {
+                "post": {
+                    "summary": "Submit a signed report envelope for backend evidence verification",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "201": { "description": "evidence verified, stored, and indexed" },
+                        "200": { "description": "duplicate evidence hash returned from registry" },
+                        "400": { "description": "invalid hash, canonicalization, fingerprint, metadata, or freshness" },
+                        "401": { "description": "device, session, key, provider binding, or signature invalid" }
+                    }
+                }
+            },
+            "/v1/providers/{provider_id}/evidence-records": {
+                "get": {
+                    "summary": "List remote evidence registry records for a provider",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "evidence metadata list" },
+                        "404": { "description": "provider not found" }
+                    }
+                }
+            },
+            "/v1/evidence-records/{evidence_id}": {
+                "get": {
+                    "summary": "Read one remote evidence registry record",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "evidence metadata and backend verification state" },
+                        "404": { "description": "evidence record not found" }
+                    }
+                }
+            },
+            "/v1/evidence-records/{evidence_id}/revoke": {
+                "post": {
+                    "summary": "Revoke a remote evidence registry record",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "evidence revoked" },
+                        "404": { "description": "evidence record not found" }
+                    }
+                }
             }
         }
     })
@@ -231,7 +273,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn04_identity_session_and_telemetry_endpoints() {
+    fn openapi_lists_bn05_identity_session_telemetry_and_evidence_endpoints() {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
         for path in [
@@ -254,6 +296,10 @@ mod tests {
             "/v1/sessions/{session_id}/revoke",
             "/v1/sessions/{session_id}/telemetry-batches",
             "/v1/sessions/{session_id}/telemetry/latest",
+            "/v1/sessions/{session_id}/evidence-records",
+            "/v1/providers/{provider_id}/evidence-records",
+            "/v1/evidence-records/{evidence_id}",
+            "/v1/evidence-records/{evidence_id}/revoke",
         ] {
             assert!(paths.contains_key(path), "missing OpenAPI path {path}");
         }

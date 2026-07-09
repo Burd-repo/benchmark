@@ -400,7 +400,7 @@ mod tests {
 
         assert_eq!(
             db.migration_versions().await.unwrap(),
-            vec!["0001", "0002", "0003", "0004"]
+            vec!["0001", "0002", "0003", "0004", "0005"]
         );
 
         let command = CreateProviderCommand {

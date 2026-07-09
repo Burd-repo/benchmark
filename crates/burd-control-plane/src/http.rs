@@ -10,16 +10,16 @@ use crate::remote_session::{
 };
 use crate::telemetry::TelemetryPolicy;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_protocol::{
-    ClientControlMessage, EnrollmentProofRequest, KeyRotationProofRequest, ServerControlMessage,
-    StartEnrollmentRequest, StartKeyRotationRequest, StartRemoteSessionRequest, hash_canonical,
-    sha256_hex,
+    ClientControlMessage, EnrollmentProofRequest, KeyRotationProofRequest, RevokeEvidenceRequest,
+    ServerControlMessage, StartEnrollmentRequest, StartKeyRotationRequest,
+    StartRemoteSessionRequest, SubmitEvidenceRequest, hash_canonical, sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -70,6 +70,12 @@ pub struct CreateProviderRequest {
     pub user_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct EvidenceListQuery {
+    #[serde(default)]
+    limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,6 +139,22 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/sessions/{session_id}/telemetry/latest",
             get(latest_gpu_telemetry),
+        )
+        .route(
+            "/v1/sessions/{session_id}/evidence-records",
+            post(submit_evidence_record),
+        )
+        .route(
+            "/v1/providers/{provider_id}/evidence-records",
+            get(list_provider_evidence_records),
+        )
+        .route(
+            "/v1/evidence-records/{evidence_id}",
+            get(get_evidence_record),
+        )
+        .route(
+            "/v1/evidence-records/{evidence_id}/revoke",
+            post(revoke_evidence_record),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -499,6 +521,88 @@ async fn latest_gpu_telemetry(
         .map_err(|error| session_api_error(error, request_id))
 }
 
+async fn submit_evidence_record(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<SubmitEvidenceRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    let response = state
+        .db
+        .submit_evidence_record(
+            &request_id,
+            &authorized,
+            &session_id,
+            &payload,
+            &state.config.object_storage_dir,
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    let status = if response.duplicate {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(response)).into_response())
+}
+
+async fn list_provider_evidence_records(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    Query(query): Query<EvidenceListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListEvidenceResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_evidence_records(&request_id, &provider_id, query.limit.unwrap_or(50))
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn get_evidence_record(
+    State(state): State<Arc<AppState>>,
+    Path(evidence_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::EvidenceRecord>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let evidence = state
+        .db
+        .get_evidence_record(&evidence_id)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "evidence record not found",
+                request_id.clone(),
+            )
+        })?;
+    Ok(Json(evidence))
+}
+
+async fn revoke_evidence_record(
+    State(state): State<Arc<AppState>>,
+    Path(evidence_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<RevokeEvidenceRequest>,
+) -> Result<Json<burd_protocol::RevokeEvidenceResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .revoke_evidence_record(&evidence_id, &request_id, &payload.reason)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
 fn telemetry_policy(config: &ControlPlaneConfig) -> TelemetryPolicy {
     TelemetryPolicy {
         max_samples_per_batch: config.telemetry_max_samples_per_batch,
@@ -1063,6 +1167,7 @@ mod tests {
             port: 0,
             database_url: database_url.to_string(),
             database_schema: None,
+            object_storage_dir: "target/test-control-objects".to_string(),
             rate_limit_per_minute: 120,
             admin_token_hash: sha256_hex(b"test-admin"),
             enrollment_token_ttl_seconds: 600,
@@ -1136,13 +1241,14 @@ mod tests {
                 "0001".to_string(),
                 "0002".to_string(),
                 "0003".to_string(),
-                "0004".to_string()
+                "0004".to_string(),
+                "0005".to_string()
             ],
-            &["0001", "0002", "0003", "0004"]
+            &["0001", "0002", "0003", "0004", "0005"]
         ));
         assert!(!migrations_are_current(
             &["0001".to_string()],
-            &["0001", "0002", "0003", "0004"]
+            &["0001", "0002", "0003", "0004", "0005"]
         ));
         assert!(!migrations_are_current(
             &[
@@ -1150,7 +1256,7 @@ mod tests {
                 "0002".to_string(),
                 "unexpected".to_string()
             ],
-            &["0001", "0002", "0003", "0004"]
+            &["0001", "0002", "0003", "0004", "0005"]
         ));
     }
 
