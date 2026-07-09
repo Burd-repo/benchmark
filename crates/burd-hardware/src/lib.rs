@@ -3,6 +3,10 @@ use llmfit_core::hardware::{GpuBackend, SystemSpecs};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::process::Command;
+pub mod telemetry;
+pub use telemetry::{
+    NVIDIA_SMI_COLLECTOR_VERSION, NvidiaTelemetryCollection, collect_nvidia_telemetry,
+};
 
 pub const BENCHMARK_VERSION: &str = "2026.06-mvp";
 pub const HARDWARE_FINGERPRINT_VERSION: &str = "burd-hardware-fingerprint-v1";

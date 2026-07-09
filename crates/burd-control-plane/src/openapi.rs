@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-03 control plane API for provider identity, remote sessions, outbound WebSocket control channels, sequenced heartbeats, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-04 control plane API for provider identity, remote sessions, signed GPU telemetry ingestion, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -199,6 +199,28 @@ pub fn document() -> serde_json::Value {
                     "security": [{ "adminBearer": [] }],
                     "responses": { "200": { "description": "session revoked" } }
                 }
+            },
+            "/v1/sessions/{session_id}/telemetry-batches": {
+                "post": {
+                    "summary": "Ingest a signed, sequenced GPU telemetry batch",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "200": { "description": "telemetry batch verified and persisted" },
+                        "400": { "description": "invalid metrics, hash, schema, or timestamps" },
+                        "401": { "description": "device, session, key, or signature invalid" },
+                        "409": { "description": "sequence, fingerprint, or frequency conflict" }
+                    }
+                }
+            },
+            "/v1/sessions/{session_id}/telemetry/latest": {
+                "get": {
+                    "summary": "Read the latest server-verified GPU telemetry batch",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "200": { "description": "latest verified telemetry samples" },
+                        "404": { "description": "no telemetry has been accepted" }
+                    }
+                }
             }
         }
     })
@@ -209,7 +231,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn03_identity_and_session_endpoints() {
+    fn openapi_lists_bn04_identity_session_and_telemetry_endpoints() {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
         for path in [
@@ -230,6 +252,8 @@ mod tests {
             "/v1/sessions/{session_id}/control",
             "/v1/sessions/{session_id}/heartbeats",
             "/v1/sessions/{session_id}/revoke",
+            "/v1/sessions/{session_id}/telemetry-batches",
+            "/v1/sessions/{session_id}/telemetry/latest",
         ] {
             assert!(paths.contains_key(path), "missing OpenAPI path {path}");
         }

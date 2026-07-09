@@ -36,6 +36,23 @@ async fn run() -> Result<(), String> {
             }
         }
     });
+    let retention_db = state.db.clone();
+    let telemetry_retention_days = config.telemetry_retention_days;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+        loop {
+            interval.tick().await;
+            if let Err(error) = retention_db
+                .purge_expired_gpu_telemetry(telemetry_retention_days)
+                .await
+            {
+                log_json(
+                    "telemetry_retention_error",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
+    });
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|error| format!("failed to bind {addr}: {error}"))?;

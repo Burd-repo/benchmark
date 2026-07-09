@@ -6,6 +6,7 @@ pub mod remote_session;
 pub mod report;
 pub mod session;
 pub mod signature;
+pub mod telemetry;
 
 pub use challenge::{
     Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, ChallengeVerification,
@@ -41,6 +42,7 @@ pub use remote_session::{
     RemoteSessionStateStatus, RemoteSessionStatus, ServerControlMessage, StartRemoteSessionRequest,
     StartRemoteSessionResponse, clear_remote_session, load_remote_session, new_resume_token,
     remote_session_path, save_remote_session, show_remote_session, update_remote_session_sequence,
+    update_remote_telemetry_sequence,
 };
 pub use report::{FullReport, ReportSignature, SignedReport, VerifyReportResult};
 pub use session::{
@@ -53,4 +55,10 @@ pub use signature::{
     KEY_ALGORITHM, KeyMaterial, canonical_json, canonical_json_value, generate_keypair,
     hash_canonical, placeholder_signature, random_token, sha256_hex, sign_message,
     validate_public_key, verify_message,
+};
+pub use telemetry::{
+    GpuProcessTelemetry, GpuTelemetrySample, LatestTelemetryResponse, SignedTelemetryBatch,
+    TELEMETRY_CANONICALIZATION_VERSION, TELEMETRY_SCHEMA_VERSION, TELEMETRY_SIGNATURE_DOMAIN,
+    TelemetryBatchPayload, TelemetryBatchReceipt, telemetry_batch_hash,
+    telemetry_batch_signature_message,
 };
