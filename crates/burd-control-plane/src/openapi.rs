@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-02 control plane API for provider registry, Ed25519 enrollment, device credentials, key rotation, revocation, health, readiness, idempotency, and audit-backed persistence."
+            "description": "BN-03 control plane API for provider identity, remote sessions, outbound WebSocket control channels, sequenced heartbeats, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -154,6 +154,51 @@ pub fn document() -> serde_json::Value {
                         "404": { "description": "device not found" }
                     }
                 }
+            },
+            "/v1/sessions": {
+                "post": {
+                    "summary": "Start or resume a remote provider session",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "201": { "description": "session authorized; resume token returned" },
+                        "401": { "description": "device credential invalid" },
+                        "409": { "description": "duplicate active session or invalid resume" }
+                    }
+                }
+            },
+            "/v1/sessions/{session_id}": {
+                "get": {
+                    "summary": "Read backend-authoritative remote session state",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": { "200": { "description": "session state" } }
+                }
+            },
+            "/v1/sessions/{session_id}/control": {
+                "get": {
+                    "summary": "Upgrade to the authenticated outbound WebSocket control channel",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "101": { "description": "WebSocket control channel established" },
+                        "409": { "description": "duplicate control channel" }
+                    }
+                }
+            },
+            "/v1/sessions/{session_id}/heartbeats": {
+                "post": {
+                    "summary": "Submit a sequenced heartbeat over HTTP fallback",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "200": { "description": "heartbeat observed by server" },
+                        "409": { "description": "duplicate or stale sequence" }
+                    }
+                }
+            },
+            "/v1/sessions/{session_id}/revoke": {
+                "post": {
+                    "summary": "Revoke a remote session and signal its active channel",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "200": { "description": "session revoked" } }
+                }
             }
         }
     })
@@ -164,7 +209,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn02_enrollment_endpoints() {
+    fn openapi_lists_bn03_identity_and_session_endpoints() {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
         for path in [
@@ -180,6 +225,11 @@ mod tests {
             "/v1/devices/{device_id}/key-rotations",
             "/v1/devices/{device_id}/key-rotations/{rotation_id}/proof",
             "/v1/devices/{device_id}/revoke",
+            "/v1/sessions",
+            "/v1/sessions/{session_id}",
+            "/v1/sessions/{session_id}/control",
+            "/v1/sessions/{session_id}/heartbeats",
+            "/v1/sessions/{session_id}/revoke",
         ] {
             assert!(paths.contains_key(path), "missing OpenAPI path {path}");
         }

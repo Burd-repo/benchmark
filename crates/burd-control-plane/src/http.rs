@@ -4,6 +4,11 @@ use crate::enrollment::EnrollmentError;
 use crate::error::{ApiError, ErrorCode};
 use crate::openapi;
 use crate::rate_limit::RateLimiter;
+use crate::remote_session::{
+    AuthorizedSession, ControlChannelLease, ControlChannelRegistry, RemoteSessionPolicy,
+    SessionError,
+};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
@@ -11,8 +16,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_protocol::{
-    EnrollmentProofRequest, KeyRotationProofRequest, StartEnrollmentRequest,
-    StartKeyRotationRequest, hash_canonical, sha256_hex,
+    ClientControlMessage, EnrollmentProofRequest, KeyRotationProofRequest, ServerControlMessage,
+    StartEnrollmentRequest, StartKeyRotationRequest, StartRemoteSessionRequest, hash_canonical,
+    sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -23,6 +29,7 @@ pub struct AppState {
     pub config: ControlPlaneConfig,
     pub db: Database,
     pub rate_limiter: RateLimiter,
+    pub control_channels: ControlChannelRegistry,
 }
 
 impl AppState {
@@ -32,6 +39,7 @@ impl AppState {
             config,
             db,
             rate_limiter,
+            control_channels: ControlChannelRegistry::default(),
         }
     }
 }
@@ -103,6 +111,20 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(complete_key_rotation),
         )
         .route("/v1/devices/{device_id}/revoke", post(revoke_device))
+        .route("/v1/sessions", post(start_remote_session))
+        .route("/v1/sessions/{session_id}", get(get_remote_session))
+        .route(
+            "/v1/sessions/{session_id}/heartbeats",
+            post(record_remote_heartbeat),
+        )
+        .route(
+            "/v1/sessions/{session_id}/control",
+            get(upgrade_control_channel),
+        )
+        .route(
+            "/v1/sessions/{session_id}/revoke",
+            post(revoke_remote_session),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_middleware,
@@ -367,6 +389,314 @@ async fn revoke_device(
     Ok(Json(response))
 }
 
+async fn start_remote_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<StartRemoteSessionRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let credential = required_bearer_token(&headers, &request_id)?;
+    let response = state
+        .db
+        .start_remote_session(
+            &request_id,
+            &credential,
+            &payload,
+            RemoteSessionPolicy {
+                ttl_seconds: state.config.remote_session_ttl_seconds,
+                heartbeat_interval_seconds: state.config.heartbeat_interval_seconds,
+                missed_heartbeat_limit: state.config.missed_heartbeat_limit,
+            },
+            control_channel_url(&headers),
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn get_remote_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::RemoteSessionRecord>, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, true).await?;
+    state
+        .db
+        .get_remote_session(&session_id, &authorized, &request_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn record_remote_heartbeat(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Json(message): Json<ClientControlMessage>,
+) -> Result<Json<burd_protocol::HeartbeatReceipt>, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    state
+        .db
+        .record_remote_heartbeat(
+            &request_id,
+            &authorized,
+            &message,
+            state.config.remote_session_ttl_seconds,
+        )
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn upgrade_control_channel(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    let lease = state
+        .control_channels
+        .register(&session_id)
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok(ws
+        .on_upgrade(move |socket| {
+            handle_control_channel(state, socket, authorized, lease, request_id)
+        })
+        .into_response())
+}
+
+async fn revoke_remote_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::RemoteSessionRevocationResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .revoke_remote_session(&session_id, &request_id)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    state
+        .control_channels
+        .revoke(&session_id, "revoked_by_admin");
+    Ok(Json(response))
+}
+
+async fn authorize_session_headers(
+    state: &AppState,
+    headers: &HeaderMap,
+    session_id: &str,
+    request_id: &str,
+    allow_terminal: bool,
+) -> Result<AuthorizedSession, ApiError> {
+    let credential = required_bearer_token(headers, request_id)?;
+    let resume_token = required_header(headers, "x-burd-session-token", request_id)?;
+    let device_id = required_header(headers, "x-burd-device-id", request_id)?;
+    state
+        .db
+        .authorize_remote_session(
+            session_id,
+            &device_id,
+            &credential,
+            &resume_token,
+            allow_terminal,
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.to_string()))
+}
+
+async fn handle_control_channel(
+    state: Arc<AppState>,
+    mut socket: WebSocket,
+    authorized: AuthorizedSession,
+    mut lease: ControlChannelLease,
+    request_id: String,
+) {
+    let session_id = authorized.session_id.clone();
+    if let Err(error) = state
+        .db
+        .mark_remote_session_connected(&session_id, &lease.connection_id)
+        .await
+    {
+        let _ = send_control_error(&mut socket, &request_id, &session_id, error.to_string()).await;
+        state
+            .control_channels
+            .release(&session_id, &lease.connection_id);
+        return;
+    }
+
+    let ready = ServerControlMessage {
+        request_id: request_id.clone(),
+        session_id: session_id.clone(),
+        sequence_ack: authorized.sequence_last,
+        server_time: chrono::Utc::now().to_rfc3339(),
+        message_type: "session_ready".to_string(),
+        payload: serde_json::json!({
+            "heartbeat_interval_seconds": authorized.heartbeat_interval_seconds,
+            "missed_heartbeat_limit": authorized.missed_heartbeat_limit,
+        }),
+    };
+    if send_server_message(&mut socket, &ready).await.is_err() {
+        finish_control_channel(&state, &session_id, &lease.connection_id, "send_failed").await;
+        return;
+    }
+
+    let timeout_seconds = u64::from(authorized.heartbeat_interval_seconds)
+        * u64::from(authorized.missed_heartbeat_limit);
+    let heartbeat_timeout = std::time::Duration::from_secs(timeout_seconds.max(1));
+    let mut heartbeat_deadline = tokio::time::Instant::now() + heartbeat_timeout;
+    let disconnect_reason = loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(heartbeat_deadline) => {
+                break "missed_heartbeat_limit".to_string();
+            }
+            changed = lease.revocation.changed() => {
+                let reason = if changed.is_ok() {
+                    lease.revocation.borrow().clone().unwrap_or_else(|| "revoked".to_string())
+                } else {
+                    "revoked".to_string()
+                };
+                let message = ServerControlMessage {
+                    request_id: new_request_id(),
+                    session_id: session_id.clone(),
+                    sequence_ack: authorized.sequence_last,
+                    server_time: chrono::Utc::now().to_rfc3339(),
+                    message_type: "session_revoked".to_string(),
+                    payload: serde_json::json!({ "reason": reason }),
+                };
+                let _ = send_server_message(&mut socket, &message).await;
+                break "revoked".to_string();
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    None => break "client_closed".to_string(),
+                    Some(Err(_)) => break "socket_error".to_string(),
+                    Some(Ok(Message::Close(_))) => break "client_closed".to_string(),
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break "socket_error".to_string();
+                        }
+                    }
+                    Some(Ok(Message::Pong(_))) => {}
+                    Some(Ok(Message::Binary(_))) => {
+                        let _ = send_control_error(
+                            &mut socket,
+                            &new_request_id(),
+                            &session_id,
+                            "binary control messages are not supported".to_string(),
+                        ).await;
+                        break "invalid_message".to_string();
+                    }
+                    Some(Ok(Message::Text(text))) => {
+                        let message = match serde_json::from_str::<ClientControlMessage>(&text) {
+                            Ok(message) => message,
+                            Err(error) => {
+                                let _ = send_control_error(
+                                    &mut socket,
+                                    &new_request_id(),
+                                    &session_id,
+                                    format!("invalid control message: {error}"),
+                                ).await;
+                                break "invalid_message".to_string();
+                            }
+                        };
+                        let heartbeat_request_id = new_request_id();
+                        match state.db.record_remote_heartbeat(
+                            &heartbeat_request_id,
+                            &authorized,
+                            &message,
+                            state.config.remote_session_ttl_seconds,
+                        ).await {
+                            Ok(receipt) => {
+                                let response = ServerControlMessage {
+                                    request_id: heartbeat_request_id,
+                                    session_id: session_id.clone(),
+                                    sequence_ack: receipt.sequence_ack,
+                                    server_time: receipt.server_time.clone(),
+                                    message_type: "heartbeat_ack".to_string(),
+                                    payload: serde_json::to_value(receipt).unwrap_or_default(),
+                                };
+                                if send_server_message(&mut socket, &response).await.is_err() {
+                                    break "send_failed".to_string();
+                                }                                heartbeat_deadline =
+                                    tokio::time::Instant::now() + heartbeat_timeout;
+
+                            }
+                            Err(error) => {
+                                let _ = send_control_error(
+                                    &mut socket,
+                                    &heartbeat_request_id,
+                                    &session_id,
+                                    error.to_string(),
+                                ).await;
+                                break "heartbeat_rejected".to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    finish_control_channel(
+        &state,
+        &session_id,
+        &lease.connection_id,
+        &disconnect_reason,
+    )
+    .await;
+}
+
+async fn finish_control_channel(
+    state: &AppState,
+    session_id: &str,
+    connection_id: &str,
+    reason: &str,
+) {
+    let _ = state
+        .db
+        .mark_remote_session_disconnected(session_id, connection_id, reason)
+        .await;
+    state.control_channels.release(session_id, connection_id);
+}
+
+async fn send_server_message(
+    socket: &mut WebSocket,
+    message: &ServerControlMessage,
+) -> Result<(), String> {
+    let text = serde_json::to_string(message).map_err(|error| error.to_string())?;
+    socket
+        .send(Message::Text(text.into()))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn send_control_error(
+    socket: &mut WebSocket,
+    request_id: &str,
+    session_id: &str,
+    error: String,
+) -> Result<(), String> {
+    send_server_message(
+        socket,
+        &ServerControlMessage {
+            request_id: request_id.to_string(),
+            session_id: session_id.to_string(),
+            sequence_ack: 0,
+            server_time: chrono::Utc::now().to_rfc3339(),
+            message_type: "error".to_string(),
+            payload: serde_json::json!({ "message": error }),
+        },
+    )
+    .await
+}
 async fn rate_limit_middleware(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -424,6 +754,43 @@ fn required_bearer_token(headers: &HeaderMap, request_id: &str) -> Result<String
         })
 }
 
+fn required_header(
+    headers: &HeaderMap,
+    name: &'static str,
+    request_id: &str,
+) -> Result<String, ApiError> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                ErrorCode::Unauthorized,
+                format!("{name} header is required"),
+                request_id,
+            )
+        })
+}
+
+fn control_channel_url(headers: &HeaderMap) -> String {
+    let host = headers
+        .get("host")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("127.0.0.1:8080");
+    let forwarded = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("http");
+    let scheme = if forwarded.eq_ignore_ascii_case("https") {
+        "wss"
+    } else {
+        "ws"
+    };
+    format!("{scheme}://{host}/v1/sessions/{{session_id}}/control")
+}
 fn authorize_admin(
     headers: &HeaderMap,
     config: &ControlPlaneConfig,
@@ -497,6 +864,47 @@ fn enrollment_api_error(error: EnrollmentError, request_id: String) -> ApiError 
     }
 }
 
+fn session_api_error(error: SessionError, request_id: String) -> ApiError {
+    match error {
+        SessionError::Database(error) => ApiError::database(error, request_id),
+        SessionError::NotFound(message) => ApiError::new(
+            StatusCode::NOT_FOUND,
+            ErrorCode::NotFound,
+            message,
+            request_id,
+        ),
+        SessionError::Invalid(message) => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            ErrorCode::InvalidRequest,
+            message,
+            request_id,
+        ),
+        SessionError::Unauthorized => ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::Unauthorized,
+            "device or session credential is invalid",
+            request_id,
+        ),
+        SessionError::Expired => ApiError::new(
+            StatusCode::GONE,
+            ErrorCode::Expired,
+            "remote session has expired",
+            request_id,
+        ),
+        SessionError::Revoked => ApiError::new(
+            StatusCode::FORBIDDEN,
+            ErrorCode::Revoked,
+            "remote session or device has been revoked",
+            request_id,
+        ),
+        SessionError::Conflict(message) => ApiError::new(
+            StatusCode::CONFLICT,
+            ErrorCode::Conflict,
+            message,
+            request_id,
+        ),
+    }
+}
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -540,6 +948,9 @@ mod tests {
             enrollment_token_ttl_seconds: 600,
             enrollment_proof_ttl_seconds: 300,
             device_credential_ttl_seconds: 900,
+            remote_session_ttl_seconds: 900,
+            heartbeat_interval_seconds: 15,
+            missed_heartbeat_limit: 3,
         }
     }
 
@@ -597,12 +1008,12 @@ mod tests {
     #[test]
     fn readiness_requires_every_expected_migration() {
         assert!(migrations_are_current(
-            &["0001".to_string(), "0002".to_string()],
-            &["0001", "0002"]
+            &["0001".to_string(), "0002".to_string(), "0003".to_string()],
+            &["0001", "0002", "0003"]
         ));
         assert!(!migrations_are_current(
             &["0001".to_string()],
-            &["0001", "0002"]
+            &["0001", "0002", "0003"]
         ));
         assert!(!migrations_are_current(
             &[
@@ -610,7 +1021,7 @@ mod tests {
                 "0002".to_string(),
                 "unexpected".to_string()
             ],
-            &["0001", "0002"]
+            &["0001", "0002", "0003"]
         ));
     }
 

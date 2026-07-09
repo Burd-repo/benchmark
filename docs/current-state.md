@@ -296,3 +296,22 @@ starting the API server or depending on host state:
 - BN-02 does not implement the remote session/control channel, heartbeat,
   telemetry, Proof of Capability, trust policy, jobs, scheduler, marketplace,
   billing, Pix, or payouts.
+## BN-03 - Remote Session And Control Channel
+
+- The control plane creates or resumes one nonterminal remote session per
+  enrolled device and stores only a hash of the resume token.
+- The agent opens an authenticated outbound WebSocket, so providers do not need
+  to expose an inbound public port.
+- Heartbeats are monotonic, server-timestamped, persisted, and bound to the
+  enrollment hardware fingerprint.
+- The backend derives `online`, `offline`, `degraded`, `expired`, and `revoked`;
+  a periodic server task expires stale sessions independently of requests.
+- Duplicate sockets and replayed sequences are rejected. Sequence gaps or
+  fingerprint mismatch degrade the session.
+- `burd-agent remote-session connect` maintains the connection with credential
+  refresh and reconnect backoff. `remote-session status` reads backend state.
+- PostgreSQL integration coverage exercises start, duplicate rejection,
+  heartbeat, degradation, resume, and revocation.
+- BN-03 does not implement GPU telemetry, backend-issued challenges, Proof of
+  Capability, trust policy, jobs, scheduler, marketplace, billing, Pix, or
+  payouts.

@@ -192,6 +192,16 @@ burd-agent enrollment refresh-credential --json
 
 O fluxo remoto prova posse da chave Ed25519 sem transmitir a chave privada. Veja
 [`docs/bn-02-provider-enrollment.md`](docs/bn-02-provider-enrollment.md).
+### Sessao remota
+
+```powershell
+burd-agent remote-session connect
+burd-agent remote-session status --json
+```
+
+O agente mantem uma conexao WebSocket de saida autenticada, com heartbeat
+sequenciado, retomada e backoff. Veja
+[`docs/bn-03-remote-session.md`](docs/bn-03-remote-session.md).
 
 ### Token local da API
 
