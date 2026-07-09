@@ -820,7 +820,7 @@ async fn authenticate_device(
     let credential_hash = sha256_hex(credential.as_bytes());
     let row = transaction
         .query_opt(
-            "SELECT c.provider_id, c.device_id, c.status AS credential_status, c.expires_at, d.status AS device_status, k.public_key_id FROM device_credentials c JOIN devices d ON d.device_id = c.device_id JOIN provider_public_keys k ON k.device_id = d.device_id AND k.status = 'active' WHERE c.device_id = $1 AND c.credential_hash = $2 FOR UPDATE OF c, d",
+            "SELECT c.provider_id, c.device_id, c.status AS credential_status, c.expires_at, d.status AS device_status, k.public_key_id FROM device_credentials c JOIN devices d ON d.device_id = c.device_id LEFT JOIN provider_public_keys k ON k.device_id = d.device_id AND k.status = 'active' WHERE c.device_id = $1 AND c.credential_hash = $2 FOR UPDATE OF c, d",
             &[&device_id, &credential_hash],
         )
         .await?
@@ -828,9 +828,11 @@ async fn authenticate_device(
     let credential_status: String = row.get("credential_status");
     let device_status: String = row.get("device_status");
     let expires_at: String = row.get("expires_at");
+    let public_key_id: Option<String> = row.get("public_key_id");
     if credential_status != "active" || device_status != "active" {
         return Err(EnrollmentError::Revoked);
     }
+    let public_key_id = public_key_id.ok_or(EnrollmentError::Revoked)?;
     if is_expired(&expires_at)? {
         transaction
             .execute(
@@ -849,7 +851,7 @@ async fn authenticate_device(
     Ok(DeviceAuth {
         provider_id: row.get("provider_id"),
         device_id: row.get("device_id"),
-        public_key_id: row.get("public_key_id"),
+        public_key_id,
     })
 }
 
