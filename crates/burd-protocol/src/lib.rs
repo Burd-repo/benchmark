@@ -2,6 +2,7 @@ pub mod challenge;
 pub mod enrollment;
 pub mod evidence;
 pub mod identity;
+pub mod network_probe;
 pub mod remote_session;
 pub mod report;
 pub mod session;
@@ -45,6 +46,12 @@ pub use identity::{
     default_config_path, default_state_dir, init_identity, load_identity, load_private_key,
     migrate_identity, redacted_config_value, rotate_api_token, rotate_identity_key,
     show_api_token_status, show_identity, verify_api_token,
+};
+pub use network_probe::{
+    ListNetworkProbeObservationsResponse, ListProviderNetworkStatesResponse,
+    NETWORK_PROBE_SCHEMA_VERSION, NetworkProbeObservationRecord, ProviderNetworkState,
+    RegionalReachability, SubmitNetworkProbeObservationRequest,
+    SubmitNetworkProbeObservationResponse,
 };
 pub use remote_session::{
     ClientControlMessage, HeartbeatPayload, HeartbeatReceipt, RemoteSessionRecord,

@@ -500,6 +500,60 @@ Rows include status, policy version, reason, risk score, success/failure counts,
 
 BN-07 does not publish final trust ranking. It only persists the recurring verification state that later trust, policy, scheduler, and marketplace code can consume.
 
+## Network Probe API
+
+BN-08 records trusted regional observations for a provider device's existing
+remote session. The provider does not submit `remote_network_score` or final
+reachability. Probes observe the authenticated outbound control path and future
+data-plane paths without requiring an inbound public port on the provider.
+
+### `POST /v1/network-probes/observations`
+
+Admin/probe endpoint that stores one trusted observation and recalculates the
+provider-device network state.
+
+Request fields:
+
+- `provider_id`
+- `device_id`
+- `session_id`
+- `probe_id`
+- `probe_region`
+- `observed_at`
+- `sample_count`
+- optional `control_rtt_ms`, `jitter_ms`, and `packet_loss_percent`
+- optional `reconnect_count`
+- optional `upload_mbps`, `download_mbps`, and `artifact_throughput_mbps`
+- optional `stability_score`
+- optional `approximate_region`
+- optional `path_consistency`
+- optional redacted `metadata`
+
+Backend behavior:
+
+- requires the provider, device, and remote session binding to match;
+- rejects blocked/quarantined providers and inactive devices;
+- accepts observations for `online`, `degraded`, or `offline` sessions;
+- validates metric ranges, timestamp shape, and redacted metadata;
+- deduplicates by `(session_id, probe_id, observed_at)`;
+- calculates `remote_network_score`, regional reachability, and effective score
+  server-side;
+- emits an audit event for newly accepted observations.
+
+### `GET /v1/providers/{provider_id}/network-probes`
+
+Admin endpoint that lists recent trusted network probe observations for a
+provider.
+
+### `GET /v1/providers/{provider_id}/network-state`
+
+Admin endpoint that returns backend-calculated network state rows for provider
+devices. Rows include nullable `local_network_score`, `remote_network_score`,
+`regional_reachability`, `effective_network_score`, sample count, last observed
+time, and update time.
+
+BN-08 does not deploy the production regional probe fleet or consume these
+scores in scheduler, marketplace, billing, or global trust ranking.
 ## Telemetry API
 
 Telemetry is normally sent through the control channel as `telemetry_batch`.

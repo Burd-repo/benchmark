@@ -22,8 +22,8 @@ use burd_protocol::{
     ClientControlMessage, EnrollmentProofRequest, IssueProofChallengeRequest,
     KeyRotationProofRequest, RevokeEvidenceRequest, RunVerificationSweepRequest,
     ServerControlMessage, SignedProofCapabilityResponse, StartEnrollmentRequest,
-    StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest, hash_canonical,
-    sha256_hex,
+    StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
+    SubmitNetworkProbeObservationRequest, hash_canonical, sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -78,6 +78,12 @@ pub struct CreateProviderRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 struct EvidenceListQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct NetworkProbeListQuery {
     #[serde(default)]
     limit: Option<u32>,
 }
@@ -159,6 +165,18 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/evidence-records/{evidence_id}/revoke",
             post(revoke_evidence_record),
+        )
+        .route(
+            "/v1/network-probes/observations",
+            post(submit_network_probe_observation),
+        )
+        .route(
+            "/v1/providers/{provider_id}/network-probes",
+            get(list_network_probe_observations),
+        )
+        .route(
+            "/v1/providers/{provider_id}/network-state",
+            get(list_provider_network_states),
         )
         .route("/v1/verification/sweep", post(run_verification_sweep))
         .route(
@@ -618,6 +636,57 @@ async fn revoke_evidence_record(
     state
         .db
         .revoke_evidence_record(&evidence_id, &request_id, &payload.reason)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn submit_network_probe_observation(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<SubmitNetworkProbeObservationRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .submit_network_probe_observation(&request_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    let status = if response.duplicate {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(response)).into_response())
+}
+
+async fn list_network_probe_observations(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    Query(query): Query<NetworkProbeListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListNetworkProbeObservationsResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_network_probe_observations(&request_id, &provider_id, query.limit.unwrap_or(50))
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_provider_network_states(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListProviderNetworkStatesResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_network_states(&request_id, &provider_id)
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
@@ -1396,13 +1465,18 @@ mod tests {
                 "0004".to_string(),
                 "0005".to_string(),
                 "0006".to_string(),
-                "0007".to_string()
+                "0007".to_string(),
+                "0008".to_string()
             ],
-            &["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
+            &[
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"
+            ]
         ));
         assert!(!migrations_are_current(
             &["0001".to_string()],
-            &["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
+            &[
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"
+            ]
         ));
         assert!(!migrations_are_current(
             &[
@@ -1410,7 +1484,9 @@ mod tests {
                 "0002".to_string(),
                 "unexpected".to_string()
             ],
-            &["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
+            &[
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"
+            ]
         ));
     }
 
