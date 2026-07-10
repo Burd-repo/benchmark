@@ -207,6 +207,9 @@ sequenciado, retomada e backoff. Veja
 [docs/bn-04-gpu-telemetry.md](docs/bn-04-gpu-telemetry.md).
 O BN-05 adiciona registry remoto de evidencias assinadas no control plane; veja
 [`docs/bn-05-remote-evidence-registry.md`](docs/bn-05-remote-evidence-registry.md).
+O BN-06 adiciona protocolo backend-issued de Proof of Capability ativo no
+control plane; veja
+[`docs/bn-06-active-proof-of-capability.md`](docs/bn-06-active-proof-of-capability.md).
 
 ### Token local da API
 
@@ -503,6 +506,7 @@ Documentacao detalhada:
 * [`docs/bn-00-architecture-freeze.md`](docs/bn-00-architecture-freeze.md)
 * [`docs/bn-01-backend-foundation.md`](docs/bn-01-backend-foundation.md)
 * [`docs/bn-05-remote-evidence-registry.md`](docs/bn-05-remote-evidence-registry.md)
+* [`docs/bn-06-active-proof-of-capability.md`](docs/bn-06-active-proof-of-capability.md)
 * [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
 * [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
 * [`docs/threat-model.md`](docs/threat-model.md)

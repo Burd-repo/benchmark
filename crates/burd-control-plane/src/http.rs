@@ -3,6 +3,7 @@ use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, Provider
 use crate::enrollment::EnrollmentError;
 use crate::error::{ApiError, ErrorCode};
 use crate::openapi;
+use crate::proof_challenge::ProofChallengePolicy;
 use crate::rate_limit::RateLimiter;
 use crate::remote_session::{
     AuthorizedSession, ControlChannelLease, ControlChannelRegistry, RemoteSessionPolicy,
@@ -17,8 +18,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_protocol::{
-    ClientControlMessage, EnrollmentProofRequest, KeyRotationProofRequest, RevokeEvidenceRequest,
-    ServerControlMessage, StartEnrollmentRequest, StartKeyRotationRequest,
+    ClientControlMessage, EnrollmentProofRequest, IssueProofChallengeRequest,
+    KeyRotationProofRequest, RevokeEvidenceRequest, ServerControlMessage,
+    SignedProofCapabilityResponse, StartEnrollmentRequest, StartKeyRotationRequest,
     StartRemoteSessionRequest, SubmitEvidenceRequest, hash_canonical, sha256_hex,
 };
 use serde::{Deserialize, Serialize};
@@ -155,6 +157,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/evidence-records/{evidence_id}/revoke",
             post(revoke_evidence_record),
+        )
+        .route("/v1/challenges", post(issue_proof_challenge))
+        .route("/v1/challenges/{challenge_id}", get(get_proof_challenge))
+        .route(
+            "/v1/sessions/{session_id}/challenges/next",
+            get(next_proof_challenge),
+        )
+        .route(
+            "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
+            post(submit_proof_challenge_response),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -603,11 +615,95 @@ async fn revoke_evidence_record(
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
 }
+async fn issue_proof_challenge(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<IssueProofChallengeRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .issue_proof_challenge(&request_id, &payload, proof_challenge_policy(&state.config))
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn get_proof_challenge(
+    State(state): State<Arc<AppState>>,
+    Path(challenge_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ProofChallengeRecord>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let record = state
+        .db
+        .get_proof_challenge(&challenge_id)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "proof challenge not found",
+                request_id.clone(),
+            )
+        })?;
+    Ok(Json(record))
+}
+
+async fn next_proof_challenge(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::NextProofChallengeResponse>, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    state
+        .db
+        .next_proof_challenge(&request_id, &authorized)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn submit_proof_challenge_response(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, challenge_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<SignedProofCapabilityResponse>,
+) -> Result<Json<burd_protocol::SubmitProofChallengeResponse>, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    state
+        .db
+        .submit_proof_challenge_response(
+            &request_id,
+            &authorized,
+            &session_id,
+            &challenge_id,
+            &payload,
+            &state.config.object_storage_dir,
+            proof_challenge_policy(&state.config),
+        )
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
 fn telemetry_policy(config: &ControlPlaneConfig) -> TelemetryPolicy {
     TelemetryPolicy {
         max_samples_per_batch: config.telemetry_max_samples_per_batch,
         min_batch_interval_seconds: config.telemetry_min_batch_interval_seconds,
         clock_skew_seconds: config.telemetry_clock_skew_seconds,
+    }
+}
+fn proof_challenge_policy(config: &ControlPlaneConfig) -> ProofChallengePolicy {
+    ProofChallengePolicy {
+        ttl_seconds: config.proof_challenge_ttl_seconds,
+        clock_skew_seconds: config.proof_challenge_clock_skew_seconds,
     }
 }
 async fn upgrade_control_channel(
@@ -1106,7 +1202,7 @@ fn session_api_error(error: SessionError, request_id: String) -> ApiError {
         SessionError::Expired => ApiError::new(
             StatusCode::GONE,
             ErrorCode::Expired,
-            "remote session has expired",
+            "remote session or proof challenge has expired",
             request_id,
         ),
         SessionError::Revoked => ApiError::new(
@@ -1180,6 +1276,8 @@ mod tests {
             telemetry_min_batch_interval_seconds: 5,
             telemetry_clock_skew_seconds: 300,
             telemetry_retention_days: 7,
+            proof_challenge_ttl_seconds: 600,
+            proof_challenge_clock_skew_seconds: 300,
         }
     }
 
@@ -1242,13 +1340,14 @@ mod tests {
                 "0002".to_string(),
                 "0003".to_string(),
                 "0004".to_string(),
-                "0005".to_string()
+                "0005".to_string(),
+                "0006".to_string()
             ],
-            &["0001", "0002", "0003", "0004", "0005"]
+            &["0001", "0002", "0003", "0004", "0005", "0006"]
         ));
         assert!(!migrations_are_current(
             &["0001".to_string()],
-            &["0001", "0002", "0003", "0004", "0005"]
+            &["0001", "0002", "0003", "0004", "0005", "0006"]
         ));
         assert!(!migrations_are_current(
             &[
@@ -1256,7 +1355,7 @@ mod tests {
                 "0002".to_string(),
                 "unexpected".to_string()
             ],
-            &["0001", "0002", "0003", "0004", "0005"]
+            &["0001", "0002", "0003", "0004", "0005", "0006"]
         ));
     }
 

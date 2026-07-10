@@ -170,7 +170,7 @@ after the June 2026 reliability pass.
 
 ## Still Mocked Or Future
 
-- Backend-issued challenges, remote Proof of Capability, and challenge verification.
+- Agent-side proof workload execution, recurring Proof of Capability scheduling, and trust/antifraud scoring.
 - Burd audit service and production antifraud.
 - Marketplace listings, leases, jobs, orchestration, scheduler, and containers.
 - Real earnings, payouts, billing, Pix, and financial settlement.
@@ -180,7 +180,7 @@ after the June 2026 reliability pass.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
 - Backend-bound availability and scheduler enforcement of workload eligibility.
-- Remote Proof of Capability and backend-attested AI performance verification.
+- Agent-side Proof of Capability execution and backend-attested AI performance history.
 
 ## Known Build Warnings
 
@@ -355,6 +355,32 @@ starting the API server or depending on host state:
   metadata and audit history without deleting the stored envelope.
 - Accepted signed reports also create hardware snapshot rows for later policy,
   trust, and antifraud consumers.
-- BN-05 does not implement backend-issued challenges, active Proof of
-  Capability, recurring verification, trust/antifraud scoring, jobs, scheduler,
-  marketplace, billing, Pix, or payouts.
+- BN-05 does not implement active Proof of Capability, recurring verification,
+  trust/antifraud scoring, jobs, scheduler, marketplace, billing, Pix, or payouts.
+
+## BN-06 - Active Proof Of Capability Protocol
+
+- `burd-protocol` defines backend-issued `ProofCapabilityChallenge` and signed
+  `SignedProofCapabilityResponse` contracts with canonical response hashing and
+  the `burd.proof-capability-response.v1` signature domain.
+- The control plane exposes `POST /v1/challenges` for admin challenge issuance,
+  `GET /v1/challenges/{challenge_id}` for backend state inspection,
+  `GET /v1/sessions/{session_id}/challenges/next` for session-authenticated
+  pickup, and `POST /v1/sessions/{session_id}/challenges/{challenge_id}/response`
+  for signed response submission.
+- Challenge issuance requires an `online` or `degraded` remote session and a
+  `required_fingerprint` matching the backend session fingerprint.
+- PostgreSQL `proof_challenges` stores status, nonce, required GPU/backend/
+  artifact/prompt fields, thresholds, response hash, public key ID, object key,
+  response envelope, and verification JSON.
+- Full signed proof responses are written to filesystem-backed object storage
+  under `proof-challenges/{provider_id}/{challenge_id}/{response_hash}.json`.
+- Backend verification recalculates response hash, verifies Ed25519 against the
+  active backend device key, checks server-side expiry, binds provider/device/
+  session/fingerprint/GPU/backend/artifact/prompt, and evaluates initial CUDA,
+  VRAM, GEMM, LLM metric, contention, and telemetry-window proof fields.
+- Audit events cover challenge issuance, acknowledgement, verification failure,
+  verification success, and expiration-by-server-clock.
+- BN-06 does not implement the agent-side CUDA/VRAM/GEMM/LLM workload runner,
+  recurring or risk-based challenge scheduling, global trust/antifraud scoring,
+  jobs, scheduler, marketplace, billing, Pix, or payouts.

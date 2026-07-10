@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod config;
 pub mod db;
 pub mod enrollment;
@@ -6,6 +8,7 @@ pub mod evidence_registry;
 pub mod http;
 pub mod migrations;
 pub mod openapi;
+pub mod proof_challenge;
 pub mod rate_limit;
 pub mod remote_session;
 pub mod telemetry;

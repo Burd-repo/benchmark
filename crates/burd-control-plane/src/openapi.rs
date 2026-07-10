@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-05 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-06 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -263,6 +263,52 @@ pub fn document() -> serde_json::Value {
                         "404": { "description": "evidence record not found" }
                     }
                 }
+            },
+            "/v1/challenges": {
+                "post": {
+                    "summary": "Issue an active proof-of-capability challenge for an online session",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "201": { "description": "challenge issued with nonce, artifact hash, expiry, and requirements" },
+                        "401": { "description": "admin credential missing or invalid" },
+                        "404": { "description": "provider, device, or session not found" },
+                        "409": { "description": "session is not online/degraded or fingerprint does not match" }
+                    }
+                }
+            },
+            "/v1/challenges/{challenge_id}": {
+                "get": {
+                    "summary": "Read backend challenge state and verification result",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "proof challenge record" },
+                        "404": { "description": "proof challenge not found" }
+                    }
+                }
+            },
+            "/v1/sessions/{session_id}/challenges/next": {
+                "get": {
+                    "summary": "Fetch the next issued proof-of-capability challenge for a device session",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "200": { "description": "challenge acknowledged and returned" },
+                        "404": { "description": "no active challenge for session" },
+                        "410": { "description": "session expired" }
+                    }
+                }
+            },
+            "/v1/sessions/{session_id}/challenges/{challenge_id}/response": {
+                "post": {
+                    "summary": "Submit a signed proof-of-capability response for backend verification",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "200": { "description": "response stored with verified or failed status" },
+                        "400": { "description": "malformed response or unsupported schema" },
+                        "401": { "description": "device, session, key, or signature invalid" },
+                        "410": { "description": "challenge expired by server clock" },
+                        "409": { "description": "challenge is not accepting responses" }
+                    }
+                }
             }
         }
     })
@@ -273,7 +319,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn05_identity_session_telemetry_and_evidence_endpoints() {
+    fn openapi_lists_bn06_identity_session_telemetry_evidence_and_challenge_endpoints() {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
         for path in [
@@ -300,6 +346,10 @@ mod tests {
             "/v1/providers/{provider_id}/evidence-records",
             "/v1/evidence-records/{evidence_id}",
             "/v1/evidence-records/{evidence_id}/revoke",
+            "/v1/challenges",
+            "/v1/challenges/{challenge_id}",
+            "/v1/sessions/{session_id}/challenges/next",
+            "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
         ] {
             assert!(paths.contains_key(path), "missing OpenAPI path {path}");
         }

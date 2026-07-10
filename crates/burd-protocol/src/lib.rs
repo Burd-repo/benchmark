@@ -10,8 +10,14 @@ pub mod telemetry;
 
 pub use challenge::{
     Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, ChallengeVerification,
-    RequiredTest, challenge_expired, challenge_response_message,
+    IssueProofChallengeRequest, IssueProofChallengeResponse, NextProofChallengeResponse,
+    PROOF_CHALLENGE_CANONICALIZATION_VERSION, PROOF_CHALLENGE_RESPONSE_SCHEMA_VERSION,
+    PROOF_CHALLENGE_SCHEMA_VERSION, PROOF_CHALLENGE_SIGNATURE_DOMAIN, ProofCapabilityChallenge,
+    ProofCapabilityMetrics, ProofCapabilityResponsePayload, ProofChallengeRecord,
+    ProofChallengeVerification, RequiredTest, SignedProofCapabilityResponse,
+    SubmitProofChallengeResponse, challenge_expired, challenge_response_message,
     challenge_response_message_with_fingerprint, load_latest_challenge_output, mock_challenge,
+    proof_capability_response_hash, proof_capability_response_signature_message,
     save_latest_challenge_output, verify_challenge_response,
 };
 pub use enrollment::{

@@ -22,6 +22,8 @@ pub struct ControlPlaneConfig {
     pub telemetry_min_batch_interval_seconds: u32,
     pub telemetry_clock_skew_seconds: u32,
     pub telemetry_retention_days: u32,
+    pub proof_challenge_ttl_seconds: u32,
+    pub proof_challenge_clock_skew_seconds: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +124,15 @@ impl ControlPlaneConfig {
             lookup("BURD_CONTROL_TELEMETRY_RETENTION_DAYS").unwrap_or_else(|| "7".to_string()),
             "BURD_CONTROL_TELEMETRY_RETENTION_DAYS",
         )?;
+        let proof_challenge_ttl_seconds = parse_u32(
+            lookup("BURD_CONTROL_PROOF_CHALLENGE_TTL_SECONDS").unwrap_or_else(|| "600".to_string()),
+            "BURD_CONTROL_PROOF_CHALLENGE_TTL_SECONDS",
+        )?;
+        let proof_challenge_clock_skew_seconds = parse_u32(
+            lookup("BURD_CONTROL_PROOF_CHALLENGE_CLOCK_SKEW_SECONDS")
+                .unwrap_or_else(|| "300".to_string()),
+            "BURD_CONTROL_PROOF_CHALLENGE_CLOCK_SKEW_SECONDS",
+        )?;
 
         Ok(Self {
             environment: lookup("BURD_CONTROL_ENV").unwrap_or_else(|| "local".to_string()),
@@ -143,6 +154,8 @@ impl ControlPlaneConfig {
             telemetry_min_batch_interval_seconds,
             telemetry_clock_skew_seconds,
             telemetry_retention_days,
+            proof_challenge_ttl_seconds,
+            proof_challenge_clock_skew_seconds,
         })
     }
 }
@@ -209,6 +222,8 @@ mod tests {
         assert_eq!(config.telemetry_min_batch_interval_seconds, 5);
         assert_eq!(config.telemetry_clock_skew_seconds, 300);
         assert_eq!(config.telemetry_retention_days, 7);
+        assert_eq!(config.proof_challenge_ttl_seconds, 600);
+        assert_eq!(config.proof_challenge_clock_skew_seconds, 300);
         assert_eq!(config.admin_token_hash, sha256_hex(b"admin-secret"));
         assert!(!config.admin_token_hash.contains("admin-secret"));
     }

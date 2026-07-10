@@ -31,6 +31,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "remote_evidence_registry",
         sql: include_str!("../migrations/0005_remote_evidence_registry.sql"),
     },
+    Migration {
+        version: "0006",
+        name: "active_proof_of_capability",
+        sql: include_str!("../migrations/0006_active_proof_of_capability.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -87,5 +92,13 @@ mod tests {
         let sql = MIGRATIONS[4].sql;
         assert!(sql.contains("ADD COLUMN IF NOT EXISTS session_id"));
         assert!(sql.contains("idx_evidence_records_evidence_hash"));
+    }
+
+    #[test]
+    fn active_proof_migration_declares_challenge_registry() {
+        let sql = MIGRATIONS[5].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS proof_challenges"));
+        assert!(sql.contains("response_hash TEXT UNIQUE"));
+        assert!(sql.contains("idx_proof_challenges_session_status"));
     }
 }
