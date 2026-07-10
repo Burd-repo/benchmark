@@ -170,7 +170,7 @@ after the June 2026 reliability pass.
 
 ## Still Mocked Or Future
 
-- Agent-side proof workload execution, recurring Proof of Capability scheduling, and trust/antifraud scoring.
+- Agent-side proof workload execution, background verification scheduler automation, and global trust/antifraud scoring.
 - Burd audit service and production antifraud.
 - Marketplace listings, leases, jobs, orchestration, scheduler, and containers.
 - Real earnings, payouts, billing, Pix, and financial settlement.
@@ -180,7 +180,7 @@ after the June 2026 reliability pass.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
 - Backend-bound availability and scheduler enforcement of workload eligibility.
-- Agent-side Proof of Capability execution and backend-attested AI performance history.
+- Agent-side Proof of Capability execution, backend-attested AI performance history, and production risk model inputs beyond BN-07 state.
 
 ## Known Build Warnings
 
@@ -382,5 +382,17 @@ starting the API server or depending on host state:
 - Audit events cover challenge issuance, acknowledgement, verification failure,
   verification success, and expiration-by-server-clock.
 - BN-06 does not implement the agent-side CUDA/VRAM/GEMM/LLM workload runner,
-  recurring or risk-based challenge scheduling, global trust/antifraud scoring,
-  jobs, scheduler, marketplace, billing, Pix, or payouts.
+  recurring verification policy state, global trust/antifraud scoring, jobs,
+  scheduler, marketplace, billing, Pix, or payouts. BN-07 adds the recurring
+  verification state and admin sweep around BN-06.
+
+## BN-07 - Recurring And Risk-Based Verification
+
+- `burd-protocol` defines verification sweep and verification-state response contracts plus `burd-verification-policy-v1`.
+- PostgreSQL migration `0007_recurring_verification_policy` adds `provider_verification_states` and policy metadata on `proof_challenges`.
+- The control plane exposes `POST /v1/verification/sweep` for admin-triggered recurring/risk verification and `GET /v1/providers/{provider_id}/verification-states` for state inspection.
+- The sweep evaluates online/degraded sessions, skips blocked/quarantined providers and inactive devices, avoids duplicate active challenges, and issues BN-06 challenges when devices are new, due, suspect, forced, or stale-running.
+- Challenge expiry is recalculated by server time during sweeps. Expired running verifications become failed verification state.
+- BN-06 proof responses now update provider-device verification state to `verified`, `verification_due`, or `suspect` in the same transaction as challenge verification.
+- Config controls period, retry budget, sweep limit, and suspect failure threshold through `BURD_CONTROL_VERIFICATION_*` variables.
+- BN-07 does not implement the agent-side proof workload runner, autonomous background scheduler process, global trust/antifraud model, jobs, scheduler, marketplace, billing, Pix, or payouts.

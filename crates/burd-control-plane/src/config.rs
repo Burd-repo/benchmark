@@ -24,6 +24,10 @@ pub struct ControlPlaneConfig {
     pub telemetry_retention_days: u32,
     pub proof_challenge_ttl_seconds: u32,
     pub proof_challenge_clock_skew_seconds: u32,
+    pub verification_period_seconds: u32,
+    pub verification_retry_budget: u32,
+    pub verification_sweep_limit: u32,
+    pub verification_suspect_failures: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +137,23 @@ impl ControlPlaneConfig {
                 .unwrap_or_else(|| "300".to_string()),
             "BURD_CONTROL_PROOF_CHALLENGE_CLOCK_SKEW_SECONDS",
         )?;
+        let verification_period_seconds = parse_u32(
+            lookup("BURD_CONTROL_VERIFICATION_PERIOD_SECONDS")
+                .unwrap_or_else(|| "3600".to_string()),
+            "BURD_CONTROL_VERIFICATION_PERIOD_SECONDS",
+        )?;
+        let verification_retry_budget = parse_u32(
+            lookup("BURD_CONTROL_VERIFICATION_RETRY_BUDGET").unwrap_or_else(|| "2".to_string()),
+            "BURD_CONTROL_VERIFICATION_RETRY_BUDGET",
+        )?;
+        let verification_sweep_limit = parse_u32(
+            lookup("BURD_CONTROL_VERIFICATION_SWEEP_LIMIT").unwrap_or_else(|| "25".to_string()),
+            "BURD_CONTROL_VERIFICATION_SWEEP_LIMIT",
+        )?;
+        let verification_suspect_failures = parse_u32(
+            lookup("BURD_CONTROL_VERIFICATION_SUSPECT_FAILURES").unwrap_or_else(|| "3".to_string()),
+            "BURD_CONTROL_VERIFICATION_SUSPECT_FAILURES",
+        )?;
 
         Ok(Self {
             environment: lookup("BURD_CONTROL_ENV").unwrap_or_else(|| "local".to_string()),
@@ -156,6 +177,10 @@ impl ControlPlaneConfig {
             telemetry_retention_days,
             proof_challenge_ttl_seconds,
             proof_challenge_clock_skew_seconds,
+            verification_period_seconds,
+            verification_retry_budget,
+            verification_sweep_limit,
+            verification_suspect_failures,
         })
     }
 }
@@ -224,6 +249,10 @@ mod tests {
         assert_eq!(config.telemetry_retention_days, 7);
         assert_eq!(config.proof_challenge_ttl_seconds, 600);
         assert_eq!(config.proof_challenge_clock_skew_seconds, 300);
+        assert_eq!(config.verification_period_seconds, 3600);
+        assert_eq!(config.verification_retry_budget, 2);
+        assert_eq!(config.verification_sweep_limit, 25);
+        assert_eq!(config.verification_suspect_failures, 3);
         assert_eq!(config.admin_token_hash, sha256_hex(b"admin-secret"));
         assert!(!config.admin_token_hash.contains("admin-secret"));
     }

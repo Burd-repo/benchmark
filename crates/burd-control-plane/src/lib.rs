@@ -12,6 +12,7 @@ pub mod proof_challenge;
 pub mod rate_limit;
 pub mod remote_session;
 pub mod telemetry;
+pub mod verification_policy;
 
 pub use config::ControlPlaneConfig;
 pub use db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};

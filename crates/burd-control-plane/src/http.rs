@@ -10,6 +10,7 @@ use crate::remote_session::{
     SessionError,
 };
 use crate::telemetry::TelemetryPolicy;
+use crate::verification_policy::VerificationPolicy;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -19,9 +20,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_protocol::{
     ClientControlMessage, EnrollmentProofRequest, IssueProofChallengeRequest,
-    KeyRotationProofRequest, RevokeEvidenceRequest, ServerControlMessage,
-    SignedProofCapabilityResponse, StartEnrollmentRequest, StartKeyRotationRequest,
-    StartRemoteSessionRequest, SubmitEvidenceRequest, hash_canonical, sha256_hex,
+    KeyRotationProofRequest, RevokeEvidenceRequest, RunVerificationSweepRequest,
+    ServerControlMessage, SignedProofCapabilityResponse, StartEnrollmentRequest,
+    StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest, hash_canonical,
+    sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -157,6 +159,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/evidence-records/{evidence_id}/revoke",
             post(revoke_evidence_record),
+        )
+        .route("/v1/verification/sweep", post(run_verification_sweep))
+        .route(
+            "/v1/providers/{provider_id}/verification-states",
+            get(list_provider_verification_states),
         )
         .route("/v1/challenges", post(issue_proof_challenge))
         .route("/v1/challenges/{challenge_id}", get(get_proof_challenge))
@@ -615,6 +622,40 @@ async fn revoke_evidence_record(
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
 }
+async fn run_verification_sweep(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<RunVerificationSweepRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .run_verification_sweep(
+            &request_id,
+            &payload,
+            proof_challenge_policy(&state.config),
+            verification_policy(&state.config),
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::ACCEPTED, Json(response)).into_response())
+}
+
+async fn list_provider_verification_states(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListVerificationStatesResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_verification_states(&request_id, &provider_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
 async fn issue_proof_challenge(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -688,6 +729,7 @@ async fn submit_proof_challenge_response(
             &payload,
             &state.config.object_storage_dir,
             proof_challenge_policy(&state.config),
+            verification_policy(&state.config),
         )
         .await
         .map(Json)
@@ -704,6 +746,14 @@ fn proof_challenge_policy(config: &ControlPlaneConfig) -> ProofChallengePolicy {
     ProofChallengePolicy {
         ttl_seconds: config.proof_challenge_ttl_seconds,
         clock_skew_seconds: config.proof_challenge_clock_skew_seconds,
+    }
+}
+fn verification_policy(config: &ControlPlaneConfig) -> VerificationPolicy {
+    VerificationPolicy {
+        period_seconds: config.verification_period_seconds,
+        retry_budget: config.verification_retry_budget,
+        sweep_limit: config.verification_sweep_limit,
+        suspect_failures: config.verification_suspect_failures,
     }
 }
 async fn upgrade_control_channel(
@@ -1278,6 +1328,10 @@ mod tests {
             telemetry_retention_days: 7,
             proof_challenge_ttl_seconds: 600,
             proof_challenge_clock_skew_seconds: 300,
+            verification_period_seconds: 3600,
+            verification_retry_budget: 2,
+            verification_sweep_limit: 25,
+            verification_suspect_failures: 3,
         }
     }
 
@@ -1341,13 +1395,14 @@ mod tests {
                 "0003".to_string(),
                 "0004".to_string(),
                 "0005".to_string(),
-                "0006".to_string()
+                "0006".to_string(),
+                "0007".to_string()
             ],
-            &["0001", "0002", "0003", "0004", "0005", "0006"]
+            &["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
         ));
         assert!(!migrations_are_current(
             &["0001".to_string()],
-            &["0001", "0002", "0003", "0004", "0005", "0006"]
+            &["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
         ));
         assert!(!migrations_are_current(
             &[
@@ -1355,7 +1410,7 @@ mod tests {
                 "0002".to_string(),
                 "unexpected".to_string()
             ],
-            &["0001", "0002", "0003", "0004", "0005", "0006"]
+            &["0001", "0002", "0003", "0004", "0005", "0006", "0007"]
         ));
     }
 

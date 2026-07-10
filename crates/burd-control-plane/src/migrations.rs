@@ -36,6 +36,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "active_proof_of_capability",
         sql: include_str!("../migrations/0006_active_proof_of_capability.sql"),
     },
+    Migration {
+        version: "0007",
+        name: "recurring_verification_policy",
+        sql: include_str!("../migrations/0007_recurring_verification_policy.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -100,5 +105,13 @@ mod tests {
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS proof_challenges"));
         assert!(sql.contains("response_hash TEXT UNIQUE"));
         assert!(sql.contains("idx_proof_challenges_session_status"));
+    }
+
+    #[test]
+    fn recurring_verification_migration_declares_policy_state() {
+        let sql = MIGRATIONS[6].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS provider_verification_states"));
+        assert!(sql.contains("ADD COLUMN IF NOT EXISTS trigger_reason"));
+        assert!(sql.contains("idx_provider_verification_states_status_due"));
     }
 }

@@ -1,5 +1,8 @@
 use crate::db::{Database, DbError, NewAuditEvent, insert_audit_event};
 use crate::remote_session::{AuthorizedSession, SessionError};
+use crate::verification_policy::{
+    VerificationChallengeContext, VerificationPolicy, record_challenge_issued_in_transaction,
+};
 use burd_protocol::{
     IssueProofChallengeRequest, IssueProofChallengeResponse, NextProofChallengeResponse,
     PROOF_CHALLENGE_CANONICALIZATION_VERSION, PROOF_CHALLENGE_RESPONSE_SCHEMA_VERSION,
@@ -36,6 +39,17 @@ impl Database {
         request_id: &str,
         request: &IssueProofChallengeRequest,
         policy: ProofChallengePolicy,
+    ) -> Result<IssueProofChallengeResponse, SessionError> {
+        self.issue_proof_challenge_with_context(request_id, request, policy, None)
+            .await
+    }
+
+    pub(crate) async fn issue_proof_challenge_with_context(
+        &self,
+        request_id: &str,
+        request: &IssueProofChallengeRequest,
+        policy: ProofChallengePolicy,
+        verification_context: Option<VerificationChallengeContext>,
     ) -> Result<IssueProofChallengeResponse, SessionError> {
         let required_proofs = normalized_required_proofs(request)?;
         let ttl_seconds = validate_issue_request(request, &required_proofs, policy)?;
@@ -100,6 +114,29 @@ impl Database {
                 ],
             )
             .await?;
+        let challenge = ProofCapabilityChallenge {
+            schema_version: PROOF_CHALLENGE_SCHEMA_VERSION.to_string(),
+            challenge_id: challenge_id.clone(),
+            nonce: nonce.clone(),
+            provider_id: request.provider_id.clone(),
+            device_id: request.device_id.clone(),
+            session_id: request.session_id.clone(),
+            profile_version: request.profile_version.clone(),
+            required_fingerprint: request.required_fingerprint.clone(),
+            required_gpu_uuid: request.required_gpu_uuid.clone(),
+            required_backend: request.required_backend.clone(),
+            model_artifact_hash: request.model_artifact_hash.clone(),
+            prompt_seed: request.prompt_seed.clone(),
+            required_proofs,
+            min_tokens_per_second: request.min_tokens_per_second,
+            max_ttft_ms: request.max_ttft_ms,
+            issued_at: issued_at.clone(),
+            expires_at: expires_at.clone(),
+        };
+        if let Some(context) = verification_context.as_ref() {
+            record_challenge_issued_in_transaction(&transaction, request_id, &challenge, context)
+                .await?;
+        }
         let audit_metadata = serde_json::json!({
             "provider_id": request.provider_id,
             "device_id": request.device_id,
@@ -129,28 +166,9 @@ impl Database {
 
         Ok(IssueProofChallengeResponse {
             request_id: request_id.to_string(),
-            challenge: ProofCapabilityChallenge {
-                schema_version: PROOF_CHALLENGE_SCHEMA_VERSION.to_string(),
-                challenge_id,
-                nonce,
-                provider_id: request.provider_id.clone(),
-                device_id: request.device_id.clone(),
-                session_id: request.session_id.clone(),
-                profile_version: request.profile_version.clone(),
-                required_fingerprint: request.required_fingerprint.clone(),
-                required_gpu_uuid: request.required_gpu_uuid.clone(),
-                required_backend: request.required_backend.clone(),
-                model_artifact_hash: request.model_artifact_hash.clone(),
-                prompt_seed: request.prompt_seed.clone(),
-                required_proofs,
-                min_tokens_per_second: request.min_tokens_per_second,
-                max_ttft_ms: request.max_ttft_ms,
-                issued_at,
-                expires_at,
-            },
+            challenge,
         })
     }
-
     pub async fn next_proof_challenge(
         &self,
         request_id: &str,
@@ -234,6 +252,7 @@ impl Database {
         signed: &SignedProofCapabilityResponse,
         object_storage_dir: &str,
         policy: ProofChallengePolicy,
+        verification_policy: VerificationPolicy,
     ) -> Result<SubmitProofChallengeResponse, SessionError> {
         if session_id != authorized.session_id
             || signed.payload.session_id != authorized.session_id
@@ -333,6 +352,16 @@ impl Database {
                 ],
             )
             .await?;
+        self.record_proof_challenge_outcome(
+            &transaction,
+            request_id,
+            &challenge,
+            &verification,
+            accepted,
+            verification_policy,
+            &server_received_at,
+        )
+        .await?;
         let audit_metadata = serde_json::json!({
             "status": next_status,
             "response_hash": computed_response_hash,
