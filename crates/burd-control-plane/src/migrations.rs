@@ -46,6 +46,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "regional_network_probes",
         sql: include_str!("../migrations/0008_regional_network_probes.sql"),
     },
+    Migration {
+        version: "0009",
+        name: "global_trust_antifraud",
+        sql: include_str!("../migrations/0009_global_trust_antifraud.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -127,5 +132,14 @@ mod tests {
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS provider_network_states"));
         assert!(sql.contains("UNIQUE(session_id, probe_id, observed_at)"));
         assert!(sql.contains("idx_network_probe_observations_provider_time"));
+    }
+
+    #[test]
+    fn global_trust_antifraud_migration_declares_state_and_events() {
+        let sql = MIGRATIONS[8].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS provider_trust_states"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS antifraud_events"));
+        assert!(sql.contains("UNIQUE(provider_id, device_id, event_type, reason)"));
+        assert!(sql.contains("idx_provider_trust_states_status_score"));
     }
 }

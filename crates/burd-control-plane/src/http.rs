@@ -20,10 +20,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_protocol::{
     ClientControlMessage, EnrollmentProofRequest, IssueProofChallengeRequest,
-    KeyRotationProofRequest, RevokeEvidenceRequest, RunVerificationSweepRequest,
-    ServerControlMessage, SignedProofCapabilityResponse, StartEnrollmentRequest,
-    StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
-    SubmitNetworkProbeObservationRequest, hash_canonical, sha256_hex,
+    KeyRotationProofRequest, RevokeEvidenceRequest, RunTrustSweepRequest,
+    RunVerificationSweepRequest, ServerControlMessage, SignedProofCapabilityResponse,
+    StartEnrollmentRequest, StartKeyRotationRequest, StartRemoteSessionRequest,
+    SubmitEvidenceRequest, SubmitNetworkProbeObservationRequest, hash_canonical, sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -84,6 +84,12 @@ struct EvidenceListQuery {
 
 #[derive(Debug, Clone, Deserialize)]
 struct NetworkProbeListQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AntifraudEventListQuery {
     #[serde(default)]
     limit: Option<u32>,
 }
@@ -177,6 +183,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/providers/{provider_id}/network-state",
             get(list_provider_network_states),
+        )
+        .route("/v1/trust/sweep", post(run_trust_sweep))
+        .route(
+            "/v1/providers/{provider_id}/trust-states",
+            get(list_provider_trust_states),
+        )
+        .route(
+            "/v1/providers/{provider_id}/antifraud-events",
+            get(list_antifraud_events),
         )
         .route("/v1/verification/sweep", post(run_verification_sweep))
         .route(
@@ -687,6 +702,51 @@ async fn list_provider_network_states(
     state
         .db
         .list_provider_network_states(&request_id, &provider_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+async fn run_trust_sweep(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<RunTrustSweepRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .run_trust_sweep(&request_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::ACCEPTED, Json(response)).into_response())
+}
+
+async fn list_provider_trust_states(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListProviderTrustStatesResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_trust_states(&request_id, &provider_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_antifraud_events(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    Query(query): Query<AntifraudEventListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListAntifraudEventsResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_antifraud_events(&request_id, &provider_id, query.limit.unwrap_or(50))
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
@@ -1466,16 +1526,17 @@ mod tests {
                 "0005".to_string(),
                 "0006".to_string(),
                 "0007".to_string(),
-                "0008".to_string()
+                "0008".to_string(),
+                "0009".to_string()
             ],
             &[
-                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
             ]
         ));
         assert!(!migrations_are_current(
             &["0001".to_string()],
             &[
-                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
             ]
         ));
         assert!(!migrations_are_current(
@@ -1485,7 +1546,7 @@ mod tests {
                 "unexpected".to_string()
             ],
             &[
-                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
             ]
         ));
     }

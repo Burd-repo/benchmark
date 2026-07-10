@@ -5,7 +5,8 @@ Trust Score is the local heuristic confidence signal for a provider. It answers:
 > How trustworthy is this provider's current local evidence and recent history?
 
 It is not backend approval, not marketplace admission, not reputation ranking,
-and not payout eligibility.
+and not payout eligibility. BN-09 adds a separate backend-owned global trust
+and antifraud state in the Burd Control Plane.
 
 ## Commands And API
 
@@ -78,7 +79,9 @@ Trust is historical confidence, not raw power.
 
 ## Marketplace Boundary
 
-Future marketplace policy may require minimum trust before showing a provider or
-routing paid workloads. The local MVP only calculates a deterministic local
-heuristic. It does not contact a backend, calculate global reputation, create a
-lease, schedule a job, or approve payouts.
+Future marketplace policy may require backend-owned trust before showing a
+provider or routing paid workloads. The local MVP only calculates a
+deterministic local heuristic. BN-09 calculates remote trust from backend
+session, telemetry, evidence, challenge, verification, and network state, but it
+still does not create a lease, schedule a job, rank marketplace listings, bill,
+or approve payouts.
