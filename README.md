@@ -210,6 +210,8 @@ O BN-05 adiciona registry remoto de evidencias assinadas no control plane; veja
 O BN-06 adiciona protocolo backend-issued de Proof of Capability ativo no
 control plane; veja
 [`docs/bn-06-active-proof-of-capability.md`](docs/bn-06-active-proof-of-capability.md).
+O BN-07 adiciona estado backend-owned para verificacao recorrente e baseada em risco; veja
+[`docs/bn-07-recurring-risk-verification.md`](docs/bn-07-recurring-risk-verification.md).
 
 ### Token local da API
 
@@ -507,6 +509,7 @@ Documentacao detalhada:
 * [`docs/bn-01-backend-foundation.md`](docs/bn-01-backend-foundation.md)
 * [`docs/bn-05-remote-evidence-registry.md`](docs/bn-05-remote-evidence-registry.md)
 * [`docs/bn-06-active-proof-of-capability.md`](docs/bn-06-active-proof-of-capability.md)
+* [`docs/bn-07-recurring-risk-verification.md`](docs/bn-07-recurring-risk-verification.md)
 * [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
 * [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
 * [`docs/threat-model.md`](docs/threat-model.md)
@@ -564,7 +567,7 @@ A API local expoe o mesmo contrato em GET /api/v1/ai-performance.
 
 O relatorio separa metricas medidas (real_benchmark, signed_report, benchmark_history) de estimativas (fit_estimate) e dados ausentes (not_measured). Campos sem medicao confiavel retornam null ou origem not_measured/unavailable; estimativas de fit nunca sao tratadas como benchmark real. Evidencia expirada permanece visivel com is_expired true, warning e confianca reduzida.
 
-Este recurso nao inicia runtime externo, nao executa Proof of Capability remoto, nao contata backend, nao aprova marketplace e nao cria scheduler, jobs, leases, billing ou payouts.
+Este recurso local nao inicia runtime externo, nao executa o workload remoto de Proof of Capability, nao aprova marketplace e nao cria scheduler, jobs, leases, billing ou payouts.
 ## Network score
 
 O network score local usa a ultima amostra finita de `bench network --json` ou a secao `network` do ultimo `report --run-all` salvo em `~/.burd/latest-report.json`.

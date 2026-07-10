@@ -372,8 +372,8 @@ registry metadata and audit history; it does not delete the stored envelope.
 ## Challenge API
 
 BN-06 implements active proof-of-capability challenges for an already enrolled
-provider device with an active remote session. It does not implement recurring
-risk-based scheduling; BN-07 owns recurrence.
+provider device with an active remote session. BN-07 adds recurring/risk-based
+backend verification state around those challenges.
 
 ### `POST /v1/challenges`
 
@@ -456,6 +456,49 @@ Backend behavior:
 - stores the complete signed response in object storage;
 - stores response metadata and verification JSON in PostgreSQL;
 - sets challenge state to `verified`, `failed`, or `expired`.
+
+## Verification Policy API
+
+BN-07 tracks backend-owned verification state per `(provider_id, device_id)` and uses BN-06 challenges as the active proof mechanism.
+
+States:
+
+```text
+new_provider -> verification_due -> verification_running -> verified
+verified -> verification_due -> verification_running -> verified | suspect
+suspect -> verification_due | quarantined | blocked
+```
+
+`quarantined` and `blocked` are reserved for later policy/admin action. Sweeps do not issue new challenges for those states.
+
+### `POST /v1/verification/sweep`
+
+Admin endpoint that runs one bounded recurring/risk verification pass.
+
+Request fields:
+
+- `limit`, optional and capped by backend config;
+- `force`, optional;
+- `reason`, optional short printable ASCII reason.
+
+Backend behavior:
+
+- expires stale proof challenges using server time;
+- converts expired running verification states into failed verification state;
+- evaluates `online` and `degraded` sessions only;
+- skips blocked/quarantined providers, inactive devices, sessions without backend hardware fingerprint, and sessions that already have an active proof challenge;
+- issues BN-06 challenges for new, due, suspect, forced, or stale-running verification states;
+- binds issued challenges to the backend session fingerprint and latest accepted GPU telemetry UUID when available.
+
+Returns `request_id`, `evaluated`, and an `issued` list with provider, device, session, challenge ID, and reason.
+
+### `GET /v1/providers/{provider_id}/verification-states`
+
+Admin endpoint that lists backend verification state for provider devices.
+
+Rows include status, policy version, reason, risk score, success/failure counts, retry budget, last challenge IDs, last verified/failed timestamps, next due timestamp, and reserved quarantine/block timestamps.
+
+BN-07 does not publish final trust ranking. It only persists the recurring verification state that later trust, policy, scheduler, and marketplace code can consume.
 
 ## Telemetry API
 

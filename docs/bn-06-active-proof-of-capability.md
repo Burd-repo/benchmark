@@ -1,7 +1,7 @@
 # BN-06 - Active Proof Of Capability Protocol
 
 BN-06 adds the first remote Proof of Capability surface to the Burd Control Plane.
-It does not add recurring verification, scheduler decisions, jobs, marketplace, or billing.
+Recurring verification state is implemented by BN-07; BN-06 remains the active proof protocol and verifier. It does not add scheduler decisions, jobs, marketplace, or billing.
 
 ## Scope
 
@@ -20,7 +20,7 @@ Implemented:
 Not implemented:
 
 - agent-side execution of the CUDA/VRAM/GEMM/LLM proof workload;
-- risk-based recurring challenge scheduling;
+- agent-side/background automation for recurring challenge execution;
 - trust score or antifraud score recalculation;
 - scheduler enforcement, leases, jobs, billing, Pix, payouts, or marketplace listings.
 

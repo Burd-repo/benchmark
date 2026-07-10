@@ -11,6 +11,7 @@ pub const PROOF_CHALLENGE_SCHEMA_VERSION: &str = "burd-proof-capability-challeng
 pub const PROOF_CHALLENGE_RESPONSE_SCHEMA_VERSION: &str = "burd-proof-capability-response-v1";
 pub const PROOF_CHALLENGE_CANONICALIZATION_VERSION: &str = "burd-json-c14n-v1";
 pub const PROOF_CHALLENGE_SIGNATURE_DOMAIN: &str = "burd.proof-capability-response.v1";
+pub const VERIFICATION_POLICY_VERSION: &str = "burd-verification-policy-v1";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Challenge {
     pub challenge_id: String,
@@ -273,6 +274,69 @@ pub struct SubmitProofChallengeResponse {
     pub server_received_at: String,
     pub verification: ProofChallengeVerification,
 }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunVerificationSweepRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub force: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerificationSweepIssuedChallenge {
+    pub provider_id: String,
+    pub device_id: String,
+    pub session_id: String,
+    pub challenge_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunVerificationSweepResponse {
+    pub request_id: String,
+    pub evaluated: u32,
+    pub issued: Vec<VerificationSweepIssuedChallenge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerificationStateRecord {
+    pub provider_id: String,
+    pub device_id: String,
+    pub status: String,
+    pub policy_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub risk_score: f64,
+    pub success_count: i32,
+    pub failure_count: i32,
+    pub retry_budget_remaining: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_challenge_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verified_challenge_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_due_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantined_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_at: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListVerificationStatesResponse {
+    pub request_id: String,
+    pub states: Vec<VerificationStateRecord>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ChallengeResponsePayload<'a> {
     challenge_id: &'a str,

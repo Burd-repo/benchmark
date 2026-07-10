@@ -137,7 +137,7 @@ second record.
 
 ## Deferred
 
-BN-06 introduces active backend-issued Proof of Capability. BN-07 will make
+BN-06 introduces active backend-issued Proof of Capability. BN-07 makes
 verification recurring and risk-based. BN-09 will consume accepted evidence,
 telemetry, session history, and proof challenge history for global trust and
 antifraud.
