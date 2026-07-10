@@ -554,6 +554,56 @@ time, and update time.
 
 BN-08 does not deploy the production regional probe fleet or consume these
 scores in scheduler, marketplace, billing, or global trust ranking.
+
+## Trust And Antifraud API
+
+BN-09 calculates backend-owned trust and antifraud state from prior remote
+signals. The provider does not submit final trust score, risk score, global
+reputation, antifraud status, or marketplace eligibility.
+
+### `POST /v1/trust/sweep`
+
+Admin endpoint that runs one bounded global trust and antifraud pass.
+
+Request fields:
+
+- `limit`, optional and capped by backend policy;
+- `force`, optional reserved flag for later policy behavior;
+- `reason`, optional short printable ASCII reason.
+
+Backend behavior:
+
+- reads provider, device, latest session, heartbeat, telemetry, evidence,
+  challenge, verification, and remote network state;
+- recalculates `trust_score`, `risk_score`, backend reliability, status, and
+  reason codes;
+- upserts `provider_trust_states` by `(provider_id, device_id)`;
+- records active antifraud events for backend-observed suspicious conditions;
+- emits an audit event for each recalculated trust state.
+
+Returns `request_id`, `evaluated`, and an `updated` list with provider, device,
+status, trust score, risk score, and reason codes.
+
+### `GET /v1/providers/{provider_id}/trust-states`
+
+Admin endpoint that lists backend-calculated trust states for provider devices.
+Rows include status, policy version, trust score, risk score, backend
+reliability score, verification status, remote network score, evidence and
+challenge counts, latest session status, latest GPU UUID, hardware fingerprint,
+reason codes, and timestamps.
+
+### `GET /v1/providers/{provider_id}/antifraud-events`
+
+Admin endpoint that lists recent antifraud events for a provider. The optional
+`limit` query parameter is clamped to `1..200`.
+
+Events include type, severity, status, reason, redacted metadata, first/last
+seen timestamps, and occurrence count.
+
+BN-09 does not automatically quarantine or block providers, feed scheduler
+assignments, rank marketplace listings, run jobs, meter usage, bill customers,
+or pay providers.
+
 ## Telemetry API
 
 Telemetry is normally sent through the control channel as `telemetry_batch`.

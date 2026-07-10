@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-08 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-09 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -297,6 +297,37 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
+            "/v1/trust/sweep": {
+                "post": {
+                    "summary": "Run one backend global trust and antifraud sweep",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "202": { "description": "provider-device trust states recalculated and antifraud events recorded" },
+                        "400": { "description": "invalid sweep request" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
+            "/v1/providers/{provider_id}/trust-states": {
+                "get": {
+                    "summary": "List backend-calculated trust states for provider devices",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "provider trust states returned" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
+            "/v1/providers/{provider_id}/antifraud-events": {
+                "get": {
+                    "summary": "List active backend antifraud events for a provider",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "antifraud event history returned" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
             "/v1/verification/sweep": {
                 "post": {
                     "summary": "Run one recurring/risk-based verification sweep",
@@ -373,7 +404,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn08_identity_session_telemetry_evidence_challenge_verification_and_network_endpoints()
+    fn openapi_lists_bn09_identity_session_telemetry_evidence_challenge_verification_network_and_trust_endpoints()
      {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
@@ -404,6 +435,9 @@ mod tests {
             "/v1/network-probes/observations",
             "/v1/providers/{provider_id}/network-probes",
             "/v1/providers/{provider_id}/network-state",
+            "/v1/trust/sweep",
+            "/v1/providers/{provider_id}/trust-states",
+            "/v1/providers/{provider_id}/antifraud-events",
             "/v1/verification/sweep",
             "/v1/providers/{provider_id}/verification-states",
             "/v1/challenges",

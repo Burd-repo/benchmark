@@ -13,6 +13,7 @@ pub mod proof_challenge;
 pub mod rate_limit;
 pub mod remote_session;
 pub mod telemetry;
+pub mod trust_policy;
 pub mod verification_policy;
 
 pub use config::ControlPlaneConfig;

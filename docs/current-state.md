@@ -170,8 +170,8 @@ after the June 2026 reliability pass.
 
 ## Still Mocked Or Future
 
-- Agent-side proof workload execution, background verification scheduler automation, production regional probe workers, and global trust/antifraud scoring.
-- Burd audit service and production antifraud.
+- Agent-side proof workload execution, background verification scheduler automation, and production regional probe workers.
+- Production antifraud operations, case review, admin resolution, and automated enforcement.
 - Marketplace listings, leases, jobs, orchestration, scheduler, and containers.
 - Real earnings, payouts, billing, Pix, and financial settlement.
 - Production cloud deployment and complete remote backend operations.
@@ -180,7 +180,7 @@ after the June 2026 reliability pass.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
 - Backend-bound availability and scheduler enforcement of workload eligibility.
-- Agent-side Proof of Capability execution, backend-attested AI performance history, deployed probe workers, and production risk model inputs beyond BN-08 state.
+- Agent-side Proof of Capability execution, backend-attested AI performance history, deployed probe workers, and production risk model inputs beyond BN-09 state.
 
 ## Known Build Warnings
 
@@ -405,4 +405,15 @@ starting the API server or depending on host state:
 - Probe observations are tied to existing provider, device, and remote session IDs. The backend rejects blocked/quarantined providers, inactive devices, unsupported session states, invalid metrics, future timestamps, and non-redacted metadata.
 - Duplicate observations are deduplicated by `(session_id, probe_id, observed_at)` and do not inflate score history.
 - The backend calculates `remote_network_score`, `regional_reachability`, and `effective_network_score`; providers do not decide their own remote network reputation.
-- BN-08 does not deploy production multi-region probe workers, add separate probe credentials, run real data-plane artifact probes, feed scheduler decisions, or implement global trust/antifraud, jobs, marketplace, billing, Pix, or payouts.
+- BN-08 does not deploy production multi-region probe workers, add separate probe credentials, run real data-plane artifact probes, feed scheduler decisions, or implement jobs, marketplace, billing, Pix, or payouts.
+
+## BN-09 - Global Trust And Antifraud
+
+- `burd-protocol` defines backend trust sweep, provider trust state, and antifraud event contracts.
+- PostgreSQL migration `0009_global_trust_antifraud` adds `provider_trust_states` and `antifraud_events`.
+- The control plane exposes `POST /v1/trust/sweep`, `GET /v1/providers/{provider_id}/trust-states`, and `GET /v1/providers/{provider_id}/antifraud-events` behind admin authorization.
+- Trust state is recalculated from backend-owned provider/device state, latest remote session, heartbeat history, telemetry presence, evidence records, proof challenge history, recurring verification state, and regional network state.
+- The backend stores `trust_score`, `risk_score`, backend reliability score, trust status, reason codes, and active antifraud events; providers do not decide their own global trust or risk.
+- Cold start remains separate through `new_provider` and `insufficient_history`, so missing history is not treated as fraud by itself.
+- Initial antifraud signals cover heartbeat without telemetry, degraded sessions, repeated proof failures, weak remote network, duplicate GPU UUIDs, hardware fingerprint reuse, suspect verification, and missing evidence/proof.
+- BN-09 does not implement production antifraud case management, automatic quarantine/block enforcement, scheduler consumption, marketplace ranking, jobs, leases, billing, Pix, or payouts.

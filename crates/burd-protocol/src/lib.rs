@@ -8,6 +8,7 @@ pub mod report;
 pub mod session;
 pub mod signature;
 pub mod telemetry;
+pub mod trust;
 
 pub use challenge::{
     Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, ChallengeVerification,
@@ -78,4 +79,9 @@ pub use telemetry::{
     TELEMETRY_CANONICALIZATION_VERSION, TELEMETRY_SCHEMA_VERSION, TELEMETRY_SIGNATURE_DOMAIN,
     TelemetryBatchPayload, TelemetryBatchReceipt, telemetry_batch_hash,
     telemetry_batch_signature_message,
+};
+pub use trust::{
+    ANTIFRAUD_EVENT_SCHEMA_VERSION, AntifraudEventRecord, ListAntifraudEventsResponse,
+    ListProviderTrustStatesResponse, ProviderTrustStateRecord, RunTrustSweepRequest,
+    RunTrustSweepResponse, TRUST_POLICY_VERSION, TrustSweepUpdatedState,
 };
