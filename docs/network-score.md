@@ -71,5 +71,5 @@ Network quality should influence workload eligibility:
 ## Boundaries
 
 The local score is not a public SLA, not backend availability, and not
-marketplace approval. Future backend checks may add regional probes, public
-reachability, and scheduler-specific network policies.
+marketplace approval. BN-08 adds backend-owned regional probe observations and
+remote network state; scheduler-specific network policies and production probe fleets remain future work.

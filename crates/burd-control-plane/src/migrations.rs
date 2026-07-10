@@ -41,6 +41,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "recurring_verification_policy",
         sql: include_str!("../migrations/0007_recurring_verification_policy.sql"),
     },
+    Migration {
+        version: "0008",
+        name: "regional_network_probes",
+        sql: include_str!("../migrations/0008_regional_network_probes.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -113,5 +118,14 @@ mod tests {
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS provider_verification_states"));
         assert!(sql.contains("ADD COLUMN IF NOT EXISTS trigger_reason"));
         assert!(sql.contains("idx_provider_verification_states_status_due"));
+    }
+
+    #[test]
+    fn regional_network_probe_migration_declares_probe_registry() {
+        let sql = MIGRATIONS[7].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS network_probe_observations"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS provider_network_states"));
+        assert!(sql.contains("UNIQUE(session_id, probe_id, observed_at)"));
+        assert!(sql.contains("idx_network_probe_observations_provider_time"));
     }
 }

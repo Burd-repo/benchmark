@@ -170,7 +170,7 @@ after the June 2026 reliability pass.
 
 ## Still Mocked Or Future
 
-- Agent-side proof workload execution, background verification scheduler automation, and global trust/antifraud scoring.
+- Agent-side proof workload execution, background verification scheduler automation, production regional probe workers, and global trust/antifraud scoring.
 - Burd audit service and production antifraud.
 - Marketplace listings, leases, jobs, orchestration, scheduler, and containers.
 - Real earnings, payouts, billing, Pix, and financial settlement.
@@ -180,7 +180,7 @@ after the June 2026 reliability pass.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
 - Backend-bound availability and scheduler enforcement of workload eligibility.
-- Agent-side Proof of Capability execution, backend-attested AI performance history, and production risk model inputs beyond BN-07 state.
+- Agent-side Proof of Capability execution, backend-attested AI performance history, deployed probe workers, and production risk model inputs beyond BN-08 state.
 
 ## Known Build Warnings
 
@@ -396,3 +396,13 @@ starting the API server or depending on host state:
 - BN-06 proof responses now update provider-device verification state to `verified`, `verification_due`, or `suspect` in the same transaction as challenge verification.
 - Config controls period, retry budget, sweep limit, and suspect failure threshold through `BURD_CONTROL_VERIFICATION_*` variables.
 - BN-07 does not implement the agent-side proof workload runner, autonomous background scheduler process, global trust/antifraud model, jobs, scheduler, marketplace, billing, Pix, or payouts.
+
+## BN-08 - Regional Network Probes
+
+- `burd-protocol` defines trusted regional network probe observation, observation history, regional reachability, and provider network state contracts.
+- PostgreSQL migration `0008_regional_network_probes` adds `network_probe_observations` and `provider_network_states`.
+- The control plane exposes `POST /v1/network-probes/observations`, `GET /v1/providers/{provider_id}/network-probes`, and `GET /v1/providers/{provider_id}/network-state` behind admin/probe authorization.
+- Probe observations are tied to existing provider, device, and remote session IDs. The backend rejects blocked/quarantined providers, inactive devices, unsupported session states, invalid metrics, future timestamps, and non-redacted metadata.
+- Duplicate observations are deduplicated by `(session_id, probe_id, observed_at)` and do not inflate score history.
+- The backend calculates `remote_network_score`, `regional_reachability`, and `effective_network_score`; providers do not decide their own remote network reputation.
+- BN-08 does not deploy production multi-region probe workers, add separate probe credentials, run real data-plane artifact probes, feed scheduler decisions, or implement global trust/antifraud, jobs, marketplace, billing, Pix, or payouts.

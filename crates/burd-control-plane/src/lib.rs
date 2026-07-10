@@ -7,6 +7,7 @@ pub mod error;
 pub mod evidence_registry;
 pub mod http;
 pub mod migrations;
+pub mod network_probe;
 pub mod openapi;
 pub mod proof_challenge;
 pub mod rate_limit;

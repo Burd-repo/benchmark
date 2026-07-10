@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-07 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-08 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -264,6 +264,39 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
+            "/v1/network-probes/observations": {
+                "post": {
+                    "summary": "Submit a trusted regional network probe observation",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "201": { "description": "probe observation stored and provider network state recalculated" },
+                        "200": { "description": "duplicate probe observation returned without changing score history" },
+                        "400": { "description": "invalid probe metrics, timestamps, or metadata" },
+                        "401": { "description": "admin/probe credential missing or invalid" },
+                        "404": { "description": "provider, device, or session not found" }
+                    }
+                }
+            },
+            "/v1/providers/{provider_id}/network-probes": {
+                "get": {
+                    "summary": "List trusted regional network probe observations for a provider",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "network probe observation history returned" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
+            "/v1/providers/{provider_id}/network-state": {
+                "get": {
+                    "summary": "List backend-calculated network state for provider devices",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "remote network score, regional reachability, and effective score returned" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
             "/v1/verification/sweep": {
                 "post": {
                     "summary": "Run one recurring/risk-based verification sweep",
@@ -284,7 +317,8 @@ pub fn document() -> serde_json::Value {
                         "401": { "description": "admin credential missing or invalid" }
                     }
                 }
-            },            "/v1/challenges": {
+            },
+            "/v1/challenges": {
                 "post": {
                     "summary": "Issue an active proof-of-capability challenge for an online session",
                     "security": [{ "adminBearer": [] }],
@@ -339,8 +373,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn07_identity_session_telemetry_evidence_challenge_and_verification_endpoints()
-    {
+    fn openapi_lists_bn08_identity_session_telemetry_evidence_challenge_verification_and_network_endpoints()
+     {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
         for path in [
@@ -367,6 +401,9 @@ mod tests {
             "/v1/providers/{provider_id}/evidence-records",
             "/v1/evidence-records/{evidence_id}",
             "/v1/evidence-records/{evidence_id}/revoke",
+            "/v1/network-probes/observations",
+            "/v1/providers/{provider_id}/network-probes",
+            "/v1/providers/{provider_id}/network-state",
             "/v1/verification/sweep",
             "/v1/providers/{provider_id}/verification-states",
             "/v1/challenges",

@@ -212,6 +212,8 @@ control plane; veja
 [`docs/bn-06-active-proof-of-capability.md`](docs/bn-06-active-proof-of-capability.md).
 O BN-07 adiciona estado backend-owned para verificacao recorrente e baseada em risco; veja
 [`docs/bn-07-recurring-risk-verification.md`](docs/bn-07-recurring-risk-verification.md).
+O BN-08 adiciona registry backend-owned de probes regionais de rede e score remoto; veja
+[`docs/bn-08-regional-network-probes.md`](docs/bn-08-regional-network-probes.md).
 
 ### Token local da API
 
@@ -510,6 +512,7 @@ Documentacao detalhada:
 * [`docs/bn-05-remote-evidence-registry.md`](docs/bn-05-remote-evidence-registry.md)
 * [`docs/bn-06-active-proof-of-capability.md`](docs/bn-06-active-proof-of-capability.md)
 * [`docs/bn-07-recurring-risk-verification.md`](docs/bn-07-recurring-risk-verification.md)
+* [`docs/bn-08-regional-network-probes.md`](docs/bn-08-regional-network-probes.md)
 * [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
 * [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
 * [`docs/threat-model.md`](docs/threat-model.md)
