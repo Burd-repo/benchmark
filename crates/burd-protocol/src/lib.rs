@@ -1,3 +1,4 @@
+pub mod benchmark_profile;
 pub mod challenge;
 pub mod enrollment;
 pub mod evidence;
@@ -10,6 +11,15 @@ pub mod signature;
 pub mod telemetry;
 pub mod trust;
 
+pub use benchmark_profile::{
+    BENCHMARK_PROFILE_SCHEMA_VERSION, BENCHMARK_RESULT_CANONICALIZATION_VERSION,
+    BENCHMARK_RESULT_SCHEMA_VERSION, BENCHMARK_RESULT_SIGNATURE_DOMAIN, BenchmarkProfileRecord,
+    BenchmarkProfileThresholds, BenchmarkResultMetrics, BenchmarkResultPayload,
+    BenchmarkResultRecord, BenchmarkResultVerification, ListBenchmarkProfilesResponse,
+    ListProviderBenchmarkResultsResponse, SignedBenchmarkResult, SubmitBenchmarkResultResponse,
+    UpsertBenchmarkProfileRequest, UpsertBenchmarkProfileResponse, benchmark_result_hash,
+    benchmark_result_signature_message,
+};
 pub use challenge::{
     Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, ChallengeVerification,
     IssueProofChallengeRequest, IssueProofChallengeResponse, ListVerificationStatesResponse,

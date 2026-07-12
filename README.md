@@ -216,6 +216,8 @@ O BN-08 adiciona registry backend-owned de probes regionais de rede e score remo
 [`docs/bn-08-regional-network-probes.md`](docs/bn-08-regional-network-probes.md).
 O BN-09 adiciona trust global e antifraude backend-owned no control plane; veja
 [`docs/bn-09-global-trust-antifraud.md`](docs/bn-09-global-trust-antifraud.md).
+O BN-10 adiciona registry backend-owned de Benchmark Profiles v2 e resultados assinados; veja
+[`docs/bn-10-benchmark-profiles-v2.md`](docs/bn-10-benchmark-profiles-v2.md).
 
 ### Token local da API
 
@@ -526,7 +528,7 @@ Documentacao detalhada:
 * [`docs/workload-eligibility.md`](docs/workload-eligibility.md)
 
 A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts.
-O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-09 ja calcula trust global e antifraude a partir de sinais remotos, ainda sem scheduler, marketplace, jobs, billing, Pix ou payouts.
+O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-10 ja registra perfis de benchmark e resultados assinados alem de trust global/antifraude, ainda sem scheduler, marketplace, jobs, billing, Pix ou payouts.
 
 ## Hardware fingerprint e marketplace policy
 
@@ -573,7 +575,7 @@ A API local expoe o mesmo contrato em GET /api/v1/ai-performance.
 
 O relatorio separa metricas medidas (real_benchmark, signed_report, benchmark_history) de estimativas (fit_estimate) e dados ausentes (not_measured). Campos sem medicao confiavel retornam null ou origem not_measured/unavailable; estimativas de fit nunca sao tratadas como benchmark real. Evidencia expirada permanece visivel com is_expired true, warning e confianca reduzida.
 
-Este recurso local nao inicia runtime externo, nao executa o workload remoto de Proof of Capability, nao aprova marketplace e nao cria scheduler, jobs, leases, billing ou payouts.
+Este recurso local nao inicia runtime externo, nao executa o workload remoto de Proof of Capability, nao submete automaticamente resultados BN-10, nao aprova marketplace e nao cria scheduler, jobs, leases, billing ou payouts.
 ## Network score
 
 O network score local usa a ultima amostra finita de `bench network --json` ou a secao `network` do ultimo `report --run-all` salvo em `~/.burd/latest-report.json`.

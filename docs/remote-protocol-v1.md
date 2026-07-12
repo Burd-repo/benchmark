@@ -555,6 +555,60 @@ time, and update time.
 BN-08 does not deploy the production regional probe fleet or consume these
 scores in scheduler, marketplace, billing, or global trust ranking.
 
+## Benchmark Profile API
+
+BN-10 stores backend-owned benchmark profiles and signed benchmark result history. Profiles are defined by admins/control-plane policy. Providers submit signed measurements only for an authenticated remote session.
+
+### `POST /v1/benchmark-profiles`
+
+Admin endpoint that creates or updates one profile version.
+
+Request fields:
+
+- `profile_id`
+- `profile_version`
+- `workload_type`
+- `display_name`
+- optional `description`
+- `image_digest`
+- optional `model_hash`
+- optional `artifact_hash`
+- `required_backend`
+- `min_vram_gb`
+- redacted `parameters`
+- `warmup_seconds`
+- `duration_seconds`
+- `sample_count`
+- `thresholds`
+- optional `status`
+
+### `GET /v1/benchmark-profiles`
+
+Admin endpoint that lists registered profile versions.
+
+### `POST /v1/sessions/{session_id}/benchmark-results`
+
+Device endpoint that submits `SignedBenchmarkResult` through the same authenticated remote-session headers used by telemetry and evidence.
+
+The signed payload contains provider, device, session, run ID, profile ID/version, workload type, backend, hardware fingerprint, GPU UUID, image/model/artifact hashes, parameters, warmup, duration, sample count, timestamps, driver/CUDA versions, metrics, telemetry-window hash, and warnings.
+
+The envelope contains canonical `result_hash`, active `public_key_id`, Ed25519 `signature`, and `canonicalization_version: burd-json-c14n-v1`.
+
+Backend behavior:
+
+- requires an online or degraded session for the provider/device pair;
+- recalculates the result hash;
+- verifies the signature against the active backend device key;
+- binds provider, device, session, fingerprint, profile, workload, backend, image digest, optional model/artifact hash, and profile timing/parameter configuration;
+- validates metric ranges, timestamps, sample counts, and redacted JSON fields;
+- stores valid results as `succeeded` when thresholds pass or `failed` when thresholds miss;
+- deduplicates by `result_hash` and rejects conflicting run IDs.
+
+### `GET /v1/providers/{provider_id}/benchmark-results`
+
+Admin endpoint that lists recent accepted benchmark result records for a provider.
+
+Providers do not submit benchmark profile definitions, final performance status, or marketplace eligibility. The backend owns profile state, verification status, and later policy use.
 ## Trust And Antifraud API
 
 BN-09 calculates backend-owned trust and antifraud state from prior remote

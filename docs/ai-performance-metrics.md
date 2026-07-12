@@ -1,4 +1,4 @@
-﻿# AI Performance Metrics
+# AI Performance Metrics
 
 AI Performance Metrics consolidates local AI performance signals into one stable report for CLI, local API, provider details, raw data, registration payloads, full reports, and signed reports.
 
@@ -61,4 +61,4 @@ Hardware and compatibility context comes from the existing system report and fit
 - `low`: fit estimate only.
 - `unavailable`: metric not measured.
 
-Local trust score, workload eligibility, and capability spot are local signals only. They are not remote confidence, remote Proof of Capability, or marketplace approval.
+Local trust score, workload eligibility, and capability spot are local signals only. They are not remote confidence, remote Proof of Capability, or marketplace approval. BN-10 adds backend-owned signed benchmark result history, but this local report does not submit results automatically.
