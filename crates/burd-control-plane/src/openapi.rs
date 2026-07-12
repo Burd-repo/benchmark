@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-10 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-11 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -339,6 +339,46 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
+            "/v1/workload-policies": {
+                "get": {
+                    "summary": "List backend-owned workload eligibility policies",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "workload policy registry returned" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                },
+                "post": {
+                    "summary": "Create or update a backend-owned workload eligibility policy",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "201": { "description": "workload policy created or updated" },
+                        "400": { "description": "invalid policy, requirement, threshold, or redaction" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
+            "/v1/workload-eligibility/sweep": {
+                "post": {
+                    "summary": "Run one backend workload eligibility sweep",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "202": { "description": "provider-device workload eligibility states recalculated" },
+                        "400": { "description": "invalid sweep request" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
+            "/v1/providers/{provider_id}/workload-eligibility": {
+                "get": {
+                    "summary": "List backend-calculated workload eligibility states for provider devices",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "provider workload eligibility states returned" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
             "/v1/trust/sweep": {
                 "post": {
                     "summary": "Run one backend global trust and antifraud sweep",
@@ -446,7 +486,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn10_identity_session_telemetry_evidence_challenge_verification_network_trust_and_benchmark_endpoints()
+    fn openapi_lists_bn11_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_and_workload_endpoints()
      {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
@@ -480,6 +520,9 @@ mod tests {
             "/v1/benchmark-profiles",
             "/v1/sessions/{session_id}/benchmark-results",
             "/v1/providers/{provider_id}/benchmark-results",
+            "/v1/workload-policies",
+            "/v1/workload-eligibility/sweep",
+            "/v1/providers/{provider_id}/workload-eligibility",
             "/v1/trust/sweep",
             "/v1/providers/{provider_id}/trust-states",
             "/v1/providers/{provider_id}/antifraud-events",

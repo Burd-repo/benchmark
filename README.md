@@ -518,6 +518,7 @@ Documentacao detalhada:
 * [`docs/bn-07-recurring-risk-verification.md`](docs/bn-07-recurring-risk-verification.md)
 * [`docs/bn-08-regional-network-probes.md`](docs/bn-08-regional-network-probes.md)
 * [`docs/bn-09-global-trust-antifraud.md`](docs/bn-09-global-trust-antifraud.md)
+* [`docs/bn-11-workload-eligibility-v2.md`](docs/bn-11-workload-eligibility-v2.md)
 * [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
 * [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
 * [`docs/threat-model.md`](docs/threat-model.md)
@@ -528,7 +529,7 @@ Documentacao detalhada:
 * [`docs/workload-eligibility.md`](docs/workload-eligibility.md)
 
 A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts.
-O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-10 ja registra perfis de benchmark e resultados assinados alem de trust global/antifraude, ainda sem scheduler, marketplace, jobs, billing, Pix ou payouts.
+O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification, ainda sem scheduler, marketplace, jobs, billing, Pix ou payouts.
 
 ## Hardware fingerprint e marketplace policy
 
@@ -624,7 +625,7 @@ status              no_history, warming_up, reliable, degraded ou offline
 
 Trust Score local e um score heuristico do agente. Ele combina integridade de verificacao, frescor de evidencias, reliability, network score e profundidade de historico. Ele nao e reputacao global, aprovacao de backend ou elegibilidade de payout. O trust global backend-owned com antifraude inicial fica no BN-09 do control plane.
 
-Workload Eligibility usa fit, capability spot, trust, verification, reliability, compute score e marketplace policy para indicar se cada workload esta `eligible_locally`, `diagnostic_only`, `not_recommended`, `blocked`, `marketplace_candidate` ou `marketplace_blocked`.
+Workload Eligibility local usa fit, capability spot, trust, verification, reliability, compute score e marketplace policy para indicar se cada workload esta `eligible_locally`, `diagnostic_only`, `not_recommended`, `blocked`, `marketplace_candidate` ou `marketplace_blocked`. O BN-11 adiciona eligibility remota backend-owned no control plane com `eligible`, `limited`, `ineligible`, `verification_required`, `temporarily_unavailable` e `blocked`.
 
 Comandos:
 

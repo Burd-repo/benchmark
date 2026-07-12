@@ -609,6 +609,47 @@ Backend behavior:
 Admin endpoint that lists recent accepted benchmark result records for a provider.
 
 Providers do not submit benchmark profile definitions, final performance status, or marketplace eligibility. The backend owns profile state, verification status, and later policy use.
+
+## Workload Policy API
+
+BN-11 stores backend-owned workload policies and backend-derived eligibility state. Providers do not submit remote eligibility, approval, or marketplace admission.
+
+### `POST /v1/workload-policies`
+
+Admin endpoint that creates or updates one workload policy version.
+
+Request fields:
+
+- `policy_id`
+- `policy_version`
+- `workload_type`
+- `display_name`
+- optional `description`
+- `requirements`
+- optional `status`
+
+Policy requirements can include trust/risk thresholds, reliability and remote network thresholds, verification status and proof freshness, benchmark profile binding, benchmark freshness, backend binding, performance thresholds, minimum VRAM, allowed regions, GPU family, and pricing placeholders for later marketplace policy.
+
+### `GET /v1/workload-policies`
+
+Admin endpoint that lists registered workload policy versions.
+
+### `POST /v1/workload-eligibility/sweep`
+
+Admin endpoint that recalculates provider-device eligibility against active policies.
+
+Backend behavior:
+
+- reads provider/device state, latest remote session, trust state, verification state, regional network state, signed telemetry, and signed benchmark results;
+- evaluates active policies only;
+- stores `eligible`, `limited`, `ineligible`, `verification_required`, `temporarily_unavailable`, or `blocked`;
+- persists reason codes, input scores/statuses, benchmark references, telemetry-derived GPU/VRAM facts, evaluation time, and audit events.
+
+### `GET /v1/providers/{provider_id}/workload-eligibility`
+
+Admin endpoint that lists backend-calculated workload eligibility states for a provider.
+
+BN-11 does not create scheduler assignments, leases, jobs, marketplace listings, billing, Pix, payouts, or background production sweep automation.
 ## Trust And Antifraud API
 
 BN-09 calculates backend-owned trust and antifraud state from prior remote

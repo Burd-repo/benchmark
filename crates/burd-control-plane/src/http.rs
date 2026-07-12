@@ -21,10 +21,11 @@ use axum::{Json, Router};
 use burd_protocol::{
     ClientControlMessage, EnrollmentProofRequest, IssueProofChallengeRequest,
     KeyRotationProofRequest, RevokeEvidenceRequest, RunTrustSweepRequest,
-    RunVerificationSweepRequest, ServerControlMessage, SignedBenchmarkResult,
-    SignedProofCapabilityResponse, StartEnrollmentRequest, StartKeyRotationRequest,
-    StartRemoteSessionRequest, SubmitEvidenceRequest, SubmitNetworkProbeObservationRequest,
-    UpsertBenchmarkProfileRequest, hash_canonical, sha256_hex,
+    RunVerificationSweepRequest, RunWorkloadEligibilityRequest, ServerControlMessage,
+    SignedBenchmarkResult, SignedProofCapabilityResponse, StartEnrollmentRequest,
+    StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
+    SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
+    UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -196,12 +197,24 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(list_benchmark_profiles).post(upsert_benchmark_profile),
         )
         .route(
+            "/v1/workload-policies",
+            get(list_workload_policies).post(upsert_workload_policy),
+        )
+        .route(
             "/v1/sessions/{session_id}/benchmark-results",
             post(submit_benchmark_result),
         )
         .route(
             "/v1/providers/{provider_id}/benchmark-results",
             get(list_provider_benchmark_results),
+        )
+        .route(
+            "/v1/providers/{provider_id}/workload-eligibility",
+            get(list_provider_workload_eligibility),
+        )
+        .route(
+            "/v1/workload-eligibility/sweep",
+            post(run_workload_eligibility_sweep),
         )
         .route("/v1/trust/sweep", post(run_trust_sweep))
         .route(
@@ -787,6 +800,64 @@ async fn list_provider_benchmark_results(
     state
         .db
         .list_provider_benchmark_results(&request_id, &provider_id, query.limit.unwrap_or(50))
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+async fn upsert_workload_policy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<UpsertWorkloadPolicyRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .upsert_workload_policy(&request_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn list_workload_policies(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListWorkloadPoliciesResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_workload_policies(&request_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn run_workload_eligibility_sweep(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<RunWorkloadEligibilityRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .run_workload_eligibility_sweep(&request_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::ACCEPTED, Json(response)).into_response())
+}
+
+async fn list_provider_workload_eligibility(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListProviderWorkloadEligibilityResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_workload_eligibility(&request_id, &provider_id)
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
@@ -1613,16 +1684,19 @@ mod tests {
                 "0007".to_string(),
                 "0008".to_string(),
                 "0009".to_string(),
-                "0010".to_string()
+                "0010".to_string(),
+                "0011".to_string()
             ],
             &[
-                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
+                "0011"
             ]
         ));
         assert!(!migrations_are_current(
             &["0001".to_string()],
             &[
-                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
+                "0011"
             ]
         ));
         assert!(!migrations_are_current(
@@ -1632,7 +1706,8 @@ mod tests {
                 "unexpected".to_string()
             ],
             &[
-                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
+                "0011"
             ]
         ));
     }

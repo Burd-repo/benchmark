@@ -95,6 +95,8 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | Burd Compute Score | local benchmark report | `agent_signed_evidence` | Evidence input, not marketplace ranking. |
 | local reliability score | local uptime history | `agent_claimed` | May seed trust, but backend reliability is authoritative. |
 | local trust score | local heuristic | `agent_claimed` | Backend recalculates global trust. |
-| local workload eligibility | local policy | `agent_claimed` | Backend policy decides remote eligibility. |
+| local workload eligibility | local policy | `agent_claimed` | Diagnostic only; cannot approve remote marketplace or scheduler use. |
+| workload policy definition | backend/admin policy | `backend_attested` | Provider cannot define the policy used for remote eligibility. |
+| remote workload eligibility state | backend policy engine | `backend_derived` | Calculated from trust, verification, network, telemetry, signed benchmark results, and policy version. |
 | marketplace eligibility | backend policy engine | `backend_derived` | Provider cannot self-approve. |
 | pricing/earnings | local estimate | `agent_claimed` | Billing and marketplace pricing are separate future systems. |

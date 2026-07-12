@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy)]
+﻿#[derive(Debug, Clone, Copy)]
 pub struct Migration {
     pub version: &'static str,
     pub name: &'static str,
@@ -55,6 +55,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: "0010",
         name: "benchmark_profiles_v2",
         sql: include_str!("../migrations/0010_benchmark_profiles_v2.sql"),
+    },
+    Migration {
+        version: "0011",
+        name: "workload_eligibility_v2",
+        sql: include_str!("../migrations/0011_workload_eligibility_v2.sql"),
     },
 ];
 
@@ -156,5 +161,15 @@ mod tests {
         assert!(sql.contains("backend TEXT NOT NULL"));
         assert!(sql.contains("UNIQUE(provider_id, device_id, run_id)"));
         assert!(sql.contains("idx_benchmark_results_provider_time"));
+    }
+
+    #[test]
+    fn workload_eligibility_v2_migration_declares_policies_and_states() {
+        let sql = MIGRATIONS[10].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS workload_policies"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS provider_workload_eligibility"));
+        assert!(sql.contains("benchmark_backend TEXT"));
+        assert!(sql.contains("vram_total_mib BIGINT"));
+        assert!(sql.contains("idx_provider_workload_eligibility_workload_status"));
     }
 }
