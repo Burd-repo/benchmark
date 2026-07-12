@@ -960,15 +960,21 @@ fn contains_secret_field(value: &serde_json::Value) -> bool {
 
 fn contains_secret_text(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
-    [
-        "password",
-        "secret",
-        "token",
-        "private_key",
-        "authorization",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
+    let exact_or_suffix_token = lower == "token"
+        || lower.ends_with("_token")
+        || lower.ends_with("-token")
+        || lower.ends_with(".token");
+    exact_or_suffix_token
+        || [
+            "password",
+            "secret",
+            "private_key",
+            "api_key",
+            "authorization",
+            "credential",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
 }
 
 #[cfg(test)]
@@ -1057,10 +1063,13 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_secret_parameters() {
-        let mut request = profile_request();
-        request.parameters = serde_json::json!({"api_token": "leak"});
-        assert!(validate_profile_request(&request).is_err());
+    fn validation_rejects_secret_parameters_without_rejecting_token_counts() {
+        let request = profile_request();
+        assert!(validate_profile_request(&request).is_ok());
+
+        let mut secret_request = profile_request();
+        secret_request.parameters = serde_json::json!({"api_token": "leak"});
+        assert!(validate_profile_request(&secret_request).is_err());
     }
 
     #[tokio::test]
