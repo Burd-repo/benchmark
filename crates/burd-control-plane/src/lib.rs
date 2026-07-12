@@ -16,6 +16,7 @@ pub mod remote_session;
 pub mod telemetry;
 pub mod trust_policy;
 pub mod verification_policy;
+pub mod workload_policy;
 
 pub use config::ControlPlaneConfig;
 pub use db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};

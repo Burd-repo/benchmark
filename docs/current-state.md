@@ -179,8 +179,8 @@ after the June 2026 reliability pass.
 - Hardware attestation through TPM/HSM/OS keychain.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
-- Backend-bound availability and scheduler enforcement of workload eligibility.
-- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, and production risk model inputs beyond BN-10 state.
+- Scheduler enforcement of backend workload eligibility. BN-11 now persists backend-derived eligibility, but no scheduler consumes it yet.
+- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, and production risk model inputs beyond BN-11 state.
 
 ## Known Build Warnings
 
@@ -254,7 +254,7 @@ starting the API server or depending on host state:
 - `docs/remote-authority-matrix.md` defines which fields are agent-claimed,
   agent-signed evidence, backend-attested, backend-derived, or never accepted.
 - `docs/threat-model.md` defines assets, actors, trust boundaries, threats,
-  controls, privacy boundaries, and residual risk for BN-01 through BN-10.
+  controls, privacy boundaries, and residual risk for BN-01 through BN-11.
 
 ## BN-01 - Backend Foundation
 
@@ -427,4 +427,14 @@ starting the API server or depending on host state:
 - Signed benchmark results bind provider, device, session, run ID, profile ID/version, backend, hardware fingerprint, GPU UUID, image digest, optional model/artifact hashes, profile configuration, metrics, telemetry window hash, result hash, active key ID, canonicalization version, and Ed25519 signature.
 - The backend verifies result hash, active device-key signature, remote-session binding, hardware fingerprint, active profile binding, backend binding, image/model/artifact binding, profile timing/parameter binding, timestamps, metric ranges, and threshold satisfaction.
 - Results below profile thresholds are stored as `failed`; valid results meeting thresholds are stored as `succeeded`.
-- BN-10 does not implement agent-side benchmark profile runners, versioned container execution, scheduler consumption, workload eligibility v2, jobs, leases, marketplace, billing, Pix, or payouts.
+- BN-10 does not implement agent-side benchmark profile runners, versioned container execution, scheduler consumption, jobs, leases, marketplace, billing, Pix, or payouts. BN-11 adds backend workload eligibility v2.
+
+## BN-11 - Remote Policy And Workload Eligibility v2
+
+- `burd-protocol` defines backend-owned workload policy requirements, workload policy records, eligibility records, sweep requests, and list responses.
+- PostgreSQL migration `0011_workload_eligibility_v2` adds `workload_policies` and `provider_workload_eligibility`.
+- The control plane exposes `POST /v1/workload-policies`, `GET /v1/workload-policies`, `POST /v1/workload-eligibility/sweep`, and `GET /v1/providers/{provider_id}/workload-eligibility` behind admin authorization.
+- Eligibility is recalculated from provider/device state, latest remote session, verification state, global trust/risk/reliability state, regional network state, signed GPU telemetry, signed benchmark results, and backend policy requirements.
+- Stored statuses are `eligible`, `limited`, `ineligible`, `verification_required`, `temporarily_unavailable`, and `blocked`, with persisted reason codes and audit events.
+- The provider cannot submit or self-approve remote eligibility. Local workload eligibility remains diagnostic; BN-11 eligibility is backend-derived state for future scheduler and marketplace use.
+- BN-11 does not implement scheduler enforcement, secure provider runtime, jobs, leases, marketplace listings, billing, Pix, payouts, or autonomous production sweep scheduling.

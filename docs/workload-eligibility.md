@@ -115,6 +115,32 @@ should converge on:
 - `training_heavy`;
 - `large_model_inference`.
 
+
+## Remote BN-11 Eligibility
+
+BN-11 adds a separate backend-owned eligibility layer in `crates/burd-control-plane`.
+
+Control-plane endpoints:
+
+```txt
+POST /v1/workload-policies
+GET /v1/workload-policies
+POST /v1/workload-eligibility/sweep
+GET /v1/providers/{provider_id}/workload-eligibility
+```
+
+Remote statuses are:
+
+- `eligible`;
+- `limited`;
+- `ineligible`;
+- `verification_required`;
+- `temporarily_unavailable`;
+- `blocked`.
+
+Remote eligibility is derived by the backend from provider/device registry state, remote session state, verification state, global trust/risk/reliability state, regional network state, signed telemetry, signed benchmark results, and backend policy version. The provider never submits this state as a trusted claim.
+
+The local `burd-agent workload-eligibility --json` output remains diagnostic and useful before enrollment, but it is not remote marketplace approval.
 ## Future Scheduler Use
 
 A future scheduler should consume Workload Eligibility before routing jobs. The

@@ -10,6 +10,7 @@ pub mod session;
 pub mod signature;
 pub mod telemetry;
 pub mod trust;
+pub mod workload_policy;
 
 pub use benchmark_profile::{
     BENCHMARK_PROFILE_SCHEMA_VERSION, BENCHMARK_RESULT_CANONICALIZATION_VERSION,
@@ -94,4 +95,11 @@ pub use trust::{
     ANTIFRAUD_EVENT_SCHEMA_VERSION, AntifraudEventRecord, ListAntifraudEventsResponse,
     ListProviderTrustStatesResponse, ProviderTrustStateRecord, RunTrustSweepRequest,
     RunTrustSweepResponse, TRUST_POLICY_VERSION, TrustSweepUpdatedState,
+};
+pub use workload_policy::{
+    ListProviderWorkloadEligibilityResponse, ListWorkloadPoliciesResponse,
+    RunWorkloadEligibilityRequest, RunWorkloadEligibilityResponse, UpsertWorkloadPolicyRequest,
+    UpsertWorkloadPolicyResponse, WORKLOAD_ELIGIBILITY_SCHEMA_VERSION,
+    WORKLOAD_POLICY_ENGINE_VERSION, WORKLOAD_POLICY_SCHEMA_VERSION, WorkloadEligibilityRecord,
+    WorkloadPolicyRecord, WorkloadPolicyRequirements,
 };
