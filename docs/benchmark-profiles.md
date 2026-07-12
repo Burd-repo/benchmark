@@ -53,3 +53,14 @@ workload expectations.
 
 Profiles are MVP guidance. Final marketplace profiles should be tuned with real
 Burd production measurements.
+
+## Backend Profile Registry
+
+The VRAM-tier profiles above are local MVP guidance. BN-10 adds the backend-owned Benchmark Profiles v2 registry in the control plane:
+
+- admins/control-plane policy create versioned profiles through `POST /v1/benchmark-profiles`;
+- providers submit signed benchmark results through `POST /v1/sessions/{session_id}/benchmark-results`;
+- backend verification binds result hash, active device key, remote session, hardware fingerprint, GPU UUID, image digest, optional model hash, and thresholds;
+- accepted benchmark result history is an input for future policy and scheduler work, not marketplace approval by itself.
+
+See [`docs/bn-10-benchmark-profiles-v2.md`](bn-10-benchmark-profiles-v2.md).

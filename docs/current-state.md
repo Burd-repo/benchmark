@@ -170,7 +170,7 @@ after the June 2026 reliability pass.
 
 ## Still Mocked Or Future
 
-- Agent-side proof workload execution, background verification scheduler automation, and production regional probe workers.
+- Agent-side proof workload execution, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
 - Production antifraud operations, case review, admin resolution, and automated enforcement.
 - Marketplace listings, leases, jobs, orchestration, scheduler, and containers.
 - Real earnings, payouts, billing, Pix, and financial settlement.
@@ -180,7 +180,7 @@ after the June 2026 reliability pass.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
 - Backend-bound availability and scheduler enforcement of workload eligibility.
-- Agent-side Proof of Capability execution, backend-attested AI performance history, deployed probe workers, and production risk model inputs beyond BN-09 state.
+- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, and production risk model inputs beyond BN-10 state.
 
 ## Known Build Warnings
 
@@ -254,7 +254,7 @@ starting the API server or depending on host state:
 - `docs/remote-authority-matrix.md` defines which fields are agent-claimed,
   agent-signed evidence, backend-attested, backend-derived, or never accepted.
 - `docs/threat-model.md` defines assets, actors, trust boundaries, threats,
-  controls, privacy boundaries, and residual risk for BN-01 through BN-09.
+  controls, privacy boundaries, and residual risk for BN-01 through BN-10.
 
 ## BN-01 - Backend Foundation
 
@@ -417,3 +417,14 @@ starting the API server or depending on host state:
 - Cold start remains separate through `new_provider` and `insufficient_history`, so missing history is not treated as fraud by itself.
 - Initial antifraud signals cover heartbeat without telemetry, degraded sessions, repeated proof failures, weak remote network, duplicate GPU UUIDs, hardware fingerprint reuse, suspect verification, and missing evidence/proof.
 - BN-09 does not implement production antifraud case management, automatic quarantine/block enforcement, scheduler consumption, marketplace ranking, jobs, leases, billing, Pix, or payouts.
+
+## BN-10 - Benchmark Profiles v2
+
+- `burd-protocol` defines versioned benchmark profile records, signed benchmark result envelopes, canonical result hashing, signature messages, verification records, and list/submit responses.
+- PostgreSQL migration `0010_benchmark_profiles_v2` adds `benchmark_profiles` and `benchmark_results`.
+- The control plane exposes `POST /v1/benchmark-profiles`, `GET /v1/benchmark-profiles`, `POST /v1/sessions/{session_id}/benchmark-results`, and `GET /v1/providers/{provider_id}/benchmark-results`.
+- Benchmark profiles include workload type, image digest, optional model/artifact hashes, backend, minimum VRAM, redacted parameters, warmup/duration/sample count, thresholds, and lifecycle status.
+- Signed benchmark results bind provider, device, session, run ID, profile ID/version, backend, hardware fingerprint, GPU UUID, image digest, optional model/artifact hashes, profile configuration, metrics, telemetry window hash, result hash, active key ID, canonicalization version, and Ed25519 signature.
+- The backend verifies result hash, active device-key signature, remote-session binding, hardware fingerprint, active profile binding, backend binding, image/model/artifact binding, profile timing/parameter binding, timestamps, metric ranges, and threshold satisfaction.
+- Results below profile thresholds are stored as `failed`; valid results meeting thresholds are stored as `succeeded`.
+- BN-10 does not implement agent-side benchmark profile runners, versioned container execution, scheduler consumption, workload eligibility v2, jobs, leases, marketplace, billing, Pix, or payouts.

@@ -78,6 +78,16 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | region | user/agent | `agent_claimed` | Remote probes provide network-region evidence. |
 | remote network score | backend probes | `backend_derived` | Never replaced by local benchmark alone. |
 
+## Benchmark Profiles And Results
+
+| Field | Local source | Remote authority | Notes |
+| --- | --- | --- | --- |
+| benchmark profile definition | backend/admin policy | `backend_attested` | Provider cannot define its own qualifying workload profile. |
+| image digest/model hash/artifact hash | backend profile and signed result | `backend_attested` for profile, `agent_signed_evidence` for result | Backend checks result binding against profile. |
+| benchmark result metrics | agent workload execution | `agent_signed_evidence` | Backend verifies signature, ranges, session binding, profile configuration, backend binding, and thresholds. |
+| benchmark result hash | agent canonical JSON | `agent_signed_evidence` | Backend recalculates before persistence. |
+| benchmark result status | backend verifier | `backend_derived` | `succeeded` or `failed` is decided by backend threshold checks. |
+| local AI performance estimate | fit/history/report builder | `agent_claimed` | Diagnostic unless submitted through the BN-10 signed result contract. |
 ## Policy And Marketplace Signals
 
 | Field | Local source | Remote authority | Notes |

@@ -21,9 +21,10 @@ use axum::{Json, Router};
 use burd_protocol::{
     ClientControlMessage, EnrollmentProofRequest, IssueProofChallengeRequest,
     KeyRotationProofRequest, RevokeEvidenceRequest, RunTrustSweepRequest,
-    RunVerificationSweepRequest, ServerControlMessage, SignedProofCapabilityResponse,
-    StartEnrollmentRequest, StartKeyRotationRequest, StartRemoteSessionRequest,
-    SubmitEvidenceRequest, SubmitNetworkProbeObservationRequest, hash_canonical, sha256_hex,
+    RunVerificationSweepRequest, ServerControlMessage, SignedBenchmarkResult,
+    SignedProofCapabilityResponse, StartEnrollmentRequest, StartKeyRotationRequest,
+    StartRemoteSessionRequest, SubmitEvidenceRequest, SubmitNetworkProbeObservationRequest,
+    UpsertBenchmarkProfileRequest, hash_canonical, sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -90,6 +91,12 @@ struct NetworkProbeListQuery {
 
 #[derive(Debug, Clone, Deserialize)]
 struct AntifraudEventListQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BenchmarkResultListQuery {
     #[serde(default)]
     limit: Option<u32>,
 }
@@ -183,6 +190,18 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/providers/{provider_id}/network-state",
             get(list_provider_network_states),
+        )
+        .route(
+            "/v1/benchmark-profiles",
+            get(list_benchmark_profiles).post(upsert_benchmark_profile),
+        )
+        .route(
+            "/v1/sessions/{session_id}/benchmark-results",
+            post(submit_benchmark_result),
+        )
+        .route(
+            "/v1/providers/{provider_id}/benchmark-results",
+            get(list_provider_benchmark_results),
         )
         .route("/v1/trust/sweep", post(run_trust_sweep))
         .route(
@@ -702,6 +721,72 @@ async fn list_provider_network_states(
     state
         .db
         .list_provider_network_states(&request_id, &provider_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+async fn upsert_benchmark_profile(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<UpsertBenchmarkProfileRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .upsert_benchmark_profile(&request_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn list_benchmark_profiles(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListBenchmarkProfilesResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_benchmark_profiles(&request_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn submit_benchmark_result(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<SignedBenchmarkResult>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    let response = state
+        .db
+        .submit_benchmark_result(&request_id, &authorized, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    let status = if response.duplicate {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(response)).into_response())
+}
+
+async fn list_provider_benchmark_results(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    Query(query): Query<BenchmarkResultListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListProviderBenchmarkResultsResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_benchmark_results(&request_id, &provider_id, query.limit.unwrap_or(50))
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
@@ -1527,16 +1612,17 @@ mod tests {
                 "0006".to_string(),
                 "0007".to_string(),
                 "0008".to_string(),
-                "0009".to_string()
+                "0009".to_string(),
+                "0010".to_string()
             ],
             &[
-                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
             ]
         ));
         assert!(!migrations_are_current(
             &["0001".to_string()],
             &[
-                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
             ]
         ));
         assert!(!migrations_are_current(
@@ -1546,7 +1632,7 @@ mod tests {
                 "unexpected".to_string()
             ],
             &[
-                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"
+                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"
             ]
         ));
     }

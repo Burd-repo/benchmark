@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+pub mod benchmark_profile;
 pub mod config;
 pub mod db;
 pub mod enrollment;

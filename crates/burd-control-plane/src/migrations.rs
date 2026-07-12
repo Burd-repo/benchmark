@@ -51,6 +51,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "global_trust_antifraud",
         sql: include_str!("../migrations/0009_global_trust_antifraud.sql"),
     },
+    Migration {
+        version: "0010",
+        name: "benchmark_profiles_v2",
+        sql: include_str!("../migrations/0010_benchmark_profiles_v2.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -141,5 +146,15 @@ mod tests {
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS antifraud_events"));
         assert!(sql.contains("UNIQUE(provider_id, device_id, event_type, reason)"));
         assert!(sql.contains("idx_provider_trust_states_status_score"));
+    }
+
+    #[test]
+    fn benchmark_profiles_v2_migration_declares_profiles_and_results() {
+        let sql = MIGRATIONS[9].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS benchmark_profiles"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS benchmark_results"));
+        assert!(sql.contains("backend TEXT NOT NULL"));
+        assert!(sql.contains("UNIQUE(provider_id, device_id, run_id)"));
+        assert!(sql.contains("idx_benchmark_results_provider_time"));
     }
 }
