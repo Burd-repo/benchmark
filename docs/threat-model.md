@@ -2,10 +2,10 @@
 
 This threat model covers the first Burd Network control-plane phase: provider
 enrollment, remote sessions, signed evidence, challenge response, telemetry,
-trust policy, audit logs, and BN-12 secure runtime planning.
+trust policy, audit logs, BN-12 secure runtime planning, and BN-13 job control metadata.
 
-It does not cover paid job execution, customer workload payloads, customer data
-plane transfer, billing, Pix, payouts, Kubernetes, distributed training, or
+It does not cover paid job execution, raw customer workload payload bytes, customer data
+plane byte transfer, metering, billing, Pix, payouts, Kubernetes, distributed training, or
 marketplace UI.
 
 ## Security Goals
@@ -43,7 +43,7 @@ marketplace UI.
 - audit log;
 - runtime image digests and allowlists;
 - secure runtime plans;
-- future job secrets and artifact credentials, reserved for BN-13.
+- job-scoped data-plane credentials, introduced as metadata in BN-13 and still requiring later byte-transfer enforcement.
 
 ## Actors
 
@@ -56,7 +56,7 @@ marketplace UI.
 - attacker with stolen provider private key;
 - compromised or outdated agent binary;
 - backend operator or automation with elevated access;
-- future customer submitting approved workload templates, reserved for BN-13 and later.
+- customer/admin submitting approved workload templates through BN-13 job metadata.
 
 ## Trust Boundaries
 
@@ -104,9 +104,14 @@ evidence, and backend observations.
 | Unpinned or unapproved runtime image | BN-12 requires digest-pinned image references and local allowlist before emitting Docker args; backend image policy becomes authoritative for jobs. |
 | Arbitrary customer shell payload | BN-12 runtime plan does not accept commands or entrypoint overrides; BN-13 must use approved templates only. |
 | Container escape surface | Planned defaults use read-only rootfs, non-root user, dropped capabilities, no-new-privileges, seccomp, PID/memory/CPU limits, no network, no IPC sharing, explicit tmpfs, and cleanup requirement. |
-| Wrong GPU used for workload | Runtime plan binds `--gpus device=<GPU UUID>`; future leases must bind provider, device, session, job, lease, and GPU UUID. |
+| Wrong GPU used for workload | Runtime plan binds `--gpus device=<GPU UUID>`; BN-13 job metadata binds provider, device, session, job, and GPU UUID before future leases execute it. |
+| Job replay or duplicate creation | `POST /v1/jobs` requires `Idempotency-Key`; backend stores body hash and rejects conflicting replay. |
+| Job assigned to wrong session | Provider pull is authorized through the remote session credential and the job must match provider, device, and session. |
+| Data-plane credential leakage through URLs | BN-13 returns scoped artifact paths separately from the opaque job credential; raw credentials are not embedded in URLs. |
+| Duplicate or reordered job progress | Job events require a unique monotonically provided sequence per job; duplicate sequences are rejected. |
+| Terminal result rewrite | BN-13 rejects result changes after a job reaches a terminal state. |
 
-## Antifraud Signals For BN-01 Through BN-09
+## Antifraud Signals For BN-01 Through BN-13
 
 - same GPU UUID under multiple providers;
 - same public key across unrelated devices;

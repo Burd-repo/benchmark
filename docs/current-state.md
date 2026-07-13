@@ -119,6 +119,7 @@ after the June 2026 reliability pass.
 - Local workload eligibility can be calculated from fit recommendations, capability spot verification, trust score, provider verification, reliability, compute score, and marketplace GPU policy through CLI and API.
 - Provider details, raw data, and registration payloads surface local and future-marketplace workload eligibility summaries.
 - Secure runtime planning can inspect Docker/NVIDIA readiness and produce a hardened Docker sandbox plan for digest-pinned, allowlisted runtime images without executing customer jobs.
+- The control plane can create backend-authorized compute jobs for a specific provider/device/session, let an authenticated provider session pull the next job, issue job-scoped data-plane grants, record progress events, accept final result metadata, and cancel non-terminal jobs.
 - Network benchmark includes latency aliases, request counts, status code,
   DNS timing, duration, jitter, and warnings.
 - Raw data includes explicit redaction metadata and summaries for history,
@@ -175,15 +176,15 @@ after the June 2026 reliability pass.
 
 - Agent-side proof workload execution, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
 - Production antifraud operations, case review, admin resolution, and automated enforcement.
-- Marketplace listings, leases, jobs, orchestration, scheduler, and paid job container execution.
+- Marketplace listings, leases, orchestration, scheduler, paid job container execution, byte-level data-plane transfer, and metering.
 - Real earnings, payouts, billing, Pix, and financial settlement.
 - Production cloud deployment and complete remote backend operations.
 - Reputation and provider marketplace ranking.
 - Hardware attestation through TPM/HSM/OS keychain.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
-- Scheduler enforcement of backend workload eligibility. BN-11 now persists backend-derived eligibility, but no scheduler consumes it yet.
-- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, and production risk model inputs beyond BN-11 state.
+- Scheduler enforcement of backend workload eligibility. BN-13 validates eligibility for explicitly created jobs, but no scheduler consumes it yet.
+- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-13 state.
 
 ## Known Build Warnings
 
@@ -449,3 +450,12 @@ starting the API server or depending on host state:
 - `burd-agent runtime plan --image-ref <image@sha256:digest> --allow-image-ref <image@sha256:digest> --gpu-uuid <gpu_uuid> --json` emits Docker arguments only when the plan status is `ready`.
 - Ready plans require Linux, Docker, NVIDIA Container Toolkit runtime advertising, an approved template, a digest-pinned allowlisted image, a GPU UUID, valid limits, read-only rootfs, non-root user, dropped capabilities, no-new-privileges, seccomp, no network, no IPC sharing, explicit tmpfs mounts, ephemeral secrets mode, and cleanup requirement.
 - BN-12 does not implement job submission, backend leases, customer artifact download, result upload, arbitrary shell execution, metering, scheduler, marketplace, billing, Pix, payouts, Kubernetes, or distributed workloads.
+## BN-13 - Job API And Data Plane
+
+- `burd-protocol` defines job artifacts, job records, create/list/next/accept/event/result/cancel contracts, and job-scoped data-plane grants.
+- PostgreSQL migration `0012_job_api_data_plane` adds `compute_jobs` and `job_events`.
+- The control plane exposes `POST /v1/jobs`, `GET /v1/jobs/{job_id}`, `GET /v1/providers/{provider_id}/jobs`, `POST /v1/jobs/{job_id}/cancel`, `GET /v1/sessions/{session_id}/jobs/next`, `POST /v1/sessions/{session_id}/jobs/{job_id}/accept`, `POST /v1/sessions/{session_id}/jobs/{job_id}/events`, and `POST /v1/sessions/{session_id}/jobs/{job_id}/result`.
+- Job creation is admin-authorized, idempotent, scoped to one provider/device/session/GPU, and requires an online or degraded session plus backend workload eligibility of `eligible` or `limited`.
+- Jobs are limited to approved templates, CUDA backend, digest-pinned images, structured artifact manifests, and redacted JSON parameters/metadata.
+- Provider sessions pull the next queued job over authenticated outbound session credentials and receive a job-scoped data-plane grant with separate credential material and scoped artifact paths.
+- BN-13 does not implement scheduler selection, leases, provider-side container execution, byte-level artifact transfer, object-storage signed URLs, metering, billing, Pix, payouts, marketplace listing, multi-GPU jobs, or multi-provider jobs.

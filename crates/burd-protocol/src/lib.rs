@@ -3,6 +3,7 @@ pub mod challenge;
 pub mod enrollment;
 pub mod evidence;
 pub mod identity;
+pub mod job;
 pub mod network_probe;
 pub mod remote_session;
 pub mod report;
@@ -59,6 +60,13 @@ pub use identity::{
     default_config_path, default_state_dir, init_identity, load_identity, load_private_key,
     migrate_identity, redacted_config_value, rotate_api_token, rotate_identity_key,
     show_api_token_status, show_identity, verify_api_token,
+};
+pub use job::{
+    AcceptJobRequest, CancelJobRequest, CreateJobRequest, CreateJobResponse,
+    JOB_DATA_PLANE_GRANT_VERSION, JOB_EVENT_SCHEMA_VERSION, JOB_RESULT_SCHEMA_VERSION,
+    JOB_SCHEMA_VERSION, JobArtifact, JobDataPlaneGrant, JobDataPlaneUrl, JobEventRecord,
+    JobEventRequest, JobEventResponse, JobRecord, JobResponse, ListJobsResponse, NextJobResponse,
+    SubmitJobResultRequest, SubmitJobResultResponse,
 };
 pub use network_probe::{
     ListNetworkProbeObservationsResponse, ListProviderNetworkStatesResponse,

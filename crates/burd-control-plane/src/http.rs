@@ -2,6 +2,7 @@ use crate::config::ControlPlaneConfig;
 use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};
 use crate::enrollment::EnrollmentError;
 use crate::error::{ApiError, ErrorCode};
+use crate::job_control::{CreateJobCommand, CreateJobOutcome};
 use crate::openapi;
 use crate::proof_challenge::ProofChallengePolicy;
 use crate::rate_limit::RateLimiter;
@@ -19,11 +20,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_protocol::{
-    ClientControlMessage, EnrollmentProofRequest, IssueProofChallengeRequest,
-    KeyRotationProofRequest, RevokeEvidenceRequest, RunTrustSweepRequest,
-    RunVerificationSweepRequest, RunWorkloadEligibilityRequest, ServerControlMessage,
-    SignedBenchmarkResult, SignedProofCapabilityResponse, StartEnrollmentRequest,
-    StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
+    AcceptJobRequest, CancelJobRequest, ClientControlMessage, CreateJobRequest,
+    EnrollmentProofRequest, IssueProofChallengeRequest, JobEventRequest, KeyRotationProofRequest,
+    RevokeEvidenceRequest, RunTrustSweepRequest, RunVerificationSweepRequest,
+    RunWorkloadEligibilityRequest, ServerControlMessage, SignedBenchmarkResult,
+    SignedProofCapabilityResponse, StartEnrollmentRequest, StartKeyRotationRequest,
+    StartRemoteSessionRequest, SubmitEvidenceRequest, SubmitJobResultRequest,
     SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
     UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
 };
@@ -98,6 +100,12 @@ struct AntifraudEventListQuery {
 
 #[derive(Debug, Clone, Deserialize)]
 struct BenchmarkResultListQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct JobListQuery {
     #[serde(default)]
     limit: Option<u32>,
 }
@@ -215,6 +223,23 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/workload-eligibility/sweep",
             post(run_workload_eligibility_sweep),
+        )
+        .route("/v1/jobs", post(create_job))
+        .route("/v1/jobs/{job_id}", get(get_job))
+        .route("/v1/jobs/{job_id}/cancel", post(cancel_job))
+        .route("/v1/providers/{provider_id}/jobs", get(list_provider_jobs))
+        .route("/v1/sessions/{session_id}/jobs/next", get(next_job))
+        .route(
+            "/v1/sessions/{session_id}/jobs/{job_id}/accept",
+            post(accept_job),
+        )
+        .route(
+            "/v1/sessions/{session_id}/jobs/{job_id}/events",
+            post(record_job_event),
+        )
+        .route(
+            "/v1/sessions/{session_id}/jobs/{job_id}/result",
+            post(submit_job_result),
         )
         .route("/v1/trust/sweep", post(run_trust_sweep))
         .route(
@@ -858,6 +883,154 @@ async fn list_provider_workload_eligibility(
     state
         .db
         .list_provider_workload_eligibility(&request_id, &provider_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+async fn create_job(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateJobRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let idempotency_key = required_idempotency_key(&headers, &request_id)?;
+    let request_hash = hash_canonical(&payload)
+        .map_err(|error| ApiError::invalid_request(error, request_id.clone()))?;
+
+    let outcome = state
+        .db
+        .create_job_idempotently(CreateJobCommand {
+            request_id: request_id.clone(),
+            scope: "POST /v1/jobs".to_string(),
+            idempotency_key,
+            request_hash,
+            request: payload,
+        })
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+
+    match outcome {
+        CreateJobOutcome::Response(record) => {
+            let value = serde_json::from_str::<serde_json::Value>(&record.response_json).map_err(
+                |error| ApiError::invalid_request(error.to_string(), request_id.clone()),
+            )?;
+            let status = StatusCode::from_u16(record.status_code).unwrap_or(StatusCode::OK);
+            Ok((status, Json(value)).into_response())
+        }
+        CreateJobOutcome::Conflict => Err(ApiError::idempotency_conflict(request_id)),
+    }
+}
+
+async fn get_job(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::JobResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .get_job(&request_id, &job_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_provider_jobs(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    Query(query): Query<JobListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListJobsResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_jobs(&request_id, &provider_id, query.limit.unwrap_or(50))
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn next_job(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::NextJobResponse>, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    state
+        .db
+        .next_job_for_session(&request_id, &authorized)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn accept_job(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, job_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<AcceptJobRequest>,
+) -> Result<Json<burd_protocol::JobResponse>, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    state
+        .db
+        .accept_job(&request_id, &authorized, &job_id, &payload)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn record_job_event(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, job_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<JobEventRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    let response = state
+        .db
+        .record_job_event(&request_id, &authorized, &job_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn submit_job_result(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, job_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<SubmitJobResultRequest>,
+) -> Result<Json<burd_protocol::SubmitJobResultResponse>, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    state
+        .db
+        .submit_job_result(&request_id, &authorized, &job_id, &payload)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn cancel_job(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CancelJobRequest>,
+) -> Result<Json<burd_protocol::JobResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .cancel_job(&request_id, &job_id, &payload)
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))

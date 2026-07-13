@@ -1,4 +1,4 @@
-﻿#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Migration {
     pub version: &'static str,
     pub name: &'static str,
@@ -60,6 +60,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: "0011",
         name: "workload_eligibility_v2",
         sql: include_str!("../migrations/0011_workload_eligibility_v2.sql"),
+    },
+    Migration {
+        version: "0012",
+        name: "job_api_data_plane",
+        sql: include_str!("../migrations/0012_job_api_data_plane.sql"),
     },
 ];
 
@@ -171,5 +176,15 @@ mod tests {
         assert!(sql.contains("benchmark_backend TEXT"));
         assert!(sql.contains("vram_total_mib BIGINT"));
         assert!(sql.contains("idx_provider_workload_eligibility_workload_status"));
+    }
+
+    #[test]
+    fn job_api_data_plane_migration_declares_jobs_and_events() {
+        let sql = MIGRATIONS[11].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS compute_jobs"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS job_events"));
+        assert!(sql.contains("UNIQUE(provider_id, client_job_id)"));
+        assert!(sql.contains("UNIQUE(job_id, sequence)"));
+        assert!(sql.contains("idx_compute_jobs_session_status"));
     }
 }
