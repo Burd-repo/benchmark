@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-17 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, usage metering ledger receipts, marketplace registry listings, customer accounts, project quotas, customer API keys, credits, marketplace reservations, customer usage views, customer audit logs, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-18 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, usage metering ledger receipts, marketplace registry listings, customer accounts, project quotas, customer API keys, credits, marketplace reservations, customer usage views, billing price book, Pix payment intents, financial ledger, invoices, customer balances, provider payable balances, payout accounts, provider payouts, customer audit logs, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -405,6 +405,84 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
+            "/v1/marketplace/listings/{listing_id}/price": {
+                "post": {
+                    "summary": "Configure the active billing price for a marketplace listing",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "200": { "description": "price stored and listing price fields updated" }, "404": { "description": "listing not found" } }
+                }
+            },
+            "/v1/billing/projects/{project_id}/pix/payment-intents": {
+                "post": {
+                    "summary": "Create a customer Pix payment intent without ledger movement until confirmation",
+                    "security": [{ "customerBearer": [] }],
+                    "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "201": { "description": "Pix intent created" }, "409": { "description": "idempotency conflict" } }
+                }
+            },
+            "/v1/billing/pix/payment-intents/{payment_intent_id}/confirm": {
+                "post": {
+                    "summary": "Confirm a Pix payment intent and credit customer balance through double-entry ledger lines",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "200": { "description": "payment intent confirmed or replayed" }, "404": { "description": "payment intent not found" } }
+                }
+            },
+            "/v1/billing/projects/{project_id}/balance": {
+                "get": {
+                    "summary": "Read customer project financial balances",
+                    "security": [{ "customerBearer": [] }],
+                    "responses": { "200": { "description": "project balances returned" } }
+                }
+            },
+            "/v1/billing/projects/{project_id}/ledger": {
+                "get": {
+                    "summary": "List customer project financial ledger lines",
+                    "security": [{ "customerBearer": [] }],
+                    "responses": { "200": { "description": "project ledger lines returned" } }
+                }
+            },
+            "/v1/billing/reservations/{reservation_id}/settle": {
+                "post": {
+                    "summary": "Settle metered reservation usage into invoice and double-entry financial ledger",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "200": { "description": "invoice issued or replayed" }, "409": { "description": "usage, price, or reservation cannot be billed" } }
+                }
+            },
+            "/v1/billing/invoices/{invoice_id}": {
+                "get": {
+                    "summary": "Read a billing invoice",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "200": { "description": "invoice returned" }, "404": { "description": "invoice not found" } }
+                }
+            },
+            "/v1/billing/providers/{provider_id}/balance": {
+                "get": {
+                    "summary": "Read provider payable balances",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "200": { "description": "provider balances returned" } }
+                }
+            },
+            "/v1/billing/providers/{provider_id}/ledger": {
+                "get": {
+                    "summary": "List provider financial ledger lines",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "200": { "description": "provider ledger lines returned" } }
+                }
+            },
+            "/v1/billing/providers/{provider_id}/payout-account": {
+                "post": {
+                    "summary": "Create or update a provider Pix payout account with KYC and tax status",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "200": { "description": "payout account upserted" }, "404": { "description": "provider not found" } }
+                }
+            },
+            "/v1/billing/providers/{provider_id}/payouts": {
+                "post": {
+                    "summary": "Create a provider payout from payable balance subject to minimum payout and hold policy",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "201": { "description": "payout created" }, "409": { "description": "provider balance, KYC, tax, or minimum payout blocks payout" } }
+                }
+            },
             "/v1/customer/users": {
                 "post": {
                     "summary": "Create a human customer identity record",
@@ -581,7 +659,8 @@ pub fn document() -> serde_json::Value {
                         "401": { "description": "admin credential missing or invalid" }
                     }
                 }
-            },            "/v1/providers/{provider_id}/usage-ledger": {
+            },
+            "/v1/providers/{provider_id}/usage-ledger": {
                 "get": {
                     "summary": "List append-only usage ledger entries for a provider",
                     "security": [{ "adminBearer": [] }],
@@ -765,7 +844,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn17_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_job_scheduler_metering_marketplace_and_customer_endpoints()
+    fn openapi_lists_bn18_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_job_scheduler_metering_marketplace_customer_and_billing_endpoints()
      {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
@@ -804,6 +883,17 @@ mod tests {
             "/v1/providers/{provider_id}/workload-eligibility",
             "/v1/marketplace/listings",
             "/v1/marketplace/listings/sweep",
+            "/v1/marketplace/listings/{listing_id}/price",
+            "/v1/billing/projects/{project_id}/pix/payment-intents",
+            "/v1/billing/pix/payment-intents/{payment_intent_id}/confirm",
+            "/v1/billing/projects/{project_id}/balance",
+            "/v1/billing/projects/{project_id}/ledger",
+            "/v1/billing/reservations/{reservation_id}/settle",
+            "/v1/billing/invoices/{invoice_id}",
+            "/v1/billing/providers/{provider_id}/balance",
+            "/v1/billing/providers/{provider_id}/ledger",
+            "/v1/billing/providers/{provider_id}/payout-account",
+            "/v1/billing/providers/{provider_id}/payouts",
             "/v1/customer/users",
             "/v1/customer/organizations",
             "/v1/customer/organizations/{organization_id}",

@@ -86,6 +86,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "customer_accounts_reservations",
         sql: include_str!("../migrations/0016_customer_accounts_reservations.sql"),
     },
+    Migration {
+        version: "0017",
+        name: "billing_pix_payouts",
+        sql: include_str!("../migrations/0017_billing_pix_payouts.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -238,6 +243,26 @@ mod tests {
         assert!(sql.contains("gpu_verified BOOLEAN NOT NULL"));
         assert!(sql.contains("vram_verified BOOLEAN NOT NULL"));
         assert!(sql.contains("idx_marketplace_listings_status_workload"));
+    }
+    #[test]
+    fn billing_pix_payouts_migration_declares_financial_tables() {
+        let sql = MIGRATIONS[16].sql;
+        for table in [
+            "marketplace_listing_prices",
+            "pix_payment_intents",
+            "billing_invoices",
+            "financial_ledger_lines",
+            "provider_payout_accounts",
+            "provider_payouts",
+            "billing_refunds",
+            "billing_disputes",
+            "billing_reconciliation_events",
+        ] {
+            assert!(sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")));
+        }
+        assert!(sql.contains("prevent_financial_ledger_mutation"));
+        assert!(sql.contains("financial_ledger_no_update"));
+        assert!(sql.contains("idx_marketplace_listing_prices_active"));
     }
     #[test]
     fn customer_accounts_reservations_migration_declares_customer_registry() {

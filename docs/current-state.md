@@ -177,15 +177,15 @@ after the June 2026 reliability pass.
 
 - Agent-side proof workload execution, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
 - Production antifraud operations, case review, admin resolution, and automated enforcement.
-- Marketplace checkout/orchestration beyond single-listing reservation, autonomous/background scheduling, paid job container execution, byte-level data-plane transfer, billing-grade metering enforcement, and financial settlement.
-- Real earnings, payouts, billing, Pix, and financial settlement.
+- Marketplace checkout/orchestration beyond single-listing reservation, autonomous/background scheduling, paid job container execution, byte-level data-plane transfer, billing-grade metering enforcement, and external financial settlement.
+- Real Pix gateway capture, bank payout execution, earnings settlement, refunds, disputes, tax workflows, and production financial reconciliation.
 - Production cloud deployment and complete remote backend operations.
 - Reputation and provider marketplace ranking.
 - Hardware attestation through TPM/HSM/OS keychain.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
 - Production scheduler optimization, marketplace demand matching, reservations across supply inventory, and multi-GPU/multi-provider placement. BN-14 only offers leases for already-created, already-targeted jobs.
-- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-17 state.
+- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-18 state.
 
 ## Known Build Warnings
 
@@ -500,3 +500,14 @@ starting the API server or depending on host state:
 - Reservation creation is idempotent, checks customer scope, project/organization status, project quota, listing status/current status, and optional workload-type binding. Active reservations are unique per marketplace listing.
 - Customer credits are non-settlement accounting entries in BN-17. Reservation hold/release entries use zero credit movement because listing pricing and billing are BN-18 work.
 - BN-17 does not implement checkout, job submission from reservations, provider-side execution, provider-set pricing, billing, Pix, payouts, invoices, refunds, disputes, taxes, or financial settlement.
+
+## BN-18 - Billing, Pix And Payouts
+
+- `burd-protocol` defines marketplace price records, Pix payment intents, financial ledger lines, billing invoices, balances, payout accounts, payouts, refunds, disputes, and reconciliation event contracts.
+- PostgreSQL migration `0017_billing_pix_payouts` adds marketplace price book, Pix intents, billing invoices, append-only `financial_ledger_lines`, provider payout accounts, provider payouts, refunds, disputes, and reconciliation events.
+- The control plane exposes admin endpoints for listing price, billing settlement, invoice reads, provider balances/ledger, payout account upsert, and payout creation.
+- Customer API keys now support `billing:read` and `billing:write`; customer endpoints can create Pix payment intents and read project balances/ledger.
+- Pix payment intents do not move money until confirmed by admin/adapter; confirmation appends balanced ledger lines.
+- Reservation billing settlement requires BN-15 usage, BN-17 reservation, matching provider/device/GPU binding, an active BN-18 listing price, and sufficient confirmed project balance.
+- Provider payouts require verified KYC/tax state, minimum payout, payable balance, and hold policy.
+- BN-18 does not call a real Pix gateway, verify webhook signatures, execute bank payouts, provide checkout UI, or complete legal/KYC/tax workflows.

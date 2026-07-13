@@ -24,8 +24,20 @@ const DEFAULT_MAX_RESERVATION_TTL_SECONDS: u32 = 60 * 60;
 const MAX_RESERVATION_TTL_SECONDS: u32 = 24 * 60 * 60;
 const MAX_RESERVATION_LIST_LIMIT: u32 = 200;
 const MAX_CUSTOMER_AUDIT_LIMIT: u32 = 200;
-const DEFAULT_CUSTOMER_SCOPES: &[&str] = &["reservations:read", "reservations:write", "usage:read"];
-const ALLOWED_CUSTOMER_SCOPES: &[&str] = &["reservations:read", "reservations:write", "usage:read"];
+const DEFAULT_CUSTOMER_SCOPES: &[&str] = &[
+    "billing:read",
+    "billing:write",
+    "reservations:read",
+    "reservations:write",
+    "usage:read",
+];
+const ALLOWED_CUSTOMER_SCOPES: &[&str] = &[
+    "billing:read",
+    "billing:write",
+    "reservations:read",
+    "reservations:write",
+    "usage:read",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomerApiKeyAuth {
@@ -1496,6 +1508,8 @@ mod tests {
         assert_eq!(
             normalized_scopes(&[]).unwrap(),
             vec![
+                "billing:read".to_string(),
+                "billing:write".to_string(),
                 "reservations:read".to_string(),
                 "reservations:write".to_string(),
                 "usage:read".to_string(),
@@ -1511,7 +1525,10 @@ mod tests {
             scopes,
             vec!["reservations:read".to_string(), "usage:read".to_string()]
         );
-        assert!(normalized_scopes(&["billing:write".to_string()]).is_err());
+        assert_eq!(
+            normalized_scopes(&["billing:write".to_string()]).unwrap(),
+            vec!["billing:write".to_string()]
+        );
     }
 
     #[test]

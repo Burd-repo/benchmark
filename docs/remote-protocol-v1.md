@@ -882,6 +882,46 @@ A reservation is accepted only when the API key is active and scoped, the projec
 BN-17 reservation holds do not create jobs and do not debit billable credits. Credit hold/release entries use zero movement until BN-18 introduces marketplace pricing and financial settlement.
 
 BN-17 does not implement checkout, provider-set pricing, customer job submission, billing, Pix, payouts, invoices, refunds, disputes, or taxes.
+
+## Billing, Pix And Payouts
+
+BN-18 adds the first backend-owned financial settlement layer. The provider and customer do not submit authoritative billing totals, ledger mutations, payout balances, or payment confirmation state.
+
+### Admin Billing Endpoints
+
+Admin endpoints:
+
+- `POST /v1/marketplace/listings/{listing_id}/price`
+- `POST /v1/billing/pix/payment-intents/{payment_intent_id}/confirm`
+- `POST /v1/billing/reservations/{reservation_id}/settle`
+- `GET /v1/billing/invoices/{invoice_id}`
+- `GET /v1/billing/providers/{provider_id}/balance`
+- `GET /v1/billing/providers/{provider_id}/ledger`
+- `POST /v1/billing/providers/{provider_id}/payout-account`
+- `POST /v1/billing/providers/{provider_id}/payouts`
+
+Backend behavior:
+
+- stores an admin-configured marketplace price book and mirrors active price fields onto marketplace listings;
+- confirms Pix payment intents only through backend/admin adapter action;
+- appends balanced double-entry financial ledger lines for payment confirmation, billing settlement, and payout creation;
+- derives project and provider balances from `financial_ledger_lines`;
+- creates invoices from BN-15 usage, BN-17 reservation state, active BN-18 listing price, and sufficient confirmed project balance;
+- requires provider payout accounts to carry hashed Pix key material plus KYC/tax status;
+- requires sufficient payable balance, minimum payout, KYC/tax verification, and payout hold policy before creating a payout.
+
+### Customer Billing Endpoints
+
+Customer endpoints use `Authorization: Bearer <customer_api_key>` and billing scopes:
+
+- `POST /v1/billing/projects/{project_id}/pix/payment-intents`
+- `GET /v1/billing/projects/{project_id}/balance`
+- `GET /v1/billing/projects/{project_id}/ledger`
+
+Pix payment-intent creation also requires `Idempotency-Key`. Creating the intent records the requested payment metadata but does not move funds. Ledger movement occurs only after backend confirmation.
+
+BN-18 does not call a real Pix gateway, verify webhook signatures, execute bank payouts, expose checkout UI, complete KYC/tax/legal workflows, or implement refund/dispute adjudication beyond schema placeholders.
+
 ## Trust And Antifraud API
 
 BN-09 calculates backend-owned trust and antifraud state from prior remote
