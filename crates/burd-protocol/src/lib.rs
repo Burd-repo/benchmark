@@ -5,6 +5,7 @@ pub mod evidence;
 pub mod identity;
 pub mod job;
 pub mod lease;
+pub mod marketplace;
 pub mod network_probe;
 pub mod remote_session;
 pub mod report;
@@ -73,6 +74,11 @@ pub use job::{
 pub use lease::{
     JOB_LEASE_SCHEMA_VERSION, JobLeaseRecord, ListJobLeasesResponse, RunSchedulerRequest,
     RunSchedulerResponse, SchedulerDecisionRecord,
+};
+pub use marketplace::{
+    ListMarketplaceListingsResponse, MARKETPLACE_ENGINE_VERSION,
+    MARKETPLACE_LISTING_SCHEMA_VERSION, MarketplaceListingRecord,
+    RunMarketplaceListingSweepRequest, RunMarketplaceListingSweepResponse,
 };
 pub use network_probe::{
     ListNetworkProbeObservationsResponse, ListProviderNetworkStatesResponse,

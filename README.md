@@ -524,6 +524,7 @@ Documentacao detalhada:
 * [`docs/bn-13-job-api-data-plane.md`](docs/bn-13-job-api-data-plane.md)
 * [`docs/bn-14-scheduler-leases.md`](docs/bn-14-scheduler-leases.md)
 * [`docs/bn-15-metering-usage-ledger.md`](docs/bn-15-metering-usage-ledger.md)
+* [`docs/bn-16-marketplace-registry-listings.md`](docs/bn-16-marketplace-registry-listings.md)
 * [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
 * [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
 * [`docs/threat-model.md`](docs/threat-model.md)
@@ -533,8 +534,8 @@ Documentacao detalhada:
 * [`docs/spot-verification.md`](docs/spot-verification.md)
 * [`docs/workload-eligibility.md`](docs/workload-eligibility.md)
 
-A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts.
-O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification. O BN-12 adiciona planejamento local de runtime seguro Docker/NVIDIA para imagens digest-pinned e allowlisted. O BN-13 adiciona Job API e data-plane grants no control plane. O BN-14 adiciona scheduler pass admin-triggered e leases para jobs ja criados. O BN-15 adiciona usage ledger append-only e recibos hash-backed para jobs terminais, ainda sem execucao paga, marketplace, billing, Pix ou payouts.
+A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts; o control plane agora possui registry/listings backend-owned no BN-16, ainda sem reserva ou dinheiro.
+O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification. O BN-12 adiciona planejamento local de runtime seguro Docker/NVIDIA para imagens digest-pinned e allowlisted. O BN-13 adiciona Job API e data-plane grants no control plane. O BN-14 adiciona scheduler pass admin-triggered e leases para jobs ja criados. O BN-15 adiciona usage ledger append-only e recibos hash-backed para jobs terminais. O BN-16 adiciona marketplace registry/listings backend-owned a partir de trust, eligibility, proof, benchmark, network e leases, ainda sem execucao paga, reservas, billing, Pix ou payouts.
 
 ## Hardware fingerprint e marketplace policy
 
@@ -682,6 +683,12 @@ Documento: [`docs/bn-14-scheduler-leases.md`](docs/bn-14-scheduler-leases.md).
 O BN-15 adiciona `usage_ledger_entries`, recibos de uso por job terminal, hash canonico do recibo, listagem por job/provider e finalize idempotente para backfill admin. Ele mede GPU-seconds, bytes de artefatos, retries e classificacao inicial de falha, mas nao cobra cliente, nao paga provider e nao cria ledger financeiro.
 
 Documento: [`docs/bn-15-metering-usage-ledger.md`](docs/bn-15-metering-usage-ledger.md).
+
+## Marketplace registry e listings
+
+O BN-16 adiciona `marketplace_listings`, sweep admin em `POST /v1/marketplace/listings/sweep`, listagem global publicada em `GET /v1/marketplace/listings` e inspecao por provider em `GET /v1/providers/{provider_id}/marketplace-listings`. Listings so publicam GPU/VRAM como verificados quando proof backend e benchmark sucedido estao vinculados ao GPU UUID observado. Preco fica explicitamente `not_configured_bn16`; reservas, contas de cliente, billing, Pix e payouts continuam fora.
+
+Documento: [`docs/bn-16-marketplace-registry-listings.md`](docs/bn-16-marketplace-registry-listings.md).
 
 ## Histórico
 

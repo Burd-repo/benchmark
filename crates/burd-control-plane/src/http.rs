@@ -22,12 +22,12 @@ use axum::{Json, Router};
 use burd_protocol::{
     AcceptJobRequest, CancelJobRequest, ClientControlMessage, CreateJobRequest,
     EnrollmentProofRequest, IssueProofChallengeRequest, JobEventRequest, KeyRotationProofRequest,
-    RevokeEvidenceRequest, RunSchedulerRequest, RunTrustSweepRequest, RunVerificationSweepRequest,
-    RunWorkloadEligibilityRequest, ServerControlMessage, SignedBenchmarkResult,
-    SignedProofCapabilityResponse, StartEnrollmentRequest, StartKeyRotationRequest,
-    StartRemoteSessionRequest, SubmitEvidenceRequest, SubmitJobResultRequest,
-    SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
-    UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
+    RevokeEvidenceRequest, RunMarketplaceListingSweepRequest, RunSchedulerRequest,
+    RunTrustSweepRequest, RunVerificationSweepRequest, RunWorkloadEligibilityRequest,
+    ServerControlMessage, SignedBenchmarkResult, SignedProofCapabilityResponse,
+    StartEnrollmentRequest, StartKeyRotationRequest, StartRemoteSessionRequest,
+    SubmitEvidenceRequest, SubmitJobResultRequest, SubmitNetworkProbeObservationRequest,
+    UpsertBenchmarkProfileRequest, UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -53,6 +53,15 @@ impl AppState {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct MarketplaceListingQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    workload_type: Option<String>,
+}
 #[derive(Debug, Clone, Serialize)]
 struct HealthResponse {
     status: &'static str,
@@ -224,6 +233,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/workload-eligibility/sweep",
             post(run_workload_eligibility_sweep),
         )
+        .route("/v1/marketplace/listings", get(list_marketplace_listings))
+        .route(
+            "/v1/marketplace/listings/sweep",
+            post(run_marketplace_listing_sweep),
+        )
         .route("/v1/jobs", post(create_job))
         .route("/v1/jobs/{job_id}", get(get_job))
         .route("/v1/jobs/{job_id}/cancel", post(cancel_job))
@@ -235,6 +249,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/jobs/{job_id}/leases", get(list_job_leases))
         .route("/v1/scheduler/run", post(run_scheduler))
         .route("/v1/providers/{provider_id}/jobs", get(list_provider_jobs))
+        .route(
+            "/v1/providers/{provider_id}/marketplace-listings",
+            get(list_provider_marketplace_listings),
+        )
         .route(
             "/v1/providers/{provider_id}/usage-ledger",
             get(list_provider_usage_ledger),
@@ -898,6 +916,56 @@ async fn list_provider_workload_eligibility(
     state
         .db
         .list_provider_workload_eligibility(&request_id, &provider_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+async fn run_marketplace_listing_sweep(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<RunMarketplaceListingSweepRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .run_marketplace_listing_sweep(&request_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::ACCEPTED, Json(response)).into_response())
+}
+
+async fn list_marketplace_listings(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<MarketplaceListingQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListMarketplaceListingsResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_marketplace_listings(
+            &request_id,
+            query.status.as_deref(),
+            query.workload_type.as_deref(),
+            query.limit.unwrap_or(50),
+        )
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_provider_marketplace_listings(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    Query(query): Query<MarketplaceListingQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListMarketplaceListingsResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_marketplace_listings(&request_id, &provider_id, query.limit.unwrap_or(50))
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
