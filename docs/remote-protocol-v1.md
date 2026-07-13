@@ -132,8 +132,7 @@ Rules:
 
 ## Job State Machine
 
-Jobs are not implemented in BN-01, but their names are reserved so provider
-state and API wording do not conflict later.
+BN-13 implements the first backend-owned job registry and provider pull protocol. Scheduler leases are still deferred, but job state is now persisted by the control plane.
 
 ```text
 queued
@@ -688,7 +687,68 @@ Backend behavior reserved for BN-13/BN-14:
 - treat provider-generated runtime plans as evidence, not final authority;
 - persist runtime/job audit events before execution and after cleanup.
 
-BN-12 does not create `/v1/jobs`, leases, scheduler assignment, data-plane artifact transfer, result upload, metering, billing, Pix, payouts, or marketplace listings.
+BN-12 by itself does not create jobs, leases, scheduler assignment, data-plane artifact transfer, result upload, metering, billing, Pix, payouts, or marketplace listings. BN-13 adds the first `/v1/jobs` control-plane API and metadata-only data-plane grants.
+
+## Job API And Data Plane
+
+BN-13 creates a backend-authorized job for one provider, one device, one session, and one GPU. It does not pick the provider automatically; BN-14 scheduler and leases remain future work.
+
+### `POST /v1/jobs`
+
+Admin endpoint. Requires `Idempotency-Key`.
+
+Request fields:
+
+- `client_job_id`, optional customer/admin idempotency reference;
+- `provider_id`, `device_id`, and `session_id`;
+- `workload_type`;
+- `template_id`, one of the approved runtime templates;
+- `image_ref`, digest-pinned with `@sha256:`;
+- `gpu_uuid`;
+- `backend`, initially `cuda`;
+- structured `parameters`;
+- `input_artifacts` and `expected_outputs` manifests;
+- optional `timeout_seconds`, `policy_id`, and `policy_version`.
+
+Backend behavior:
+
+- verifies provider/device/session binding;
+- requires device status `active`;
+- requires session status `online` or `degraded`;
+- requires backend workload eligibility `eligible` or `limited`;
+- rejects arbitrary shell templates and unpinned images;
+- stores `compute_jobs` with status `queued`;
+- records an audit event;
+- replays the stored response for the same idempotency key and body hash.
+
+### `GET /v1/sessions/{session_id}/jobs/next`
+
+Device-session endpoint. It atomically selects the oldest queued job for the authorized provider/device/session, moves it to `assigned`, and returns:
+
+- `job`, the persisted job record;
+- `data_plane`, a job-scoped grant.
+
+The grant contains an opaque credential, server expiry, and scoped artifact paths. URLs do not embed the raw credential. BN-13 does not transfer artifact bytes yet.
+
+### `POST /v1/sessions/{session_id}/jobs/{job_id}/accept`
+
+Device-session endpoint. Moves an assigned job to `accepted` and records optional provider status text.
+
+### `POST /v1/sessions/{session_id}/jobs/{job_id}/events`
+
+Device-session endpoint. Appends a unique sequence number per job. Event types can update status to `provisioning`, `running`, or `uploading`; other events update progress/message metadata only.
+
+### `POST /v1/sessions/{session_id}/jobs/{job_id}/result`
+
+Device-session endpoint. Accepts final `succeeded` or `failed` result metadata, output artifact references, metrics, and optional error fields. Terminal job results cannot be changed.
+
+### Admin Read And Cancel
+
+- `GET /v1/jobs/{job_id}` reads job metadata.
+- `GET /v1/providers/{provider_id}/jobs` lists provider jobs with a bounded limit.
+- `POST /v1/jobs/{job_id}/cancel` moves a non-terminal job to `cancelled`.
+
+BN-13 does not implement scheduler selection, leases, provider-side execution, object storage signing, byte upload/download, metering, billing, Pix, payouts, marketplace reservations, multi-GPU jobs, or multi-provider jobs.
 ## Trust And Antifraud API
 
 BN-09 calculates backend-owned trust and antifraud state from prior remote

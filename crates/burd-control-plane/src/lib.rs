@@ -7,6 +7,7 @@ pub mod enrollment;
 pub mod error;
 pub mod evidence_registry;
 pub mod http;
+pub mod job_control;
 pub mod migrations;
 pub mod network_probe;
 pub mod openapi;

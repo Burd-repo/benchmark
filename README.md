@@ -521,6 +521,7 @@ Documentacao detalhada:
 * [`docs/bn-09-global-trust-antifraud.md`](docs/bn-09-global-trust-antifraud.md)
 * [`docs/bn-11-workload-eligibility-v2.md`](docs/bn-11-workload-eligibility-v2.md)
 * [`docs/bn-12-secure-provider-runtime.md`](docs/bn-12-secure-provider-runtime.md)
+* [`docs/bn-13-job-api-data-plane.md`](docs/bn-13-job-api-data-plane.md)
 * [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
 * [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
 * [`docs/threat-model.md`](docs/threat-model.md)
@@ -531,7 +532,7 @@ Documentacao detalhada:
 * [`docs/workload-eligibility.md`](docs/workload-eligibility.md)
 
 A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts.
-O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification. O BN-12 adiciona planejamento local de runtime seguro Docker/NVIDIA para imagens digest-pinned e allowlisted, ainda sem scheduler, marketplace, jobs pagos, billing, Pix ou payouts.
+O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification. O BN-12 adiciona planejamento local de runtime seguro Docker/NVIDIA para imagens digest-pinned e allowlisted. O BN-13 adiciona Job API e data-plane grants no control plane, ainda sem scheduler, leases, execucao paga, metering, marketplace, billing, Pix ou payouts.
 
 ## Hardware fingerprint e marketplace policy
 
@@ -661,6 +662,13 @@ burd-agent runtime plan --image-ref ghcr.io/burd/runtime/llm@sha256:<digest> --a
 `docker_args` so aparece quando o plano esta `ready`. Em Windows/macOS, o esperado para readiness e `unsupported_host`, porque o runtime seguro com GPU comeca em Linux.
 
 Documento: [`docs/bn-12-secure-provider-runtime.md`](docs/bn-12-secure-provider-runtime.md).
+
+## Job API e data plane
+
+O BN-13 adiciona no control plane a primeira API de jobs: criacao admin com idempotencia, pull pelo provider via sessao remota autenticada, accept, eventos sequenciados, resultado final, cancelamento e grants de data plane com credencial separada. Ele nao transfere bytes de artefato, nao executa container de cliente, nao cria scheduler/leases e nao faz metering ou billing.
+
+Documento: [`docs/bn-13-job-api-data-plane.md`](docs/bn-13-job-api-data-plane.md).
+
 ## Histórico
 
 Comandos:

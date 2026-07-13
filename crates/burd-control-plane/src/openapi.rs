@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-11 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-13 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -379,7 +379,105 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
-            "/v1/trust/sweep": {
+            "/v1/jobs": {
+                "post": {
+                    "summary": "Create one backend-authorized compute job for a specific provider session",
+                    "security": [{ "adminBearer": [] }],
+                    "parameters": [{
+                        "name": "Idempotency-Key",
+                        "in": "header",
+                        "required": true,
+                        "schema": { "type": "string" }
+                    }],
+                    "responses": {
+                        "201": { "description": "job queued for an online or degraded eligible provider session" },
+                        "400": { "description": "invalid template, digest, artifact, parameter, backend, or idempotency key" },
+                        "401": { "description": "admin credential missing or invalid" },
+                        "404": { "description": "provider, device, or session not found" },
+                        "409": { "description": "idempotency conflict, ineligible workload, blocked target, or unavailable session" }
+                    }
+                }
+            },
+            "/v1/jobs/{job_id}": {
+                "get": {
+                    "summary": "Read compute job metadata and status",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "job metadata returned" },
+                        "401": { "description": "admin credential missing or invalid" },
+                        "404": { "description": "job not found" }
+                    }
+                }
+            },
+            "/v1/jobs/{job_id}/cancel": {
+                "post": {
+                    "summary": "Cancel a non-terminal compute job",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "job cancelled" },
+                        "401": { "description": "admin credential missing or invalid" },
+                        "404": { "description": "job not found" },
+                        "409": { "description": "terminal jobs cannot be cancelled" }
+                    }
+                }
+            },
+            "/v1/providers/{provider_id}/jobs": {
+                "get": {
+                    "summary": "List compute jobs for a provider",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "provider job metadata returned" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
+            "/v1/sessions/{session_id}/jobs/next": {
+                "get": {
+                    "summary": "Fetch the next queued compute job and job-scoped data-plane grant for a device session",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "200": { "description": "next job and scoped artifact URLs returned, or no job is available" },
+                        "401": { "description": "device, session, key, or credential invalid" },
+                        "410": { "description": "session expired" }
+                    }
+                }
+            },
+            "/v1/sessions/{session_id}/jobs/{job_id}/accept": {
+                "post": {
+                    "summary": "Acknowledge a job assignment before provider provisioning",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "200": { "description": "job accepted" },
+                        "401": { "description": "device or session unauthorized for job" },
+                        "404": { "description": "job not found" },
+                        "409": { "description": "job is not assigned" }
+                    }
+                }
+            },
+            "/v1/sessions/{session_id}/jobs/{job_id}/events": {
+                "post": {
+                    "summary": "Append a sequenced provider job progress event",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "201": { "description": "event stored and job status updated" },
+                        "400": { "description": "invalid sequence, event type, timestamp, progress, or metadata" },
+                        "401": { "description": "device or session unauthorized for job" },
+                        "409": { "description": "duplicate sequence or terminal job" }
+                    }
+                }
+            },
+            "/v1/sessions/{session_id}/jobs/{job_id}/result": {
+                "post": {
+                    "summary": "Submit final job result metadata and output artifact references",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "200": { "description": "job result accepted" },
+                        "400": { "description": "invalid final status, artifact, metric, timestamp, or error payload" },
+                        "401": { "description": "device or session unauthorized for job" },
+                        "409": { "description": "terminal job result cannot be changed" }
+                    }
+                }
+            },            "/v1/trust/sweep": {
                 "post": {
                     "summary": "Run one backend global trust and antifraud sweep",
                     "security": [{ "adminBearer": [] }],
@@ -486,7 +584,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn11_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_and_workload_endpoints()
+    fn openapi_lists_bn13_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_and_job_endpoints()
      {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
@@ -523,6 +621,14 @@ mod tests {
             "/v1/workload-policies",
             "/v1/workload-eligibility/sweep",
             "/v1/providers/{provider_id}/workload-eligibility",
+            "/v1/jobs",
+            "/v1/jobs/{job_id}",
+            "/v1/jobs/{job_id}/cancel",
+            "/v1/providers/{provider_id}/jobs",
+            "/v1/sessions/{session_id}/jobs/next",
+            "/v1/sessions/{session_id}/jobs/{job_id}/accept",
+            "/v1/sessions/{session_id}/jobs/{job_id}/events",
+            "/v1/sessions/{session_id}/jobs/{job_id}/result",
             "/v1/trust/sweep",
             "/v1/providers/{provider_id}/trust-states",
             "/v1/providers/{provider_id}/antifraud-events",
