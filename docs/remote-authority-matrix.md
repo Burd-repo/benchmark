@@ -155,4 +155,10 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | workload policy definition | backend/admin policy | `backend_attested` | Provider cannot define the policy used for remote eligibility. |
 | remote workload eligibility state | backend policy engine | `backend_derived` | Calculated from trust, verification, network, telemetry, signed benchmark results, and policy version. |
 | marketplace eligibility | backend policy engine | `backend_derived` | Provider cannot self-approve. |
+| marketplace listing status | backend marketplace sweep | `backend_derived` | Derived from eligibility, trust, verification, benchmark, network, session, and lease state. |
+| marketplace current status | backend marketplace sweep | `backend_derived` | Uses backend session and active lease state; provider cannot self-declare available/reserved. |
+| marketplace GPU verified flag | backend proof plus benchmark binding | `backend_derived` | Observed GPU UUID alone is never shown as verified marketplace inventory. |
+| marketplace VRAM verified flag | backend telemetry bound to verified GPU | `backend_derived` | Self-reported VRAM is not marketplace-verified. |
+| marketplace region | regional probes | `backend_derived` | User/provider-declared region is not authoritative. |
+| marketplace listing price | future marketplace/billing config | `backend_attested` | BN-16 leaves price unset with `not_configured_bn16`; provider local estimates are not accepted. |
 | pricing/earnings | local estimate | `agent_claimed` | Billing and marketplace pricing are separate future systems. |

@@ -76,6 +76,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "usage_metering_ledger",
         sql: include_str!("../migrations/0014_usage_metering_ledger.sql"),
     },
+    Migration {
+        version: "0015",
+        name: "marketplace_registry_listings",
+        sql: include_str!("../migrations/0015_marketplace_registry_listings.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -214,5 +219,19 @@ mod tests {
         assert!(sql.contains("prevent_usage_ledger_mutation"));
         assert!(sql.contains("usage_ledger_no_update"));
         assert!(sql.contains("idx_usage_ledger_provider_time"));
+    }
+
+    #[test]
+    fn marketplace_registry_listings_migration_declares_listing_registry() {
+        let sql = MIGRATIONS[14].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS marketplace_listings"));
+        assert!(
+            sql.contains(
+                "UNIQUE(provider_id, device_id, workload_type, policy_id, policy_version)"
+            )
+        );
+        assert!(sql.contains("gpu_verified BOOLEAN NOT NULL"));
+        assert!(sql.contains("vram_verified BOOLEAN NOT NULL"));
+        assert!(sql.contains("idx_marketplace_listings_status_workload"));
     }
 }

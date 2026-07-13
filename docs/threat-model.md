@@ -2,11 +2,11 @@
 
 This threat model covers the first Burd Network control-plane phase: provider
 enrollment, remote sessions, signed evidence, challenge response, telemetry,
-trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control metadata, BN-14 scheduler leases, and BN-15 usage ledger receipts.
+trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control metadata, BN-14 scheduler leases, BN-15 usage ledger receipts, and BN-16 marketplace listing registry snapshots.
 
 It does not cover paid job execution, raw customer workload payload bytes, customer data
 plane byte transfer, billing-grade financial metering, billing, Pix, payouts, Kubernetes, distributed training, or
-marketplace UI.
+marketplace UI beyond backend listing registry.
 
 ## Security Goals
 
@@ -58,7 +58,7 @@ marketplace UI.
 - attacker with stolen provider private key;
 - compromised or outdated agent binary;
 - backend operator or automation with elevated access;
-- customer/admin submitting approved workload templates through BN-13 job metadata, triggering BN-14 scheduler passes, and inspecting BN-15 usage receipts.
+- customer/admin submitting approved workload templates through BN-13 job metadata, triggering BN-14 scheduler passes, inspecting BN-15 usage receipts, and inspecting BN-16 marketplace listings.
 
 ## Trust Boundaries
 
@@ -120,7 +120,7 @@ evidence, and backend observations.
 | Duplicate usage finalization | `UNIQUE(job_id, entry_type)` makes finalize idempotent and returns the existing receipt. |
 | Provider-inflated transfer bytes | BN-15 uses backend-recorded artifact metadata only; byte-level verification remains future data-plane hardening. |
 
-## Antifraud Signals For BN-01 Through BN-15
+## Antifraud Signals For BN-01 Through BN-16
 
 - same GPU UUID under multiple providers;
 - same public key across unrelated devices;

@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-15 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, usage metering ledger receipts, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-16 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, usage metering ledger receipts, marketplace registry listings, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -379,7 +379,27 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
-            "/v1/jobs": {
+            "/v1/marketplace/listings": {
+                "get": {
+                    "summary": "List backend-published marketplace provider listings",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "published marketplace listings returned" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
+            "/v1/marketplace/listings/sweep": {
+                "post": {
+                    "summary": "Run one backend marketplace listing registry sweep",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "202": { "description": "marketplace listings recalculated from backend-owned signals" },
+                        "400": { "description": "invalid sweep request" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },            "/v1/jobs": {
                 "post": {
                     "summary": "Create one backend-authorized compute job for a specific provider session",
                     "security": [{ "adminBearer": [] }],
@@ -464,7 +484,16 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
-            "/v1/providers/{provider_id}/usage-ledger": {
+            "/v1/providers/{provider_id}/marketplace-listings": {
+                "get": {
+                    "summary": "List marketplace listing registry records for one provider",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "provider marketplace listings returned" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },            "/v1/providers/{provider_id}/usage-ledger": {
                 "get": {
                     "summary": "List append-only usage ledger entries for a provider",
                     "security": [{ "adminBearer": [] }],
@@ -648,7 +677,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn15_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_job_scheduler_and_metering_endpoints()
+    fn openapi_lists_bn16_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_job_scheduler_metering_and_marketplace_endpoints()
      {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
@@ -685,6 +714,8 @@ mod tests {
             "/v1/workload-policies",
             "/v1/workload-eligibility/sweep",
             "/v1/providers/{provider_id}/workload-eligibility",
+            "/v1/marketplace/listings",
+            "/v1/marketplace/listings/sweep",
             "/v1/jobs",
             "/v1/jobs/{job_id}",
             "/v1/jobs/{job_id}/usage-ledger",
@@ -692,6 +723,7 @@ mod tests {
             "/v1/jobs/{job_id}/leases",
             "/v1/jobs/{job_id}/cancel",
             "/v1/providers/{provider_id}/jobs",
+            "/v1/providers/{provider_id}/marketplace-listings",
             "/v1/providers/{provider_id}/usage-ledger",
             "/v1/providers/{provider_id}/leases",
             "/v1/scheduler/run",

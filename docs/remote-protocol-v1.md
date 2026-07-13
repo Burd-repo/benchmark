@@ -751,7 +751,7 @@ Device-session endpoint. Accepts final `succeeded` or `failed` result metadata, 
 - `GET /v1/providers/{provider_id}/leases` lists provider lease history with a bounded limit.
 - `POST /v1/jobs/{job_id}/cancel` moves a non-terminal job to `cancelled` and closes any active lease.
 
-BN-15 adds backend usage receipts for terminal jobs. The job/data-plane layer still does not implement provider-side execution, object storage signing, byte upload/download enforcement, billing, Pix, payouts, marketplace reservations, multi-GPU jobs, or multi-provider jobs.
+BN-16 adds backend-owned marketplace listing snapshots. The job/data-plane layer still does not implement provider-side execution, object storage signing, byte upload/download enforcement, customer reservations, billing, Pix, payouts, multi-GPU jobs, or multi-provider jobs.
 
 ## Scheduler And Leases
 
@@ -815,6 +815,31 @@ Backend behavior:
 `usage_ledger_entries` is append-only. Database triggers reject update/delete operations. Later corrections must be modeled as future compensating ledger entries rather than edits.
 
 Receipt signature fields are reserved. Until backend signing key management exists, BN-15 returns `receipt_signature_status = hash_only_backend_signature_not_configured`.
+
+## Marketplace Registry And Listings
+
+BN-16 materializes marketplace listings from backend-owned control-plane state. Providers never submit final marketplace status, verified GPU/VRAM flags, trust score, ranking, price, or availability as trusted truth.
+
+### `POST /v1/marketplace/listings/sweep`
+
+Admin endpoint. Runs one bounded listing registry pass.
+
+Backend behavior:
+
+- reads backend workload eligibility, provider/device status, latest remote session, verification state, trust state, regional network state, signed benchmark result state, and active scheduler leases;
+- marks GPU and VRAM as verified only when backend proof state and a succeeded benchmark bind to the observed GPU UUID;
+- writes `marketplace_listings` with listing status, current status, region, trust/reliability/network scores, proof freshness, benchmark reference, price placeholder, availability window, active lease count, reason codes, and source hash;
+- leaves price fields empty with `price_source = not_configured_bn16`;
+- emits audit events for recalculated listing records.
+
+### Listing Reads
+
+- `GET /v1/marketplace/listings` returns `published` and `limited` listings by default, with optional `status`, `workload_type`, and `limit` filters.
+- `GET /v1/providers/{provider_id}/marketplace-listings` returns listing registry records for one provider, including non-published statuses for admin inspection.
+
+Listing status can be `published`, `limited`, `verification_required`, `temporarily_unavailable`, or `blocked`. `current_status` reflects operational state such as `available`, `reserved`, `degraded`, `offline`, or `blocked`.
+
+BN-16 does not create customer accounts, reservations, checkout, billing, Pix, payouts, provider-set prices, marketplace ranking, or financial settlement.
 
 ## Trust And Antifraud API
 
