@@ -1,7 +1,8 @@
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 pub mod benchmark_profile;
 pub mod config;
+pub mod customer;
 pub mod db;
 pub mod enrollment;
 pub mod error;

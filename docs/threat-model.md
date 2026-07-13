@@ -2,11 +2,11 @@
 
 This threat model covers the first Burd Network control-plane phase: provider
 enrollment, remote sessions, signed evidence, challenge response, telemetry,
-trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control metadata, BN-14 scheduler leases, BN-15 usage ledger receipts, and BN-16 marketplace listing registry snapshots.
+trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control metadata, BN-14 scheduler leases, BN-15 usage ledger receipts, BN-16 marketplace listing registry snapshots, and BN-17 customer accounts/reservations.
 
 It does not cover paid job execution, raw customer workload payload bytes, customer data
 plane byte transfer, billing-grade financial metering, billing, Pix, payouts, Kubernetes, distributed training, or
-marketplace UI beyond backend listing registry.
+marketplace UI beyond backend listing/reservation registry.
 
 ## Security Goals
 
@@ -22,7 +22,7 @@ marketplace UI beyond backend listing registry.
   policy.
 - Audit history records every backend authority decision needed for later
   dispute, antifraud, and incident review.
-- Private keys, API tokens, enrollment tokens, credentials, and raw secrets are
+- Private keys, API tokens, enrollment tokens, credentials, customer API keys, and raw secrets are
   not exposed in reports, raw payloads, logs, or object storage metadata.
 
 ## Assets
@@ -45,7 +45,8 @@ marketplace UI beyond backend listing registry.
 - secure runtime plans;
 - job-scoped data-plane credentials, introduced as metadata in BN-13 and still requiring later byte-transfer enforcement;
 - scheduler leases, lease status, lease expiry, and active GPU reservations;
-- usage ledger entries, receipt hashes, source hashes, and metering quantities.
+- usage ledger entries, receipt hashes, source hashes, and metering quantities;
+- customer organizations, projects, API key hashes, quotas, reservations, customer credit ledger entries, and customer audit events.
 
 ## Actors
 
@@ -58,7 +59,7 @@ marketplace UI beyond backend listing registry.
 - attacker with stolen provider private key;
 - compromised or outdated agent binary;
 - backend operator or automation with elevated access;
-- customer/admin submitting approved workload templates through BN-13 job metadata, triggering BN-14 scheduler passes, inspecting BN-15 usage receipts, and inspecting BN-16 marketplace listings.
+- customer/admin submitting approved workload templates through BN-13 job metadata, triggering BN-14 scheduler passes, inspecting BN-15 usage receipts, inspecting BN-16 marketplace listings, and reserving BN-17 customer inventory.
 
 ## Trust Boundaries
 
@@ -119,8 +120,12 @@ evidence, and backend observations.
 | Usage ledger tampering | BN-15 stores canonical receipt/source hashes and database triggers reject update/delete on usage ledger entries. |
 | Duplicate usage finalization | `UNIQUE(job_id, entry_type)` makes finalize idempotent and returns the existing receipt. |
 | Provider-inflated transfer bytes | BN-15 uses backend-recorded artifact metadata only; byte-level verification remains future data-plane hardening. |
+| Customer API key replay or leakage | BN-17 stores only token hashes, scopes keys to projects, supports expiry, and uses bearer auth over authenticated transport. |
+| Double reservation of one listing | BN-17 enforces a unique active reservation per marketplace listing and checks listing current status transactionally. |
+| Reservation quota bypass | BN-17 locks project quota and active reservation state before accepting a reservation. |
+| Customer credit ledger tampering | BN-17 customer credit ledger entries are append-only; updates/deletes are rejected by trigger. |
 
-## Antifraud Signals For BN-01 Through BN-16
+## Antifraud Signals For BN-01 Through BN-17
 
 - same GPU UUID under multiple providers;
 - same public key across unrelated devices;
@@ -140,7 +145,7 @@ evidence, and backend observations.
 
 The backend should store what it needs to verify provider claims and operate the
 network. It should not collect private files, local paths, API tokens, private
-keys, arbitrary process arguments, wallet/payment data, or customer workload
+keys, arbitrary process arguments, wallet/payment data beyond BN-17 non-settlement credit entries, or customer workload
 payloads during BN-01.
 
 Telemetry that can identify local activity should be minimized, redacted, and

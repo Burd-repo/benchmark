@@ -525,6 +525,7 @@ Documentacao detalhada:
 * [`docs/bn-14-scheduler-leases.md`](docs/bn-14-scheduler-leases.md)
 * [`docs/bn-15-metering-usage-ledger.md`](docs/bn-15-metering-usage-ledger.md)
 * [`docs/bn-16-marketplace-registry-listings.md`](docs/bn-16-marketplace-registry-listings.md)
+* [`docs/bn-17-customer-accounts-reservations.md`](docs/bn-17-customer-accounts-reservations.md)
 * [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
 * [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
 * [`docs/threat-model.md`](docs/threat-model.md)
@@ -534,8 +535,8 @@ Documentacao detalhada:
 * [`docs/spot-verification.md`](docs/spot-verification.md)
 * [`docs/workload-eligibility.md`](docs/workload-eligibility.md)
 
-A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts; o control plane agora possui registry/listings backend-owned no BN-16, ainda sem reserva ou dinheiro.
-O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification. O BN-12 adiciona planejamento local de runtime seguro Docker/NVIDIA para imagens digest-pinned e allowlisted. O BN-13 adiciona Job API e data-plane grants no control plane. O BN-14 adiciona scheduler pass admin-triggered e leases para jobs ja criados. O BN-15 adiciona usage ledger append-only e recibos hash-backed para jobs terminais. O BN-16 adiciona marketplace registry/listings backend-owned a partir de trust, eligibility, proof, benchmark, network e leases, ainda sem execucao paga, reservas, billing, Pix ou payouts.
+A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts; o control plane agora possui registry/listings backend-owned no BN-16 e contas/reservas de cliente no BN-17, ainda sem cobranca, Pix ou payouts.
+O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification. O BN-12 adiciona planejamento local de runtime seguro Docker/NVIDIA para imagens digest-pinned e allowlisted. O BN-13 adiciona Job API e data-plane grants no control plane. O BN-14 adiciona scheduler pass admin-triggered e leases para jobs ja criados. O BN-15 adiciona usage ledger append-only e recibos hash-backed para jobs terminais. O BN-16 adiciona marketplace registry/listings backend-owned a partir de trust, eligibility, proof, benchmark, network e leases. O BN-17 adiciona contas de cliente, projetos, API keys, quotas, credit ledger nao financeiro, reservas e usage views, ainda sem execucao paga, billing, Pix ou payouts.
 
 ## Hardware fingerprint e marketplace policy
 
@@ -686,9 +687,13 @@ Documento: [`docs/bn-15-metering-usage-ledger.md`](docs/bn-15-metering-usage-led
 
 ## Marketplace registry e listings
 
-O BN-16 adiciona `marketplace_listings`, sweep admin em `POST /v1/marketplace/listings/sweep`, listagem global publicada em `GET /v1/marketplace/listings` e inspecao por provider em `GET /v1/providers/{provider_id}/marketplace-listings`. Listings so publicam GPU/VRAM como verificados quando proof backend e benchmark sucedido estao vinculados ao GPU UUID observado. Preco fica explicitamente `not_configured_bn16`; reservas, contas de cliente, billing, Pix e payouts continuam fora.
+O BN-16 adiciona `marketplace_listings`, sweep admin em `POST /v1/marketplace/listings/sweep`, listagem global publicada em `GET /v1/marketplace/listings` e inspecao por provider em `GET /v1/providers/{provider_id}/marketplace-listings`. Listings so publicam GPU/VRAM como verificados quando proof backend e benchmark sucedido estao vinculados ao GPU UUID observado. Preco fica explicitamente `not_configured_bn16`.
 
 Documento: [`docs/bn-16-marketplace-registry-listings.md`](docs/bn-16-marketplace-registry-listings.md).
+
+O BN-17 adiciona `organizations`, `organization_users`, `projects`, `project_quotas`, `customer_api_keys`, `customer_credit_ledger_entries`, `marketplace_reservations` e `customer_audit_events`. Admin cria usuarios, organizacoes, projetos, quotas, creditos e API keys; customers usam API key para criar/listar/cancelar reservas e consultar usage. Reservas exigem listing backend-published, quota de projeto e `Idempotency-Key`. Ainda nao ha billing, Pix, payouts, invoices, provider payables ou checkout.
+
+Documento: [`docs/bn-17-customer-accounts-reservations.md`](docs/bn-17-customer-accounts-reservations.md).
 
 ## Histórico
 

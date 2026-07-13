@@ -44,6 +44,7 @@ struct MarketplaceCandidate {
     benchmark_gpu_uuid: Option<String>,
     benchmark_metrics: Option<BenchmarkResultMetrics>,
     active_lease_count: u32,
+    active_reservation_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +111,7 @@ impl Database {
                 "benchmark_result_id": candidate.benchmark_result_id,
                 "benchmark_status": candidate.benchmark_status,
                 "active_lease_count": candidate.active_lease_count,
+                "active_reservation_count": candidate.active_reservation_count,
             }))
             .map_err(SessionError::Invalid)?;
             let regional_reachability_json =
@@ -278,7 +280,7 @@ impl Database {
         let client = self.connect().await?;
         let rows = client
             .query(
-                "SELECT pwe.provider_id, p.display_name AS provider_display_name, p.status AS provider_status, pwe.device_id, d.status AS device_status, latest_session.session_id, COALESCE(latest_session.status, pwe.session_status) AS session_status, pwe.workload_type, pwe.policy_id, pwe.policy_version, pwe.status AS eligibility_status, pwe.reason_codes_json AS eligibility_reason_codes_json, pwe.trust_score, pwe.risk_score, pwe.reliability_score, pwe.verification_status, vs.last_verified_at, pwe.remote_network_score, ns.effective_network_score, pwe.regional_reachability_json, pwe.latest_gpu_uuid, pwe.vram_total_mib, pwe.benchmark_result_id, pwe.benchmark_profile_id, pwe.benchmark_profile_version, pwe.benchmark_status, pwe.benchmark_completed_at, br.gpu_uuid AS benchmark_gpu_uuid, br.metrics_json AS benchmark_metrics_json, COALESCE(active_leases.active_lease_count, 0) AS active_lease_count FROM provider_workload_eligibility pwe JOIN providers p ON p.provider_id = pwe.provider_id JOIN devices d ON d.device_id = pwe.device_id AND d.provider_id = pwe.provider_id LEFT JOIN provider_verification_states vs ON vs.provider_id = pwe.provider_id AND vs.device_id = pwe.device_id LEFT JOIN provider_network_states ns ON ns.provider_id = pwe.provider_id AND ns.device_id = pwe.device_id LEFT JOIN LATERAL (SELECT session_id, status, started_at FROM provider_sessions s WHERE s.provider_id = pwe.provider_id AND s.device_id = pwe.device_id ORDER BY started_at DESC LIMIT 1) latest_session ON TRUE LEFT JOIN benchmark_results br ON br.result_id = pwe.benchmark_result_id LEFT JOIN LATERAL (SELECT COUNT(*)::BIGINT AS active_lease_count FROM job_leases jl WHERE jl.provider_id = pwe.provider_id AND jl.device_id = pwe.device_id AND (pwe.latest_gpu_uuid IS NULL OR jl.gpu_uuid = pwe.latest_gpu_uuid) AND jl.status IN ('offered', 'accepted', 'provisioning', 'active')) active_leases ON TRUE ORDER BY pwe.updated_at DESC, pwe.provider_id, pwe.device_id, pwe.workload_type LIMIT $1",
+                "SELECT pwe.provider_id, p.display_name AS provider_display_name, p.status AS provider_status, pwe.device_id, d.status AS device_status, latest_session.session_id, COALESCE(latest_session.status, pwe.session_status) AS session_status, pwe.workload_type, pwe.policy_id, pwe.policy_version, pwe.status AS eligibility_status, pwe.reason_codes_json AS eligibility_reason_codes_json, pwe.trust_score, pwe.risk_score, pwe.reliability_score, pwe.verification_status, vs.last_verified_at, pwe.remote_network_score, ns.effective_network_score, pwe.regional_reachability_json, pwe.latest_gpu_uuid, pwe.vram_total_mib, pwe.benchmark_result_id, pwe.benchmark_profile_id, pwe.benchmark_profile_version, pwe.benchmark_status, pwe.benchmark_completed_at, br.gpu_uuid AS benchmark_gpu_uuid, br.metrics_json AS benchmark_metrics_json, COALESCE(active_leases.active_lease_count, 0) AS active_lease_count, COALESCE(active_reservations.active_reservation_count, 0) AS active_reservation_count FROM provider_workload_eligibility pwe JOIN providers p ON p.provider_id = pwe.provider_id JOIN devices d ON d.device_id = pwe.device_id AND d.provider_id = pwe.provider_id LEFT JOIN provider_verification_states vs ON vs.provider_id = pwe.provider_id AND vs.device_id = pwe.device_id LEFT JOIN provider_network_states ns ON ns.provider_id = pwe.provider_id AND ns.device_id = pwe.device_id LEFT JOIN LATERAL (SELECT session_id, status, started_at FROM provider_sessions s WHERE s.provider_id = pwe.provider_id AND s.device_id = pwe.device_id ORDER BY started_at DESC LIMIT 1) latest_session ON TRUE LEFT JOIN benchmark_results br ON br.result_id = pwe.benchmark_result_id LEFT JOIN LATERAL (SELECT COUNT(*)::BIGINT AS active_lease_count FROM job_leases jl WHERE jl.provider_id = pwe.provider_id AND jl.device_id = pwe.device_id AND (pwe.latest_gpu_uuid IS NULL OR jl.gpu_uuid = pwe.latest_gpu_uuid) AND jl.status IN ('offered', 'accepted', 'provisioning', 'active')) active_leases ON TRUE LEFT JOIN LATERAL (SELECT COUNT(*)::BIGINT AS active_reservation_count FROM marketplace_reservations mr WHERE mr.provider_id = pwe.provider_id AND mr.device_id = pwe.device_id AND mr.workload_type = pwe.workload_type AND (pwe.latest_gpu_uuid IS NULL OR mr.gpu_uuid = pwe.latest_gpu_uuid) AND mr.status = 'reserved') active_reservations ON TRUE ORDER BY pwe.updated_at DESC, pwe.provider_id, pwe.device_id, pwe.workload_type LIMIT $1",
                 &[&(limit as i64)],
             )
             .await?;
@@ -367,6 +369,7 @@ fn evaluate_marketplace_candidate(candidate: &MarketplaceCandidate) -> ListingEv
         "reservations_enabled": false,
         "session_status": candidate.session_status,
         "active_lease_count": candidate.active_lease_count,
+        "active_reservation_count": candidate.active_reservation_count,
     });
     reason_codes.sort();
     reason_codes.dedup();
@@ -391,7 +394,7 @@ fn current_marketplace_status(candidate: &MarketplaceCandidate, listing_status: 
     if listing_status == "blocked" {
         return "blocked".to_string();
     }
-    if candidate.active_lease_count > 0 {
+    if candidate.active_lease_count > 0 || candidate.active_reservation_count > 0 {
         return "reserved".to_string();
     }
     match candidate.session_status.as_deref() {
@@ -430,6 +433,7 @@ fn marketplace_candidate_from_row(row: Row) -> Result<MarketplaceCandidate, Sess
     let regional_reachability_json: String = row.get("regional_reachability_json");
     let metrics_json: Option<String> = row.get("benchmark_metrics_json");
     let active_lease_count: i64 = row.get("active_lease_count");
+    let active_reservation_count: i64 = row.get("active_reservation_count");
     Ok(MarketplaceCandidate {
         provider_id: row.get("provider_id"),
         provider_display_name: row.get("provider_display_name"),
@@ -467,6 +471,7 @@ fn marketplace_candidate_from_row(row: Row) -> Result<MarketplaceCandidate, Sess
             .transpose()
             .map_err(|error| SessionError::Database(DbError::new(error.to_string())))?,
         active_lease_count: active_lease_count.max(0) as u32,
+        active_reservation_count: active_reservation_count.max(0) as u32,
     })
 }
 
@@ -640,6 +645,7 @@ mod tests {
                 ..BenchmarkResultMetrics::default()
             }),
             active_lease_count: 0,
+            active_reservation_count: 0,
         }
     }
 
