@@ -130,6 +130,20 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | provider lease acknowledgement | provider session | `agent_claimed` with backend state transition | Backend accepts it only for the matching assigned job and active lease. |
 | double assignment prevention | backend database constraints | `backend_attested` | Active leases are unique per job and per provider/device/GPU. |
 
+## Metering And Usage Ledger
+
+| Field | Local source | Remote authority | Notes |
+| --- | --- | --- | --- |
+| usage ledger entry id | backend | `backend_attested` | Generated when a terminal job is metered. |
+| receipt hash | backend canonicalization | `backend_attested` | Hash binds the backend-derived receipt payload. |
+| reserved GPU seconds | job lease timestamps | `backend_derived` | Calculated from backend lease/job times, not provider claims. |
+| actual GPU seconds | job started/completed timestamps | `backend_derived` | Based on backend job lifecycle observations. |
+| input/output bytes | job artifact metadata | `backend_recorded` | Metadata-only until byte-level data plane verification exists. |
+| retry count | sequenced job events | `backend_derived` | Counts accepted retry event types only. |
+| failure classification | backend-constrained result metadata | `backend_derived` | Initial dispute basis, not final payout adjudication. |
+| ledger mutation | operator/provider/customer input | `never_accepted` | `usage_ledger_entries` rejects update/delete; corrections require future compensating entries. |
+| receipt signature | backend signing key | `backend_attested` when configured | BN-15 stores hash-only receipts until backend receipt signing key management exists. |
+
 ## Policy And Marketplace Signals
 
 | Field | Local source | Remote authority | Notes |

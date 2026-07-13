@@ -227,9 +227,18 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/jobs", post(create_job))
         .route("/v1/jobs/{job_id}", get(get_job))
         .route("/v1/jobs/{job_id}/cancel", post(cancel_job))
+        .route("/v1/jobs/{job_id}/usage-ledger", get(list_job_usage_ledger))
+        .route(
+            "/v1/jobs/{job_id}/usage-ledger/finalize",
+            post(finalize_job_usage),
+        )
         .route("/v1/jobs/{job_id}/leases", get(list_job_leases))
         .route("/v1/scheduler/run", post(run_scheduler))
         .route("/v1/providers/{provider_id}/jobs", get(list_provider_jobs))
+        .route(
+            "/v1/providers/{provider_id}/usage-ledger",
+            get(list_provider_usage_ledger),
+        )
         .route(
             "/v1/providers/{provider_id}/leases",
             get(list_provider_leases),
@@ -1000,6 +1009,56 @@ async fn list_job_leases(
     state
         .db
         .list_job_leases(&request_id, &job_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+async fn finalize_job_usage(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .finalize_job_usage(&request_id, &job_id)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    let status = if response.duplicate {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(response)).into_response())
+}
+
+async fn list_job_usage_ledger(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListUsageLedgerResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_job_usage_ledger(&request_id, &job_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_provider_usage_ledger(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    Query(query): Query<JobListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListUsageLedgerResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_usage_ledger(&request_id, &provider_id, query.limit.unwrap_or(50))
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))

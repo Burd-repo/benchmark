@@ -13,6 +13,7 @@ pub mod session;
 pub mod signature;
 pub mod telemetry;
 pub mod trust;
+pub mod usage;
 pub mod workload_policy;
 
 pub use benchmark_profile::{
@@ -114,6 +115,10 @@ pub use trust::{
     ANTIFRAUD_EVENT_SCHEMA_VERSION, AntifraudEventRecord, ListAntifraudEventsResponse,
     ListProviderTrustStatesResponse, ProviderTrustStateRecord, RunTrustSweepRequest,
     RunTrustSweepResponse, TRUST_POLICY_VERSION, TrustSweepUpdatedState,
+};
+pub use usage::{
+    JOB_USAGE_RECEIPT_SCHEMA_VERSION, JobUsageReceipt, ListUsageLedgerResponse,
+    USAGE_LEDGER_SCHEMA_VERSION, UsageLedgerEntry, UsageLedgerResponse,
 };
 pub use workload_policy::{
     ListProviderWorkloadEligibilityResponse, ListWorkloadPoliciesResponse,

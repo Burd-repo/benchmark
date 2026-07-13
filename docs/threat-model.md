@@ -2,10 +2,10 @@
 
 This threat model covers the first Burd Network control-plane phase: provider
 enrollment, remote sessions, signed evidence, challenge response, telemetry,
-trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control metadata, and BN-14 scheduler leases.
+trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control metadata, BN-14 scheduler leases, and BN-15 usage ledger receipts.
 
 It does not cover paid job execution, raw customer workload payload bytes, customer data
-plane byte transfer, metering, billing, Pix, payouts, Kubernetes, distributed training, or
+plane byte transfer, billing-grade financial metering, billing, Pix, payouts, Kubernetes, distributed training, or
 marketplace UI.
 
 ## Security Goals
@@ -44,7 +44,8 @@ marketplace UI.
 - runtime image digests and allowlists;
 - secure runtime plans;
 - job-scoped data-plane credentials, introduced as metadata in BN-13 and still requiring later byte-transfer enforcement;
-- scheduler leases, lease status, lease expiry, and active GPU reservations.
+- scheduler leases, lease status, lease expiry, and active GPU reservations;
+- usage ledger entries, receipt hashes, source hashes, and metering quantities.
 
 ## Actors
 
@@ -57,7 +58,7 @@ marketplace UI.
 - attacker with stolen provider private key;
 - compromised or outdated agent binary;
 - backend operator or automation with elevated access;
-- customer/admin submitting approved workload templates through BN-13 job metadata and triggering BN-14 scheduler passes.
+- customer/admin submitting approved workload templates through BN-13 job metadata, triggering BN-14 scheduler passes, and inspecting BN-15 usage receipts.
 
 ## Trust Boundaries
 
@@ -115,8 +116,11 @@ evidence, and backend observations.
 | Data-plane credential leakage through URLs | BN-13 returns scoped artifact paths separately from the opaque job credential; raw credentials are not embedded in URLs. |
 | Duplicate or reordered job progress | Job events require a unique monotonically provided sequence per job; duplicate sequences are rejected. |
 | Terminal result rewrite | BN-13 rejects result changes after a job reaches a terminal state. |
+| Usage ledger tampering | BN-15 stores canonical receipt/source hashes and database triggers reject update/delete on usage ledger entries. |
+| Duplicate usage finalization | `UNIQUE(job_id, entry_type)` makes finalize idempotent and returns the existing receipt. |
+| Provider-inflated transfer bytes | BN-15 uses backend-recorded artifact metadata only; byte-level verification remains future data-plane hardening. |
 
-## Antifraud Signals For BN-01 Through BN-14
+## Antifraud Signals For BN-01 Through BN-15
 
 - same GPU UUID under multiple providers;
 - same public key across unrelated devices;
