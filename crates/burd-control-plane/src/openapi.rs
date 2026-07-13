@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-13 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-14 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -409,6 +409,16 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
+            "/v1/jobs/{job_id}/leases": {
+                "get": {
+                    "summary": "List scheduler leases for a compute job",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "job lease history returned" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
             "/v1/jobs/{job_id}/cancel": {
                 "post": {
                     "summary": "Cancel a non-terminal compute job",
@@ -431,9 +441,30 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
+            "/v1/providers/{provider_id}/leases": {
+                "get": {
+                    "summary": "List scheduler leases for a provider",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "provider lease history returned" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
+            "/v1/scheduler/run": {
+                "post": {
+                    "summary": "Run one bounded scheduler pass and offer leases for eligible queued jobs",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "202": { "description": "scheduler pass completed and lease decisions returned" },
+                        "400": { "description": "invalid scheduler request" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
             "/v1/sessions/{session_id}/jobs/next": {
                 "get": {
-                    "summary": "Fetch the next queued compute job and job-scoped data-plane grant for a device session",
+                    "summary": "Accept the next offered scheduler lease and fetch its compute job and data-plane grant",
                     "security": [{ "deviceBearer": [] }],
                     "responses": {
                         "200": { "description": "next job and scoped artifact URLs returned, or no job is available" },
@@ -584,7 +615,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn13_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_and_job_endpoints()
+    fn openapi_lists_bn14_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_job_and_scheduler_endpoints()
      {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
@@ -623,8 +654,11 @@ mod tests {
             "/v1/providers/{provider_id}/workload-eligibility",
             "/v1/jobs",
             "/v1/jobs/{job_id}",
+            "/v1/jobs/{job_id}/leases",
             "/v1/jobs/{job_id}/cancel",
             "/v1/providers/{provider_id}/jobs",
+            "/v1/providers/{provider_id}/leases",
+            "/v1/scheduler/run",
             "/v1/sessions/{session_id}/jobs/next",
             "/v1/sessions/{session_id}/jobs/{job_id}/accept",
             "/v1/sessions/{session_id}/jobs/{job_id}/events",

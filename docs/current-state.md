@@ -176,15 +176,15 @@ after the June 2026 reliability pass.
 
 - Agent-side proof workload execution, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
 - Production antifraud operations, case review, admin resolution, and automated enforcement.
-- Marketplace listings, leases, orchestration, scheduler, paid job container execution, byte-level data-plane transfer, and metering.
+- Marketplace listings, marketplace orchestration, autonomous/background scheduling, paid job container execution, byte-level data-plane transfer, and metering.
 - Real earnings, payouts, billing, Pix, and financial settlement.
 - Production cloud deployment and complete remote backend operations.
 - Reputation and provider marketplace ranking.
 - Hardware attestation through TPM/HSM/OS keychain.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
-- Scheduler enforcement of backend workload eligibility. BN-13 validates eligibility for explicitly created jobs, but no scheduler consumes it yet.
-- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-13 state.
+- Production scheduler optimization, marketplace demand matching, reservations across supply inventory, and multi-GPU/multi-provider placement. BN-14 only offers leases for already-created, already-targeted jobs.
+- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-14 state.
 
 ## Known Build Warnings
 
@@ -450,6 +450,7 @@ starting the API server or depending on host state:
 - `burd-agent runtime plan --image-ref <image@sha256:digest> --allow-image-ref <image@sha256:digest> --gpu-uuid <gpu_uuid> --json` emits Docker arguments only when the plan status is `ready`.
 - Ready plans require Linux, Docker, NVIDIA Container Toolkit runtime advertising, an approved template, a digest-pinned allowlisted image, a GPU UUID, valid limits, read-only rootfs, non-root user, dropped capabilities, no-new-privileges, seccomp, no network, no IPC sharing, explicit tmpfs mounts, ephemeral secrets mode, and cleanup requirement.
 - BN-12 does not implement job submission, backend leases, customer artifact download, result upload, arbitrary shell execution, metering, scheduler, marketplace, billing, Pix, payouts, Kubernetes, or distributed workloads.
+
 ## BN-13 - Job API And Data Plane
 
 - `burd-protocol` defines job artifacts, job records, create/list/next/accept/event/result/cancel contracts, and job-scoped data-plane grants.
@@ -457,5 +458,15 @@ starting the API server or depending on host state:
 - The control plane exposes `POST /v1/jobs`, `GET /v1/jobs/{job_id}`, `GET /v1/providers/{provider_id}/jobs`, `POST /v1/jobs/{job_id}/cancel`, `GET /v1/sessions/{session_id}/jobs/next`, `POST /v1/sessions/{session_id}/jobs/{job_id}/accept`, `POST /v1/sessions/{session_id}/jobs/{job_id}/events`, and `POST /v1/sessions/{session_id}/jobs/{job_id}/result`.
 - Job creation is admin-authorized, idempotent, scoped to one provider/device/session/GPU, and requires an online or degraded session plus backend workload eligibility of `eligible` or `limited`.
 - Jobs are limited to approved templates, CUDA backend, digest-pinned images, structured artifact manifests, and redacted JSON parameters/metadata.
-- Provider sessions pull the next queued job over authenticated outbound session credentials and receive a job-scoped data-plane grant with separate credential material and scoped artifact paths.
+- Provider sessions pull a job over authenticated outbound session credentials and receive a job-scoped data-plane grant with separate credential material and scoped artifact paths. BN-14 now requires an offered scheduler lease before this pull can assign work.
 - BN-13 does not implement scheduler selection, leases, provider-side container execution, byte-level artifact transfer, object-storage signed URLs, metering, billing, Pix, payouts, marketplace listing, multi-GPU jobs, or multi-provider jobs.
+
+## BN-14 - Scheduler And Leases
+
+- `burd-protocol` defines job lease records, scheduler run requests/responses, scheduler decisions, and lease list responses.
+- PostgreSQL migration `0013_scheduler_leases` adds `job_leases` plus active-lease uniqueness for one job and one provider/device/GPU.
+- The control plane exposes `POST /v1/scheduler/run`, `GET /v1/jobs/{job_id}/leases`, and `GET /v1/providers/{provider_id}/leases` behind admin authorization.
+- Scheduler runs are bounded and admin-triggered. They expire stale offered leases, scan queued jobs, require active device plus online/degraded session, require backend workload eligibility of `eligible` or `limited`, and offer short-lived leases.
+- Provider `GET /v1/sessions/{session_id}/jobs/next` now consumes the oldest non-expired offered lease for that authenticated session, marks the job assigned, and returns the lease with the job-scoped data-plane grant.
+- Lease status follows `offered -> accepted -> provisioning -> active -> completed | failed | expired` and is updated alongside job accept/event/result/cancel transitions.
+- BN-14 does not implement autonomous scheduler daemon cadence, marketplace demand matching, paid provider-side execution, byte-level artifact transfer, metering, billing, Pix, payouts, multi-GPU placement, or multi-provider jobs.

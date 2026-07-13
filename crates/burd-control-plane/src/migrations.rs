@@ -66,6 +66,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "job_api_data_plane",
         sql: include_str!("../migrations/0012_job_api_data_plane.sql"),
     },
+    Migration {
+        version: "0013",
+        name: "scheduler_leases",
+        sql: include_str!("../migrations/0013_scheduler_leases.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -186,5 +191,13 @@ mod tests {
         assert!(sql.contains("UNIQUE(provider_id, client_job_id)"));
         assert!(sql.contains("UNIQUE(job_id, sequence)"));
         assert!(sql.contains("idx_compute_jobs_session_status"));
+    }
+    #[test]
+    fn scheduler_leases_migration_declares_job_leases() {
+        let sql = MIGRATIONS[12].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS job_leases"));
+        assert!(sql.contains("idx_job_leases_active_job"));
+        assert!(sql.contains("idx_job_leases_active_gpu"));
+        assert!(sql.contains("idx_job_leases_session_status"));
     }
 }

@@ -132,7 +132,7 @@ Rules:
 
 ## Job State Machine
 
-BN-13 implements the first backend-owned job registry and provider pull protocol. Scheduler leases are still deferred, but job state is now persisted by the control plane.
+BN-13 implements the first backend-owned job registry and provider pull protocol. BN-14 adds backend-owned scheduler leases that gate assignment before a provider can pull work.
 
 ```text
 queued
@@ -691,7 +691,7 @@ BN-12 by itself does not create jobs, leases, scheduler assignment, data-plane a
 
 ## Job API And Data Plane
 
-BN-13 creates a backend-authorized job for one provider, one device, one session, and one GPU. It does not pick the provider automatically; BN-14 scheduler and leases remain future work.
+BN-13 creates a backend-authorized job for one provider, one device, one session, and one GPU. BN-14 gates assignment through scheduler-issued leases, while marketplace provider selection remains future work.
 
 ### `POST /v1/jobs`
 
@@ -723,10 +723,11 @@ Backend behavior:
 
 ### `GET /v1/sessions/{session_id}/jobs/next`
 
-Device-session endpoint. It atomically selects the oldest queued job for the authorized provider/device/session, moves it to `assigned`, and returns:
+Device-session endpoint. It atomically consumes the oldest non-expired `offered` lease for the authorized provider/device/session, moves the leased job to `assigned`, and returns:
 
 - `job`, the persisted job record;
-- `data_plane`, a job-scoped grant.
+- `data_plane`, a job-scoped grant;
+- `lease`, the scheduler lease record.
 
 The grant contains an opaque credential, server expiry, and scoped artifact paths. URLs do not embed the raw credential. BN-13 does not transfer artifact bytes yet.
 
@@ -746,9 +747,49 @@ Device-session endpoint. Accepts final `succeeded` or `failed` result metadata, 
 
 - `GET /v1/jobs/{job_id}` reads job metadata.
 - `GET /v1/providers/{provider_id}/jobs` lists provider jobs with a bounded limit.
-- `POST /v1/jobs/{job_id}/cancel` moves a non-terminal job to `cancelled`.
+- `GET /v1/jobs/{job_id}/leases` lists lease history for one job.
+- `GET /v1/providers/{provider_id}/leases` lists provider lease history with a bounded limit.
+- `POST /v1/jobs/{job_id}/cancel` moves a non-terminal job to `cancelled` and closes any active lease.
 
-BN-13 does not implement scheduler selection, leases, provider-side execution, object storage signing, byte upload/download, metering, billing, Pix, payouts, marketplace reservations, multi-GPU jobs, or multi-provider jobs.
+BN-14 adds scheduler leases. The job/data-plane layer still does not implement provider-side execution, object storage signing, byte upload/download, metering, billing, Pix, payouts, marketplace reservations, multi-GPU jobs, or multi-provider jobs.
+
+## Scheduler And Leases
+
+### `POST /v1/scheduler/run`
+
+Admin endpoint. Runs one bounded scheduler pass.
+
+Request fields:
+
+- `limit`, optional and capped by backend policy;
+- `lease_ttl_seconds`, optional and capped by backend policy;
+- `reason`, optional short printable ASCII reason.
+
+Backend behavior:
+
+- expires stale `offered` leases using server time;
+- scans queued jobs in creation order;
+- requires provider not blocked/quarantined;
+- requires active device and `online` or `degraded` session;
+- requires workload eligibility of `eligible` or `limited`;
+- prevents active duplicate lease for the same job;
+- prevents active duplicate lease for the same provider/device/GPU;
+- inserts `job_leases` with status `offered` and audit history.
+
+Returns `request_id`, `evaluated`, `offered`, `expired`, `skipped`, and per-job decisions.
+
+### Lease State
+
+```text
+offered
+-> accepted
+-> provisioning
+-> active
+-> completed | failed | expired
+```
+
+Lease timestamps are backend server timestamps. Provider job accept/progress/result calls update lease state in the same job control flow. The provider cannot create, extend, or self-approve leases.
+
 ## Trust And Antifraud API
 
 BN-09 calculates backend-owned trust and antifraud state from prior remote
