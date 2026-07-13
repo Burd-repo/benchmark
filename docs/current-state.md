@@ -176,7 +176,7 @@ after the June 2026 reliability pass.
 
 - Agent-side proof workload execution, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
 - Production antifraud operations, case review, admin resolution, and automated enforcement.
-- Marketplace listings, marketplace orchestration, autonomous/background scheduling, paid job container execution, byte-level data-plane transfer, and metering.
+- Marketplace listings, marketplace orchestration, autonomous/background scheduling, paid job container execution, byte-level data-plane transfer, billing-grade metering enforcement, and financial settlement.
 - Real earnings, payouts, billing, Pix, and financial settlement.
 - Production cloud deployment and complete remote backend operations.
 - Reputation and provider marketplace ranking.
@@ -184,7 +184,7 @@ after the June 2026 reliability pass.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
 - Production scheduler optimization, marketplace demand matching, reservations across supply inventory, and multi-GPU/multi-provider placement. BN-14 only offers leases for already-created, already-targeted jobs.
-- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-14 state.
+- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-15 state.
 
 ## Known Build Warnings
 
@@ -470,3 +470,13 @@ starting the API server or depending on host state:
 - Provider `GET /v1/sessions/{session_id}/jobs/next` now consumes the oldest non-expired offered lease for that authenticated session, marks the job assigned, and returns the lease with the job-scoped data-plane grant.
 - Lease status follows `offered -> accepted -> provisioning -> active -> completed | failed | expired` and is updated alongside job accept/event/result/cancel transitions.
 - BN-14 does not implement autonomous scheduler daemon cadence, marketplace demand matching, paid provider-side execution, byte-level artifact transfer, metering, billing, Pix, payouts, multi-GPU placement, or multi-provider jobs.
+
+## BN-15 - Metering And Usage Ledger
+
+- `burd-protocol` defines job usage receipts, usage ledger entries, finalize responses, and list responses.
+- PostgreSQL migration `0014_usage_metering_ledger` adds append-only `usage_ledger_entries` with a trigger that rejects updates and deletes.
+- The control plane exposes `POST /v1/jobs/{job_id}/usage-ledger/finalize`, `GET /v1/jobs/{job_id}/usage-ledger`, and `GET /v1/providers/{provider_id}/usage-ledger` behind admin authorization.
+- Terminal job result and cancel flows append a `job_usage_finalized` entry in the same transaction as job/lease terminal state.
+- Usage receipts record reserved GPU seconds, actual GPU seconds, billable/non-billable metering basis, idle unbillable seconds, input/output/network/storage bytes, retry count, failure classification, challenge non-billable seconds, reason codes, receipt hash, and source hash.
+- Replaying finalize for an already-metered job returns the existing ledger entry with `duplicate=true`; it does not mutate history.
+- BN-15 does not implement customer balances, provider payables, invoices, Pix, payouts, double-entry financial accounting, byte-level artifact verification, signed receipt key management, disputes, refunds, or marketplace pricing.

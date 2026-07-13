@@ -71,6 +71,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "scheduler_leases",
         sql: include_str!("../migrations/0013_scheduler_leases.sql"),
     },
+    Migration {
+        version: "0014",
+        name: "usage_metering_ledger",
+        sql: include_str!("../migrations/0014_usage_metering_ledger.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -199,5 +204,15 @@ mod tests {
         assert!(sql.contains("idx_job_leases_active_job"));
         assert!(sql.contains("idx_job_leases_active_gpu"));
         assert!(sql.contains("idx_job_leases_session_status"));
+    }
+
+    #[test]
+    fn usage_metering_ledger_migration_declares_append_only_ledger() {
+        let sql = MIGRATIONS[13].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS usage_ledger_entries"));
+        assert!(sql.contains("UNIQUE(job_id, entry_type)"));
+        assert!(sql.contains("prevent_usage_ledger_mutation"));
+        assert!(sql.contains("usage_ledger_no_update"));
+        assert!(sql.contains("idx_usage_ledger_provider_time"));
     }
 }

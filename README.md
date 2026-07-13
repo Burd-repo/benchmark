@@ -523,6 +523,7 @@ Documentacao detalhada:
 * [`docs/bn-12-secure-provider-runtime.md`](docs/bn-12-secure-provider-runtime.md)
 * [`docs/bn-13-job-api-data-plane.md`](docs/bn-13-job-api-data-plane.md)
 * [`docs/bn-14-scheduler-leases.md`](docs/bn-14-scheduler-leases.md)
+* [`docs/bn-15-metering-usage-ledger.md`](docs/bn-15-metering-usage-ledger.md)
 * [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
 * [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
 * [`docs/threat-model.md`](docs/threat-model.md)
@@ -533,7 +534,7 @@ Documentacao detalhada:
 * [`docs/workload-eligibility.md`](docs/workload-eligibility.md)
 
 A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts.
-O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification. O BN-12 adiciona planejamento local de runtime seguro Docker/NVIDIA para imagens digest-pinned e allowlisted. O BN-13 adiciona Job API e data-plane grants no control plane. O BN-14 adiciona scheduler pass admin-triggered e leases para jobs ja criados, ainda sem execucao paga, metering, marketplace, billing, Pix ou payouts.
+O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification. O BN-12 adiciona planejamento local de runtime seguro Docker/NVIDIA para imagens digest-pinned e allowlisted. O BN-13 adiciona Job API e data-plane grants no control plane. O BN-14 adiciona scheduler pass admin-triggered e leases para jobs ja criados. O BN-15 adiciona usage ledger append-only e recibos hash-backed para jobs terminais, ainda sem execucao paga, marketplace, billing, Pix ou payouts.
 
 ## Hardware fingerprint e marketplace policy
 
@@ -675,6 +676,12 @@ Documento: [`docs/bn-13-job-api-data-plane.md`](docs/bn-13-job-api-data-plane.md
 O BN-14 adiciona `POST /v1/scheduler/run`, `job_leases`, listagem de leases por job/provider e prevencao de dupla reserva por job ou por GPU ativa. O scheduler consome sessao remota, provider/device state e workload eligibility backend-owned para oferecer leases curtos a jobs ja criados e ja vinculados a provider/device/session/GPU.
 
 Documento: [`docs/bn-14-scheduler-leases.md`](docs/bn-14-scheduler-leases.md).
+
+## Metering e usage ledger
+
+O BN-15 adiciona `usage_ledger_entries`, recibos de uso por job terminal, hash canonico do recibo, listagem por job/provider e finalize idempotente para backfill admin. Ele mede GPU-seconds, bytes de artefatos, retries e classificacao inicial de falha, mas nao cobra cliente, nao paga provider e nao cria ledger financeiro.
+
+Documento: [`docs/bn-15-metering-usage-ledger.md`](docs/bn-15-metering-usage-ledger.md).
 
 ## Histórico
 

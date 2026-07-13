@@ -751,7 +751,7 @@ Device-session endpoint. Accepts final `succeeded` or `failed` result metadata, 
 - `GET /v1/providers/{provider_id}/leases` lists provider lease history with a bounded limit.
 - `POST /v1/jobs/{job_id}/cancel` moves a non-terminal job to `cancelled` and closes any active lease.
 
-BN-14 adds scheduler leases. The job/data-plane layer still does not implement provider-side execution, object storage signing, byte upload/download, metering, billing, Pix, payouts, marketplace reservations, multi-GPU jobs, or multi-provider jobs.
+BN-15 adds backend usage receipts for terminal jobs. The job/data-plane layer still does not implement provider-side execution, object storage signing, byte upload/download enforcement, billing, Pix, payouts, marketplace reservations, multi-GPU jobs, or multi-provider jobs.
 
 ## Scheduler And Leases
 
@@ -789,6 +789,32 @@ offered
 ```
 
 Lease timestamps are backend server timestamps. Provider job accept/progress/result calls update lease state in the same job control flow. The provider cannot create, extend, or self-approve leases.
+
+## Metering And Usage Ledger
+
+BN-15 creates backend-derived usage receipts when jobs reach terminal state. The usage ledger is measurement infrastructure only; it is not a billing or payout ledger.
+
+### `POST /v1/jobs/{job_id}/usage-ledger/finalize`
+
+Admin endpoint. Finalizes usage for one terminal job or returns the existing entry when it was already finalized.
+
+Backend behavior:
+
+- requires job status `succeeded`, `failed`, or `cancelled`;
+- derives lease and job timing from backend records;
+- calculates reserved GPU seconds, actual GPU seconds, billable/non-billable metering basis, idle unbillable seconds, artifact bytes, network transfer bytes, storage bytes, retry count, and failure classification;
+- stores canonical `receipt_hash` and `source_hash`;
+- appends one `job_usage_finalized` ledger entry per job;
+- emits an audit event when a new entry is appended.
+
+### Usage Reads
+
+- `GET /v1/jobs/{job_id}/usage-ledger` lists usage ledger entries for one job.
+- `GET /v1/providers/{provider_id}/usage-ledger` lists provider usage ledger entries with a bounded limit.
+
+`usage_ledger_entries` is append-only. Database triggers reject update/delete operations. Later corrections must be modeled as future compensating ledger entries rather than edits.
+
+Receipt signature fields are reserved. Until backend signing key management exists, BN-15 returns `receipt_signature_status = hash_only_backend_signature_not_configured`.
 
 ## Trust And Antifraud API
 

@@ -1,4 +1,5 @@
 use crate::db::{Database, DbError, IdempotencyRecord, NewAuditEvent, insert_audit_event};
+use crate::metering::append_usage_ledger_for_job;
 use crate::remote_session::{AuthorizedSession, SessionError};
 use crate::scheduler::{
     load_job_lease_in_transaction, mark_lease_accepted_for_job, mark_lease_progress_for_job,
@@ -437,10 +438,7 @@ impl Database {
         }
         let result_artifacts_json = artifacts_json(&request.result_artifacts)?;
         let result_metrics_json = normalized_json_object(&request.metrics, "job result metrics")?;
-        let completed_at = request
-            .completed_at
-            .clone()
-            .unwrap_or_else(|| Utc::now().to_rfc3339());
+        let completed_at = Utc::now().to_rfc3339();
         transaction
             .execute(
                 "UPDATE compute_jobs SET status = $1, result_artifacts_json = $2, result_metrics_json = $3, error_code = $4, error_message = $5, completed_at = $6, updated_at = $6 WHERE job_id = $7",
@@ -464,6 +462,7 @@ impl Database {
             &completed_at,
         )
         .await?;
+        append_usage_ledger_for_job(&transaction, request_id, &job.job_id, &completed_at).await?;
         insert_audit_event(
             &transaction,
             NewAuditEvent {
@@ -522,6 +521,7 @@ impl Database {
             &now,
         )
         .await?;
+        append_usage_ledger_for_job(&transaction, request_id, &job.job_id, &now).await?;
         insert_audit_event(
             &transaction,
             NewAuditEvent {
@@ -1325,6 +1325,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.job.status, "succeeded");
+
+        let usage = db
+            .list_job_usage_ledger("req_usage", &created.job.job_id)
+            .await
+            .unwrap();
+        assert_eq!(usage.entries.len(), 1);
+        assert_eq!(usage.entries[0].receipt.job_status, "succeeded");
+        assert!(usage.entries[0].receipt.lease_id.is_some());
+        assert_eq!(usage.entries[0].receipt.input_bytes, 1024);
+        assert_eq!(
+            usage.entries[0].receipt_signature_status,
+            "hash_only_backend_signature_not_configured"
+        );
+
+        let finalized_again = db
+            .finalize_job_usage("req_usage_again", &created.job.job_id)
+            .await
+            .unwrap();
+        assert!(finalized_again.duplicate);
+        assert_eq!(finalized_again.entry.entry_id, usage.entries[0].entry_id);
 
         let listed = db
             .list_provider_jobs("req_list", "provider_1", 10)
