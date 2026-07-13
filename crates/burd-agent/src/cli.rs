@@ -137,6 +137,11 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Inspect or plan the secure provider runtime sandbox.
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommands,
+    },
     /// Aggregate local provider console details.
     Provider {
         #[arg(long)]
@@ -254,6 +259,32 @@ pub enum BenchCommands {
         directory: Option<PathBuf>,
         #[arg(long, default_value_t = 32)]
         file_size_mb: u64,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RuntimeCommands {
+    /// Check whether this host can prepare a secure GPU runtime.
+    Check {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Build a Docker/NVIDIA sandbox plan for an approved runtime image.
+    Plan {
+        #[arg(long)]
+        image_ref: String,
+        #[arg(long)]
+        gpu_uuid: Option<String>,
+        #[arg(long)]
+        allow_image_ref: Vec<String>,
+        #[arg(long, default_value = "llm_inference")]
+        template_id: String,
+        #[arg(long)]
+        cpu_count: Option<f64>,
+        #[arg(long)]
+        memory_mib: Option<u64>,
         #[arg(long)]
         json: bool,
     },

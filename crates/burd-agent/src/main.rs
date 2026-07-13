@@ -5,12 +5,12 @@ mod remote_session;
 use anyhow::Result;
 use burd_bench::{
     DiskBenchmarkOptions, LlmBenchmarkOptions, NetworkBenchmarkOptions, ReportRunOptions,
-    append_report_history, append_signed_report_history, build_ai_performance_report,
-    build_capability_spot_verification, build_provider_details, build_provider_readiness,
-    build_provider_session_start, build_provider_session_status, build_raw_data,
-    build_registration_payload, build_trust_score, build_workload_eligibility,
-    calculate_network_score, calculate_pricing, calculate_score, clear_history,
-    clear_uptime_history, detect_health, estimate_earnings, export_history,
+    SecureRuntimePlanOptions, append_report_history, append_signed_report_history,
+    build_ai_performance_report, build_capability_spot_verification, build_provider_details,
+    build_provider_readiness, build_provider_session_start, build_provider_session_status,
+    build_raw_data, build_registration_payload, build_secure_runtime_plan, build_trust_score,
+    build_workload_eligibility, calculate_network_score, calculate_pricing, calculate_score,
+    clear_history, clear_uptime_history, detect_health, estimate_earnings, export_history,
     export_registration_payload, generate_full_report, generate_signed_report, heartbeat_once,
     load_actions, load_history_list, load_latest_history, load_logs, load_logs_for_task,
     load_network_score_report, load_reliability_report, load_signed_report_file,
@@ -32,7 +32,7 @@ use burd_protocol::{
 use clap::Parser;
 use cli::{
     ApiTokenCommands, BenchCommands, ChallengeCommands, Cli, Commands, EnrollmentCommands,
-    HistoryCommands, IdentityCommands, RemoteSessionCommands, UptimeCommands,
+    HistoryCommands, IdentityCommands, RemoteSessionCommands, RuntimeCommands, UptimeCommands,
 };
 use serde::Deserialize;
 use std::path::Path;
@@ -464,6 +464,50 @@ fn run() -> Result<()> {
         Commands::WorkloadEligibility { json: _ } => {
             print_json(&build_workload_eligibility(AGENT_VERSION))?;
         }
+        Commands::Runtime { command } => match command {
+            RuntimeCommands::Check { json: _ } => {
+                let plan =
+                    build_secure_runtime_plan(AGENT_VERSION, SecureRuntimePlanOptions::default());
+                let _ = record_action(
+                    "secure runtime check",
+                    runtime_action_status(&plan),
+                    "Check secure runtime",
+                    "Inspected local Docker/NVIDIA secure runtime readiness.",
+                    runtime_action_details(&plan),
+                );
+                print_json(&plan)?;
+            }
+            RuntimeCommands::Plan {
+                image_ref,
+                gpu_uuid,
+                allow_image_ref,
+                template_id,
+                cpu_count,
+                memory_mib,
+                json: _,
+            } => {
+                let defaults = SecureRuntimePlanOptions::default();
+                let options = SecureRuntimePlanOptions {
+                    template_id,
+                    image_ref: Some(image_ref),
+                    gpu_uuid,
+                    allowed_image_refs: allow_image_ref,
+                    cpu_count: cpu_count.or(defaults.cpu_count),
+                    memory_mib: memory_mib.or(defaults.memory_mib),
+                    pids_limit: defaults.pids_limit,
+                    shm_size_mib: defaults.shm_size_mib,
+                };
+                let plan = build_secure_runtime_plan(AGENT_VERSION, options);
+                let _ = record_action(
+                    "secure runtime plan",
+                    runtime_action_status(&plan),
+                    "Plan secure runtime",
+                    "Built Docker/NVIDIA sandbox plan for an allowlisted runtime image.",
+                    runtime_action_details(&plan),
+                );
+                print_json(&plan)?;
+            }
+        },
         Commands::Provider { json: _, host_uri } => {
             print_json(&build_provider_details(AGENT_VERSION, &host_uri))?;
         }
@@ -608,6 +652,25 @@ fn run() -> Result<()> {
 fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+fn runtime_action_status(plan: &burd_protocol::SecureRuntimePlan) -> &'static str {
+    match plan.status.as_str() {
+        "ready" => "completed",
+        "verification_required" | "unsupported_host" => "partial",
+        _ => "failed",
+    }
+}
+
+fn runtime_action_details(plan: &burd_protocol::SecureRuntimePlan) -> Vec<String> {
+    let mut details = vec![format!("status: {}", plan.status)];
+    details.extend(
+        plan.checks
+            .iter()
+            .filter(|check| check.status != "passed")
+            .map(|check| format!("{}: {}", check.id, check.status)),
+    );
+    details
 }
 
 fn print_readiness(readiness: &burd_bench::ProviderReadiness) {

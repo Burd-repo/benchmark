@@ -14,6 +14,7 @@ pub mod raw;
 pub mod readiness;
 pub mod registration;
 pub mod report;
+pub mod runtime;
 pub mod score;
 pub mod session;
 pub mod stability;
@@ -74,6 +75,10 @@ pub use registration::{
 pub use report::{
     ReportRunOptions, generate_full_report, generate_signed_report, load_latest_signed_report,
     load_signed_report_file, save_latest_report, save_latest_signed_report, verify_signed_report,
+};
+pub use runtime::{
+    SECURE_RUNTIME_ALLOWED_TEMPLATES, SECURE_RUNTIME_DEFAULT_TEMPLATE, SecureRuntimePlanOptions,
+    SecureRuntimeProbe, build_secure_runtime_plan, calculate_secure_runtime_plan,
 };
 pub use score::{ScoreReport, calculate_score, tier_for_score};
 pub use session::{

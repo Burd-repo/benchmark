@@ -650,6 +650,45 @@ Backend behavior:
 Admin endpoint that lists backend-calculated workload eligibility states for a provider.
 
 BN-11 does not create scheduler assignments, leases, jobs, marketplace listings, billing, Pix, payouts, or background production sweep automation.
+## Secure Provider Runtime Contract
+
+BN-12 defines the provider-side runtime plan that BN-13 jobs and BN-14 leases can later bind to backend authority. It is not a job API and does not authorize customer workload execution by itself.
+
+`SecureRuntimePlan` fields include:
+
+- `schema_version: burd-secure-runtime-v1`;
+- `policy_version: burd-secure-runtime-policy-v1`;
+- `generated_at`;
+- `status: ready | verification_required | blocked | unsupported_host`;
+- `runtime_engine`, initially `docker+nvidia-container-toolkit`;
+- `target_os`, initially ready only on Linux;
+- `template_id` from the approved runtime template list;
+- optional `image_ref`, which must be digest-pinned with `@sha256:` before execution planning;
+- optional `gpu_uuid`, required before lease binding;
+- `image_allowlist` entries;
+- CPU, memory, PID, and shared-memory limits;
+- hardened security profile;
+- `docker_args`, emitted only for `ready` local plans;
+- structured checks, warnings, and notes.
+
+Initial approved runtime templates:
+
+- `llm_inference`;
+- `embeddings`;
+- `image_generation`;
+- `whisper_transcription`;
+- `file_processing`.
+
+Backend behavior reserved for BN-13/BN-14:
+
+- choose the approved template and image digest;
+- bind the runtime plan to provider, device, session, GPU UUID, job ID, and lease ID;
+- issue job-specific credentials and signed artifact URLs;
+- reject arbitrary shell payloads;
+- treat provider-generated runtime plans as evidence, not final authority;
+- persist runtime/job audit events before execution and after cleanup.
+
+BN-12 does not create `/v1/jobs`, leases, scheduler assignment, data-plane artifact transfer, result upload, metering, billing, Pix, payouts, or marketplace listings.
 ## Trust And Antifraud API
 
 BN-09 calculates backend-owned trust and antifraud state from prior remote

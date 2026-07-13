@@ -38,6 +38,7 @@
 * [Network score](#network-score)
 * [Reliability e uptime](#reliability-e-uptime)
 * [Trust score e workload eligibility](#trust-score-e-workload-eligibility)
+* [Runtime seguro](#runtime-seguro)
 * [Histórico](#histórico)
 * [Payload de registro](#payload-de-registro)
 * [Regras de segurança](#regras-de-segurança)
@@ -519,6 +520,7 @@ Documentacao detalhada:
 * [`docs/bn-08-regional-network-probes.md`](docs/bn-08-regional-network-probes.md)
 * [`docs/bn-09-global-trust-antifraud.md`](docs/bn-09-global-trust-antifraud.md)
 * [`docs/bn-11-workload-eligibility-v2.md`](docs/bn-11-workload-eligibility-v2.md)
+* [`docs/bn-12-secure-provider-runtime.md`](docs/bn-12-secure-provider-runtime.md)
 * [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
 * [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
 * [`docs/threat-model.md`](docs/threat-model.md)
@@ -529,7 +531,7 @@ Documentacao detalhada:
 * [`docs/workload-eligibility.md`](docs/workload-eligibility.md)
 
 A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts.
-O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification, ainda sem scheduler, marketplace, jobs, billing, Pix ou payouts.
+O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification. O BN-12 adiciona planejamento local de runtime seguro Docker/NVIDIA para imagens digest-pinned e allowlisted, ainda sem scheduler, marketplace, jobs pagos, billing, Pix ou payouts.
 
 ## Hardware fingerprint e marketplace policy
 
@@ -645,6 +647,20 @@ GET /api/v1/workload-eligibility
 
 Esses contratos sao locais e nao criam jobs, leases, scheduler assignment, marketplace admission, billing, Pix ou payouts.
 
+## Runtime seguro
+
+O BN-12 adiciona planejamento local de runtime seguro para o futuro data plane de jobs. Ele inspeciona Docker/NVIDIA, valida template aprovado, imagem `@sha256`, allowlist, GPU UUID e perfil de isolamento. Ele nao executa job de cliente.
+
+Comandos:
+
+```bash
+burd-agent runtime check --json
+burd-agent runtime plan --image-ref ghcr.io/burd/runtime/llm@sha256:<digest> --allow-image-ref ghcr.io/burd/runtime/llm@sha256:<digest> --gpu-uuid GPU-... --json
+```
+
+`docker_args` so aparece quando o plano esta `ready`. Em Windows/macOS, o esperado para readiness e `unsupported_host`, porque o runtime seguro com GPU comeca em Linux.
+
+Documento: [`docs/bn-12-secure-provider-runtime.md`](docs/bn-12-secure-provider-runtime.md).
 ## Histórico
 
 Comandos:

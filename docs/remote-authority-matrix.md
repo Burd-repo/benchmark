@@ -88,6 +88,19 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | benchmark result hash | agent canonical JSON | `agent_signed_evidence` | Backend recalculates before persistence. |
 | benchmark result status | backend verifier | `backend_derived` | `succeeded` or `failed` is decided by backend threshold checks. |
 | local AI performance estimate | fit/history/report builder | `agent_claimed` | Diagnostic unless submitted through the BN-10 signed result contract. |
+## Secure Provider Runtime
+
+| Field | Local source | Remote authority | Notes |
+| --- | --- | --- | --- |
+| runtime readiness check | agent host probe | `agent_claimed` | Diagnostic until bound to backend session, policy, and lease. |
+| runtime template allowlist | agent constants in BN-12; backend policy later | `agent_claimed` in BN-12, `backend_attested` after job policy | Provider cannot define templates for paid jobs. |
+| runtime image reference | agent CLI input in BN-12; backend job policy later | `agent_claimed` until backend job assignment | Must be digest-pinned before execution planning. |
+| image allowlist | agent CLI input in BN-12; backend/admin policy later | `agent_claimed` in BN-12, `backend_attested` for jobs | BN-12 local allowlist avoids accidental unsafe plans, but backend owns production image approval. |
+| GPU UUID binding | agent telemetry or CLI input | `agent_signed_evidence` after telemetry/result binding | Future leases must bind the exact GPU UUID. |
+| Docker security profile | agent plan | `agent_claimed` | Backend/job runtime must enforce and audit the actual launched container. |
+| runtime plan status | agent local calculation | `agent_claimed` | `ready` means locally plannable, not marketplace approval. |
+| job execution authorization | none in BN-12 | `backend_attested` | Requires future job, lease, policy, credentials, and audit events. |
+| arbitrary shell payload | customer/provider input | `never_accepted` | Jobs must use approved templates, not raw shell commands. |
 ## Policy And Marketplace Signals
 
 | Field | Local source | Remote authority | Notes |

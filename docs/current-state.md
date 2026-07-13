@@ -52,6 +52,8 @@ after the June 2026 reliability pass.
 - `trust-score --json`
 - `capability-spot --json`
 - `workload-eligibility --json`
+- `runtime check --json`
+- `runtime plan --image-ref <digest-pinned-image> --allow-image-ref <digest-pinned-image> --gpu-uuid <gpu-uuid> --json`
 - `serve --host <ip> --port <port>`
 
 ## Added In This Stage
@@ -116,6 +118,7 @@ after the June 2026 reliability pass.
 - Local AI performance metrics consolidate measured LLM benchmark evidence, signed reports, benchmark history, and fit estimates through CLI and API without running benchmarks automatically.
 - Local workload eligibility can be calculated from fit recommendations, capability spot verification, trust score, provider verification, reliability, compute score, and marketplace GPU policy through CLI and API.
 - Provider details, raw data, and registration payloads surface local and future-marketplace workload eligibility summaries.
+- Secure runtime planning can inspect Docker/NVIDIA readiness and produce a hardened Docker sandbox plan for digest-pinned, allowlisted runtime images without executing customer jobs.
 - Network benchmark includes latency aliases, request counts, status code,
   DNS timing, duration, jitter, and warnings.
 - Raw data includes explicit redaction metadata and summaries for history,
@@ -172,7 +175,7 @@ after the June 2026 reliability pass.
 
 - Agent-side proof workload execution, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
 - Production antifraud operations, case review, admin resolution, and automated enforcement.
-- Marketplace listings, leases, jobs, orchestration, scheduler, and containers.
+- Marketplace listings, leases, jobs, orchestration, scheduler, and paid job container execution.
 - Real earnings, payouts, billing, Pix, and financial settlement.
 - Production cloud deployment and complete remote backend operations.
 - Reputation and provider marketplace ranking.
@@ -438,3 +441,11 @@ starting the API server or depending on host state:
 - Stored statuses are `eligible`, `limited`, `ineligible`, `verification_required`, `temporarily_unavailable`, and `blocked`, with persisted reason codes and audit events.
 - The provider cannot submit or self-approve remote eligibility. Local workload eligibility remains diagnostic; BN-11 eligibility is backend-derived state for future scheduler and marketplace use.
 - BN-11 does not implement scheduler enforcement, secure provider runtime, jobs, leases, marketplace listings, billing, Pix, payouts, or autonomous production sweep scheduling.
+## BN-12 - Secure Provider Runtime
+
+- `burd-protocol` defines `SecureRuntimePlan`, runtime checks, image allowlist entries, resource limits, tmpfs mounts, and a hardened security profile.
+- `burd-bench` builds local secure runtime plans from host probes, Docker/NVIDIA runtime availability, GPU UUID binding, template allowlist, digest-pinned image references, resource limits, and security defaults.
+- `burd-agent runtime check --json` returns a diagnostic plan for the current host without requiring an image.
+- `burd-agent runtime plan --image-ref <image@sha256:digest> --allow-image-ref <image@sha256:digest> --gpu-uuid <gpu_uuid> --json` emits Docker arguments only when the plan status is `ready`.
+- Ready plans require Linux, Docker, NVIDIA Container Toolkit runtime advertising, an approved template, a digest-pinned allowlisted image, a GPU UUID, valid limits, read-only rootfs, non-root user, dropped capabilities, no-new-privileges, seccomp, no network, no IPC sharing, explicit tmpfs mounts, ephemeral secrets mode, and cleanup requirement.
+- BN-12 does not implement job submission, backend leases, customer artifact download, result upload, arbitrary shell execution, metering, scheduler, marketplace, billing, Pix, payouts, Kubernetes, or distributed workloads.
