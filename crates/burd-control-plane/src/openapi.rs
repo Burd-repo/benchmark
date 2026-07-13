@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-18 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, usage metering ledger receipts, marketplace registry listings, customer accounts, project quotas, customer API keys, credits, marketplace reservations, customer usage views, billing price book, Pix payment intents, financial ledger, invoices, customer balances, provider payable balances, payout accounts, provider payouts, customer audit logs, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-19 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, usage metering ledger receipts, marketplace registry listings, customer accounts, project quotas, customer API keys, credits, marketplace reservations, customer usage views, billing price book, Pix payment intents, financial ledger, invoices, customer balances, provider payable balances, payout accounts, provider payouts, customer audit logs, observability metrics, SLO snapshot, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -45,6 +45,22 @@ pub fn document() -> serde_json::Value {
                 "get": {
                     "summary": "OpenAPI document",
                     "responses": { "200": { "description": "OpenAPI JSON" } }
+                }
+            },
+            "/metrics": {
+                "get": {
+                    "summary": "Prometheus-compatible control-plane metrics",
+                    "responses": { "200": { "description": "text/plain Prometheus metrics" } }
+                }
+            },
+            "/v1/observability/snapshot": {
+                "get": {
+                    "summary": "Admin control-plane observability snapshot",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "HTTP, background task, and SLO state" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
                 }
             },
             "/v1/providers": {
@@ -844,13 +860,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn18_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_job_scheduler_metering_marketplace_customer_and_billing_endpoints()
+    fn openapi_lists_bn19_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_job_scheduler_metering_marketplace_customer_billing_and_observability_endpoints()
      {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
         for path in [
             "/health",
             "/ready",
+            "/metrics",
+            "/v1/observability/snapshot",
             "/v1/providers",
             "/v1/providers/{provider_id}",
             "/v1/providers/{provider_id}/enrollment-tokens",

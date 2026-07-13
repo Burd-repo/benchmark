@@ -138,6 +138,7 @@ impl Database {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn record_proof_challenge_outcome(
         &self,
         transaction: &Transaction<'_>,

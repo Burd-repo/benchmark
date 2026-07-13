@@ -159,6 +159,7 @@ pub fn heartbeat_summary_from_session(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn active_provider_session(
     provider_id: String,
     machine_id: String,

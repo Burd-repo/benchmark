@@ -28,6 +28,10 @@ pub struct ControlPlaneConfig {
     pub verification_retry_budget: u32,
     pub verification_sweep_limit: u32,
     pub verification_suspect_failures: u32,
+    pub observability_deployment_id: String,
+    pub observability_recent_events_limit: u32,
+    pub slo_availability_target_bps: u32,
+    pub slo_p95_latency_ms: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +159,20 @@ impl ControlPlaneConfig {
             "BURD_CONTROL_VERIFICATION_SUSPECT_FAILURES",
         )?;
 
+        let observability_recent_events_limit = parse_u32(
+            lookup("BURD_CONTROL_OBSERVABILITY_RECENT_EVENTS_LIMIT")
+                .unwrap_or_else(|| "100".to_string()),
+            "BURD_CONTROL_OBSERVABILITY_RECENT_EVENTS_LIMIT",
+        )?;
+        let slo_availability_target_bps = parse_bps(
+            lookup("BURD_CONTROL_SLO_AVAILABILITY_TARGET_BPS")
+                .unwrap_or_else(|| "9990".to_string()),
+            "BURD_CONTROL_SLO_AVAILABILITY_TARGET_BPS",
+        )?;
+        let slo_p95_latency_ms = parse_u32(
+            lookup("BURD_CONTROL_SLO_P95_LATENCY_MS").unwrap_or_else(|| "500".to_string()),
+            "BURD_CONTROL_SLO_P95_LATENCY_MS",
+        )?;
         Ok(Self {
             environment: lookup("BURD_CONTROL_ENV").unwrap_or_else(|| "local".to_string()),
             host: lookup("BURD_CONTROL_HOST").unwrap_or_else(|| "127.0.0.1".to_string()),
@@ -181,6 +199,12 @@ impl ControlPlaneConfig {
             verification_retry_budget,
             verification_sweep_limit,
             verification_suspect_failures,
+            observability_deployment_id: lookup("BURD_CONTROL_DEPLOYMENT_ID")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "local".to_string()),
+            observability_recent_events_limit,
+            slo_availability_target_bps,
+            slo_p95_latency_ms,
         })
     }
 }
@@ -202,6 +226,13 @@ fn parse_u32(raw: String, name: &str) -> Result<u32, ConfigError> {
     Ok(value)
 }
 
+fn parse_bps(raw: String, name: &str) -> Result<u32, ConfigError> {
+    let value = parse_u32(raw, name)?;
+    if value > 10_000 {
+        return Err(ConfigError::new(format!("{name} must be at most 10000")));
+    }
+    Ok(value)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,7 +284,23 @@ mod tests {
         assert_eq!(config.verification_retry_budget, 2);
         assert_eq!(config.verification_sweep_limit, 25);
         assert_eq!(config.verification_suspect_failures, 3);
+        assert_eq!(config.observability_deployment_id, "local");
+        assert_eq!(config.observability_recent_events_limit, 100);
+        assert_eq!(config.slo_availability_target_bps, 9990);
+        assert_eq!(config.slo_p95_latency_ms, 500);
         assert_eq!(config.admin_token_hash, sha256_hex(b"admin-secret"));
         assert!(!config.admin_token_hash.contains("admin-secret"));
+    }
+
+    #[test]
+    fn config_rejects_invalid_slo_bps() {
+        let mut values = HashMap::new();
+        values.insert("DATABASE_URL", "postgres://localhost/burd");
+        values.insert("BURD_CONTROL_ADMIN_TOKEN", "admin-secret");
+        values.insert("BURD_CONTROL_SLO_AVAILABILITY_TARGET_BPS", "10001");
+        let error =
+            ControlPlaneConfig::from_lookup(|key| values.get(key).map(|value| value.to_string()))
+                .unwrap_err();
+        assert!(error.to_string().contains("SLO_AVAILABILITY"));
     }
 }

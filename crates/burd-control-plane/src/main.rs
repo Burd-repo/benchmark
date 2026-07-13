@@ -1,3 +1,4 @@
+use burd_control_plane::observability::log_json;
 use burd_control_plane::{AppState, ControlPlaneConfig, Database, router};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -20,7 +21,9 @@ async fn run() -> Result<(), String> {
         .parse()
         .map_err(|error| format!("invalid bind address: {error}"))?;
     let state = Arc::new(AppState::new(config.clone(), db));
+
     let expiration_db = state.db.clone();
+    let expiration_observability = state.observability.clone();
     let expiration_interval = config.heartbeat_interval_seconds;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(u64::from(
@@ -29,14 +32,14 @@ async fn run() -> Result<(), String> {
         loop {
             interval.tick().await;
             if let Err(error) = expiration_db.expire_stale_remote_sessions().await {
-                log_json(
-                    "session_expiration_error",
-                    serde_json::json!({ "error": error.to_string() }),
-                );
+                expiration_observability
+                    .record_background_task_error("session_expiration", error.to_string());
             }
         }
     });
+
     let retention_db = state.db.clone();
+    let retention_observability = state.observability.clone();
     let telemetry_retention_days = config.telemetry_retention_days;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
@@ -46,13 +49,12 @@ async fn run() -> Result<(), String> {
                 .purge_expired_gpu_telemetry(telemetry_retention_days)
                 .await
             {
-                log_json(
-                    "telemetry_retention_error",
-                    serde_json::json!({ "error": error.to_string() }),
-                );
+                retention_observability
+                    .record_background_task_error("telemetry_retention", error.to_string());
             }
         }
     });
+
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|error| format!("failed to bind {addr}: {error}"))?;
@@ -64,6 +66,7 @@ async fn run() -> Result<(), String> {
             "host": config.host,
             "port": config.port,
             "environment": config.environment,
+            "deployment_id": config.observability_deployment_id,
         }),
     );
 
@@ -73,15 +76,4 @@ async fn run() -> Result<(), String> {
         })
         .await
         .map_err(|error| format!("server error: {error}"))
-}
-
-fn log_json(event: &str, fields: serde_json::Value) {
-    eprintln!(
-        "{}",
-        serde_json::json!({
-            "event": event,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-            "fields": fields,
-        })
-    );
 }

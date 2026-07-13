@@ -527,6 +527,7 @@ Documentacao detalhada:
 * [`docs/bn-16-marketplace-registry-listings.md`](docs/bn-16-marketplace-registry-listings.md)
 * [`docs/bn-17-customer-accounts-reservations.md`](docs/bn-17-customer-accounts-reservations.md)
 * [`docs/bn-18-billing-pix-payouts.md`](docs/bn-18-billing-pix-payouts.md)
+* [`docs/bn-19-observability-sre.md`](docs/bn-19-observability-sre.md)
 * [`docs/remote-protocol-v1.md`](docs/remote-protocol-v1.md)
 * [`docs/remote-authority-matrix.md`](docs/remote-authority-matrix.md)
 * [`docs/threat-model.md`](docs/threat-model.md)
@@ -536,8 +537,8 @@ Documentacao detalhada:
 * [`docs/spot-verification.md`](docs/spot-verification.md)
 * [`docs/workload-eligibility.md`](docs/workload-eligibility.md)
 
-A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts. O control plane agora possui registry/listings backend-owned no BN-16, contas/reservas de cliente no BN-17 e primitives financeiros BN-18 para price book, Pix intents, invoices, ledger financeiro e payouts administrados.
-O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification. O BN-12 adiciona planejamento local de runtime seguro Docker/NVIDIA para imagens digest-pinned e allowlisted. O BN-13 adiciona Job API e data-plane grants no control plane. O BN-14 adiciona scheduler pass admin-triggered e leases para jobs ja criados. O BN-15 adiciona usage ledger append-only e recibos hash-backed para jobs terminais. O BN-16 adiciona marketplace registry/listings backend-owned a partir de trust, eligibility, proof, benchmark, network e leases. O BN-17 adiciona contas de cliente, projetos, API keys, quotas, credit ledger nao financeiro, reservas e usage views. O BN-18 adiciona price book, Pix intents confirmaveis, ledger financeiro double-entry append-only, invoices e payout accounts/payouts administrados, ainda sem gateway Pix real ou checkout UI.
+A camada local nao implementa marketplace real, jobs, leases, scheduler, billing, Pix ou payouts. O control plane agora possui registry/listings backend-owned no BN-16, contas/reservas de cliente no BN-17, primitives financeiros BN-18 para price book, Pix intents, invoices, ledger financeiro e payouts administrados, e observabilidade operacional BN-19.
+O BN-01 inicia o backend real em `crates/burd-control-plane`; BN-11 ja registra policies remotas e eligibility backend-derived a partir de benchmark/trust/network/verification. O BN-12 adiciona planejamento local de runtime seguro Docker/NVIDIA para imagens digest-pinned e allowlisted. O BN-13 adiciona Job API e data-plane grants no control plane. O BN-14 adiciona scheduler pass admin-triggered e leases para jobs ja criados. O BN-15 adiciona usage ledger append-only e recibos hash-backed para jobs terminais. O BN-16 adiciona marketplace registry/listings backend-owned a partir de trust, eligibility, proof, benchmark, network e leases. O BN-17 adiciona contas de cliente, projetos, API keys, quotas, credit ledger nao financeiro, reservas e usage views. O BN-18 adiciona price book, Pix intents confirmaveis, ledger financeiro double-entry append-only, invoices e payout accounts/payouts administrados, ainda sem gateway Pix real ou checkout UI. O BN-19 adiciona logs estruturados, correlation IDs, metrics Prometheus, snapshot admin e SLO status para operacao inicial do control plane.
 
 ## Hardware fingerprint e marketplace policy
 
@@ -701,6 +702,12 @@ Documento: [`docs/bn-17-customer-accounts-reservations.md`](docs/bn-17-customer-
 O BN-18 adiciona `marketplace_listing_prices`, `pix_payment_intents`, `financial_ledger_lines`, `billing_invoices`, `provider_payout_accounts` e `provider_payouts`. A cobranca usa usage ledger BN-15 + reservation BN-17 + price book BN-18 + saldo confirmado do projeto; Pix intents so alteram saldo quando confirmados por admin/adapter; provider payouts exigem payable balance, KYC/tax verificados, minimum payout e hold policy. Ainda nao ha chamada a gateway Pix real, webhook assinado, checkout UI ou execucao bancaria automatica.
 
 Documento: [`docs/bn-18-billing-pix-payouts.md`](docs/bn-18-billing-pix-payouts.md).
+
+## Observability e SRE
+
+O BN-19 adiciona logs JSON estruturados, propagation de `x-burd-correlation-id`, metricas Prometheus em `GET /metrics`, snapshot operacional admin em `GET /v1/observability/snapshot`, contadores de erros de tarefas de fundo e SLO status configuravel para disponibilidade HTTP e p95 de latencia recente. Ele nao substitui auditoria de negocio, nao exporta OpenTelemetry ainda e nao automatiza backup/restore.
+
+Documento: [`docs/bn-19-observability-sre.md`](docs/bn-19-observability-sre.md).
 
 ## Histórico
 

@@ -2,11 +2,11 @@
 
 This threat model covers the first Burd Network control-plane phase: provider
 enrollment, remote sessions, signed evidence, challenge response, telemetry,
-trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control metadata, BN-14 scheduler leases, BN-15 usage ledger receipts, BN-16 marketplace listing registry snapshots, BN-17 customer accounts/reservations, and BN-18 billing/Pix/payout settlement primitives.
+trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control metadata, BN-14 scheduler leases, BN-15 usage ledger receipts, BN-16 marketplace listing registry snapshots, BN-17 customer accounts/reservations, BN-18 billing/Pix/payout settlement primitives, and BN-19 observability/SRE primitives.
 
 It does not cover paid job execution, raw customer workload payload bytes, customer data
 plane byte transfer, real Pix gateway integration, signed payment webhooks, executed bank payouts, completed KYC/tax/legal workflows, Kubernetes, distributed training, or
-marketplace UI beyond backend listing/reservation/billing registry.
+marketplace UI beyond backend listing/reservation/billing registry, vendor-specific telemetry export, alert routing, or automated backup/restore tooling.
 
 ## Security Goals
 
@@ -22,6 +22,7 @@ marketplace UI beyond backend listing/reservation/billing registry.
   policy.
 - Audit history records every backend authority decision needed for later
   dispute, antifraud, and incident review.
+- Operational logs, metrics, and snapshots must support incident review without becoming authority for provider trust or billing state.
 - Private keys, API tokens, enrollment tokens, credentials, customer API keys, and raw secrets are
   not exposed in reports, raw payloads, logs, or object storage metadata.
 
@@ -47,7 +48,8 @@ marketplace UI beyond backend listing/reservation/billing registry.
 - scheduler leases, lease status, lease expiry, and active GPU reservations;
 - usage ledger entries, receipt hashes, source hashes, and metering quantities;
 - customer organizations, projects, API key hashes, quotas, reservations, customer credit ledger entries, and customer audit events;
-- marketplace price book records, Pix payment intents, billing invoices, append-only financial ledger lines, provider payout accounts, provider payouts, reconciliation placeholders, KYC/tax status, hashed Pix key material, and masked Pix key suffixes.
+- marketplace price book records, Pix payment intents, billing invoices, append-only financial ledger lines, provider payout accounts, provider payouts, reconciliation placeholders, KYC/tax status, hashed Pix key material, and masked Pix key suffixes;
+- operational logs, correlation IDs, aggregate metrics, SLO status, and observability snapshots.
 
 ## Actors
 
@@ -60,7 +62,8 @@ marketplace UI beyond backend listing/reservation/billing registry.
 - attacker with stolen provider private key;
 - compromised or outdated agent binary;
 - backend operator or automation with elevated access;
-- customer/admin submitting approved workload templates through BN-13 job metadata, triggering BN-14 scheduler passes, inspecting BN-15 usage receipts, inspecting BN-16 marketplace listings, reserving BN-17 customer inventory, and performing BN-18 billing or payout actions.
+- customer/admin submitting approved workload templates through BN-13 job metadata, triggering BN-14 scheduler passes, inspecting BN-15 usage receipts, inspecting BN-16 marketplace listings, reserving BN-17 customer inventory, performing BN-18 billing or payout actions, and inspecting BN-19 operational snapshots.
+- backend operator or SRE using logs, metrics, snapshots, readiness, and audit events during incident response.
 
 ## Trust Boundaries
 
@@ -131,8 +134,12 @@ evidence, and backend observations.
 | Pix payment replay or fake confirmation | Payment-intent creation is idempotent, and balance changes occur only when backend/admin adapter confirmation appends balanced ledger lines. |
 | Provider payout without policy clearance | Payout creation requires verified KYC/tax status, minimum payout, hold policy, and sufficient provider payable balance. |
 | Raw Pix key leakage | BN-18 payout accounts require stored hash material and masked suffixes, not raw Pix keys. |
+| Secret leakage through logs or snapshots | BN-19 logs operational metadata only and must not log bearer tokens, raw payloads, Pix keys, or customer workload bytes. |
+| Metrics cardinality exhaustion | HTTP paths are normalized before recent-event snapshots and metrics stay aggregate. |
+| Unauthorized operational snapshot access | `/v1/observability/snapshot` requires admin bearer authorization; `/metrics` exposes aggregate-only data. |
+| Correlation ID spoofing or log injection | Incoming IDs are length-limited printable ASCII; invalid IDs are replaced by backend-generated request IDs. |
 
-## Antifraud Signals For BN-01 Through BN-18
+## Antifraud Signals For BN-01 Through BN-19
 
 - same GPU UUID under multiple providers;
 - same public key across unrelated devices;
@@ -152,8 +159,8 @@ evidence, and backend observations.
 
 The backend should store what it needs to verify provider claims and operate the
 network. It should not collect private files, local paths, API tokens, private
-keys, arbitrary process arguments, raw Pix keys, bank account secrets, payment gateway secrets, or customer workload
-payloads during this phase. BN-18 stores only hashed Pix key material, masked suffixes, payment intent metadata, invoices, and ledger lines needed for settlement.
+keys, arbitrary process arguments, raw Pix keys, bank account secrets, payment gateway secrets, bearer tokens, admin/customer API keys, or customer workload
+payloads during this phase. BN-18 stores only hashed Pix key material, masked suffixes, payment intent metadata, invoices, and ledger lines needed for settlement. BN-19 logs and snapshots must stay limited to operational metadata, normalized paths, counters, and correlation IDs.
 
 Telemetry that can identify local activity should be minimized, redacted, and
 retained according to explicit policy.

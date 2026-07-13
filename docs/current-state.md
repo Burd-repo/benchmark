@@ -121,6 +121,7 @@ after the June 2026 reliability pass.
 - Secure runtime planning can inspect Docker/NVIDIA readiness and produce a hardened Docker sandbox plan for digest-pinned, allowlisted runtime images without executing customer jobs.
 - The control plane can create backend-authorized compute jobs for a specific provider/device/session, let an authenticated provider session pull the next job, issue job-scoped data-plane grants, record progress events, accept final result metadata, and cancel non-terminal jobs.
 - The control plane can create customer users, organizations, projects, quotas, hashed customer API keys, credit ledger entries, marketplace reservations, usage summaries, and customer audit events. Reservations are scoped to backend-published marketplace listings and project quotas.
+- The control plane exposes operational observability with correlation IDs, structured JSON logs, Prometheus metrics, admin snapshots, background task error counters, and configurable HTTP SLO status.
 - Network benchmark includes latency aliases, request counts, status code,
   DNS timing, duration, jitter, and warnings.
 - Raw data includes explicit redaction metadata and summaries for history,
@@ -179,13 +180,13 @@ after the June 2026 reliability pass.
 - Production antifraud operations, case review, admin resolution, and automated enforcement.
 - Marketplace checkout/orchestration beyond single-listing reservation, autonomous/background scheduling, paid job container execution, byte-level data-plane transfer, billing-grade metering enforcement, and external financial settlement.
 - Real Pix gateway capture, bank payout execution, earnings settlement, refunds, disputes, tax workflows, and production financial reconciliation.
-- Production cloud deployment and complete remote backend operations.
+- Production cloud deployment, external observability export, dashboards-as-code, alerting, automated backup/restore, and complete remote backend operations.
 - Reputation and provider marketplace ranking.
 - Hardware attestation through TPM/HSM/OS keychain.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
 - Production scheduler optimization, marketplace demand matching, reservations across supply inventory, and multi-GPU/multi-provider placement. BN-14 only offers leases for already-created, already-targeted jobs.
-- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-18 state.
+- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-19 state.
 
 ## Known Build Warnings
 
@@ -259,7 +260,7 @@ starting the API server or depending on host state:
 - `docs/remote-authority-matrix.md` defines which fields are agent-claimed,
   agent-signed evidence, backend-attested, backend-derived, or never accepted.
 - `docs/threat-model.md` defines assets, actors, trust boundaries, threats,
-  controls, privacy boundaries, and residual risk for BN-01 through BN-11.
+  controls, privacy boundaries, and residual risk for BN-01 through BN-19.
 
 ## BN-01 - Backend Foundation
 
@@ -511,3 +512,13 @@ starting the API server or depending on host state:
 - Reservation billing settlement requires BN-15 usage, BN-17 reservation, matching provider/device/GPU binding, an active BN-18 listing price, and sufficient confirmed project balance.
 - Provider payouts require verified KYC/tax state, minimum payout, payable balance, and hold policy.
 - BN-18 does not call a real Pix gateway, verify webhook signatures, execute bank payouts, provide checkout UI, or complete legal/KYC/tax workflows.
+
+## BN-19 - Observability And SRE
+
+- `crates/burd-control-plane` adds an `observability` module for in-memory HTTP metrics, recent normalized request events, background task error counters, SLO snapshots, and Prometheus text export.
+- The HTTP router exposes `GET /metrics` publicly for aggregate operational metrics and `GET /v1/observability/snapshot` behind admin authorization.
+- HTTP responses include `x-burd-correlation-id`, reusing a valid incoming `x-burd-correlation-id` or `x-request-id`, otherwise generating a backend request ID.
+- The control plane emits structured JSON logs for service start, HTTP requests, background task errors, and PostgreSQL connection errors without logging credentials or raw request bodies.
+- Config adds `BURD_CONTROL_DEPLOYMENT_ID`, `BURD_CONTROL_OBSERVABILITY_RECENT_EVENTS_LIMIT`, `BURD_CONTROL_SLO_AVAILABILITY_TARGET_BPS`, and `BURD_CONTROL_SLO_P95_LATENCY_MS`.
+- `docs/bn-19-observability-sre.md` records the operational runbook, metrics contract, SLO contract, backup/restore expectation, and explicit non-goals.
+- BN-19 does not implement OpenTelemetry Collector export, dashboards-as-code, alert routing, automated backup scheduling, automated restore tooling, incident ticket integration, or distributed tracing across services.

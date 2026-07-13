@@ -1,4 +1,5 @@
 use crate::migrations::MIGRATIONS;
+use crate::observability::log_json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -277,12 +278,9 @@ impl Database {
         let (client, connection) = tokio_postgres::connect(&self.database_url, NoTls).await?;
         tokio::spawn(async move {
             if let Err(error) = connection.await {
-                eprintln!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "postgres_connection_error",
-                        "error": error.to_string(),
-                    })
+                log_json(
+                    "postgres_connection_error",
+                    serde_json::json!({ "error": error.to_string() }),
                 );
             }
         });

@@ -14,6 +14,7 @@ pub mod marketplace;
 pub mod metering;
 pub mod migrations;
 pub mod network_probe;
+pub mod observability;
 pub mod openapi;
 pub mod proof_challenge;
 pub mod rate_limit;

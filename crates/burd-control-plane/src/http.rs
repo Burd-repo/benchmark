@@ -5,6 +5,9 @@ use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, Provider
 use crate::enrollment::EnrollmentError;
 use crate::error::{ApiError, ErrorCode};
 use crate::job_control::{CreateJobCommand, CreateJobOutcome};
+use crate::observability::{
+    ObservabilitySettings, ObservabilityState, ObservedHttpRequest, normalize_http_path,
+};
 use crate::openapi;
 use crate::proof_challenge::ProofChallengePolicy;
 use crate::rate_limit::RateLimiter;
@@ -16,7 +19,7 @@ use crate::telemetry::TelemetryPolicy;
 use crate::verification_policy::VerificationPolicy;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -38,6 +41,7 @@ use burd_protocol::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Instant;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -46,16 +50,28 @@ pub struct AppState {
     pub db: Database,
     pub rate_limiter: RateLimiter,
     pub control_channels: ControlChannelRegistry,
+    pub observability: ObservabilityState,
 }
 
 impl AppState {
     pub fn new(config: ControlPlaneConfig, db: Database) -> Self {
         let rate_limiter = RateLimiter::per_minute(config.rate_limit_per_minute);
+        let observability = ObservabilityState::new(
+            "burd-control-plane",
+            config.environment.clone(),
+            config.observability_deployment_id.clone(),
+            ObservabilitySettings {
+                recent_events_limit: config.observability_recent_events_limit,
+                availability_target_bps: config.slo_availability_target_bps,
+                p95_latency_ms: config.slo_p95_latency_ms,
+            },
+        );
         Self {
             config,
             db,
             rate_limiter,
             control_channels: ControlChannelRegistry::default(),
+            observability,
         }
     }
 }
@@ -143,6 +159,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/openapi.json", get(openapi_json))
+        .route("/metrics", get(metrics))
+        .route("/v1/observability/snapshot", get(observability_snapshot))
         .route("/v1/providers", post(create_provider))
         .route("/v1/providers/{provider_id}", get(get_provider))
         .route(
@@ -396,6 +414,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             state.clone(),
             rate_limit_middleware,
         ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            observability_middleware,
+        ))
         .with_state(state)
 }
 
@@ -448,6 +470,25 @@ async fn openapi_json() -> Json<serde_json::Value> {
     Json(openapi::document())
 }
 
+async fn metrics(State(state): State<Arc<AppState>>) -> Response {
+    (
+        [
+            ("content-type", "text/plain; version=0.0.4; charset=utf-8"),
+            ("cache-control", "no-store"),
+        ],
+        state.observability.prometheus(),
+    )
+        .into_response()
+}
+
+async fn observability_snapshot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<crate::observability::ObservabilitySnapshot>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    Ok(Json(state.observability.snapshot()))
+}
 async fn create_provider(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2203,6 +2244,35 @@ async fn send_control_error(
     )
     .await
 }
+async fn observability_middleware(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Response {
+    let started = Instant::now();
+    let method = request.method().as_str().to_string();
+    let path = normalize_http_path(request.uri().path());
+    let correlation_id = correlation_id_from_headers(&headers);
+    state.observability.begin_http_request();
+    let mut response = next.run(request).await;
+    if let Ok(value) = HeaderValue::from_str(&correlation_id) {
+        response
+            .headers_mut()
+            .insert("x-burd-correlation-id", value);
+    }
+    state
+        .observability
+        .finish_http_request(ObservedHttpRequest {
+            correlation_id,
+            method,
+            path,
+            status: response.status().as_u16(),
+            duration_ms: started.elapsed().as_millis(),
+        });
+    response
+}
+
 async fn rate_limit_middleware(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2225,6 +2295,22 @@ async fn rate_limit_middleware(
             ApiError::rate_limited(new_request_id(), retry_after_seconds).into_response()
         }
     }
+}
+
+fn correlation_id_from_headers(headers: &HeaderMap) -> String {
+    headers
+        .get("x-burd-correlation-id")
+        .or_else(|| headers.get("x-request-id"))
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .filter(|value| {
+            value
+                .chars()
+                .all(|character| character.is_ascii() && !character.is_ascii_control())
+        })
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(new_request_id)
 }
 
 fn required_idempotency_key(headers: &HeaderMap, request_id: &str) -> Result<String, ApiError> {
@@ -2474,6 +2560,10 @@ mod tests {
             verification_retry_budget: 2,
             verification_sweep_limit: 25,
             verification_suspect_failures: 3,
+            observability_deployment_id: "test".to_string(),
+            observability_recent_events_limit: 16,
+            slo_availability_target_bps: 9990,
+            slo_p95_latency_ms: 500,
         }
     }
 
@@ -2498,6 +2588,90 @@ mod tests {
         assert_eq!(value["service"], "burd-control-plane");
     }
 
+    #[tokio::test]
+    async fn metrics_endpoint_reports_observed_requests_and_correlation_id() {
+        let config = test_config("postgres://localhost/unavailable");
+        let db = Database::new(config.database_url.clone(), None).unwrap();
+        let app = router(Arc::new(AppState::new(config, db)));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/health")
+                    .header("x-burd-correlation-id", "corr-test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-burd-correlation-id")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "corr-test"
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let text = std::str::from_utf8(&body).unwrap();
+        assert!(text.contains("burd_control_plane_http_requests_total"));
+        assert!(text.contains("deployment_id=\"test\""));
+    }
+
+    #[tokio::test]
+    async fn observability_snapshot_requires_admin_and_reports_slo_state() {
+        let config = test_config("postgres://localhost/unavailable");
+        let db = Database::new(config.database_url.clone(), None).unwrap();
+        let app = router(Arc::new(AppState::new(config, db)));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/observability/snapshot")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/observability/snapshot")
+                    .header("authorization", "Bearer test-admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["service"], "burd-control-plane");
+        assert_eq!(value["environment"], "test");
+        assert_eq!(value["slo"]["availability_target_bps"], 9990);
+        assert!(value["http"]["total_requests"].as_u64().unwrap() >= 1);
+    }
     #[tokio::test]
     async fn provider_creation_requires_admin_before_database_access() {
         let config = test_config("postgres://localhost/unavailable");
