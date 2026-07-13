@@ -152,14 +152,19 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | organization id | backend | `backend_attested` | Owns projects, API keys, credits, reservations, and audit events. |
 | project id | backend | `backend_attested` | Workload/customer identity boundary; not a provider identity. |
 | customer API key token | returned once by backend | `backend_attested` | Stored only as hash; bearer token authenticates customer reservation APIs. |
-| API key scopes | admin API | `backend_attested` | Backend enforces `reservations:read`, `reservations:write`, and `usage:read`. |
+| API key scopes | admin API | `backend_attested` | Backend enforces `reservations:read`, `reservations:write`, `usage:read`, `billing:read`, and `billing:write`. |
 | project quota | admin API | `backend_attested` | Backend enforces active reservation count, reserved GPU seconds, and TTL. |
 | reservation id/status | backend reservation service | `backend_attested` | Customers request reservations; backend decides accepted/cancelled/expired state. |
 | reservation listing/provider/GPU binding | backend marketplace listing | `backend_derived` | Reservation binds to a backend-published listing, not a provider claim. |
 | reservation idempotency | customer header plus body hash | `backend_attested` | Conflicting replay is rejected. |
 | customer usage view | backend reservation and credit tables | `backend_derived` | BN-17 usage is reservation/account balance view, not billing-grade settlement. |
 | customer credit ledger | admin/reservation service append | `backend_attested` | Append-only non-settlement credits; corrections require new entries. |
-| billing amount, Pix charge, payout amount | none in BN-17 | `never_accepted` | Reserved for BN-18 financial ledger and payment adapters. |
+| billing amount | backend settlement over usage, reservation, and price book | `backend_derived` | Provider/customer cannot submit final billing amount. |
+| Pix payment confirmation | admin/webhook adapter | `backend_attested` | Payment intent does not affect balance until backend confirmation appends balanced ledger lines. |
+| customer financial balance | append-only financial ledger | `backend_derived` | Derived from ledger lines, not mutable account fields. |
+| provider payable balance | append-only financial ledger | `backend_derived` | Settlement and payout transactions move provider payable. |
+| provider payout amount | admin payout request plus ledger balance | `backend_attested` | Requires KYC/tax status, minimum payout, hold policy, and sufficient payable balance. |
+| financial ledger mutation | operator/provider/customer input | `never_accepted` | `financial_ledger_lines` rejects update/delete; corrections require compensating entries. |
 ## Policy And Marketplace Signals
 
 | Field | Local source | Remote authority | Notes |
@@ -176,5 +181,5 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | marketplace GPU verified flag | backend proof plus benchmark binding | `backend_derived` | Observed GPU UUID alone is never shown as verified marketplace inventory. |
 | marketplace VRAM verified flag | backend telemetry bound to verified GPU | `backend_derived` | Self-reported VRAM is not marketplace-verified. |
 | marketplace region | regional probes | `backend_derived` | User/provider-declared region is not authoritative. |
-| marketplace listing price | future marketplace/billing config | `backend_attested` | BN-16 leaves price unset with `not_configured_bn16`; provider local estimates are not accepted. |
+| marketplace listing price | admin billing price book | `backend_attested` | BN-18 updates listing price fields from `marketplace_listing_prices`; provider local estimates are not accepted. |
 | pricing/earnings | local estimate | `agent_claimed` | Billing and marketplace pricing are separate future systems. |

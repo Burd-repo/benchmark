@@ -1,4 +1,5 @@
 pub mod benchmark_profile;
+pub mod billing;
 pub mod challenge;
 pub mod customer;
 pub mod enrollment;
@@ -26,6 +27,22 @@ pub use benchmark_profile::{
     ListProviderBenchmarkResultsResponse, SignedBenchmarkResult, SubmitBenchmarkResultResponse,
     UpsertBenchmarkProfileRequest, UpsertBenchmarkProfileResponse, benchmark_result_hash,
     benchmark_result_signature_message,
+};
+pub use billing::{
+    BILLING_DISPUTE_SCHEMA_VERSION, BILLING_INVOICE_SCHEMA_VERSION,
+    BILLING_RECONCILIATION_SCHEMA_VERSION, BILLING_REFUND_SCHEMA_VERSION, BillingBalance,
+    BillingBalanceResponse, BillingDisputeRecord, BillingDisputeResponse, BillingInvoiceRecord,
+    BillingInvoiceResponse, BillingRefundRecord, BillingRefundResponse,
+    ConfirmPixPaymentIntentRequest, CreateBillingDisputeRequest, CreateBillingRefundRequest,
+    CreatePixPaymentIntentRequest, CreateProviderPayoutRequest, CreateReconciliationEventRequest,
+    FINANCIAL_LEDGER_SCHEMA_VERSION, FinancialLedgerLineRecord, FinancialLedgerResponse,
+    MARKETPLACE_PRICE_SCHEMA_VERSION, MarketplacePriceRecord, MarketplacePriceResponse,
+    PIX_PAYMENT_INTENT_SCHEMA_VERSION, PROVIDER_PAYOUT_ACCOUNT_SCHEMA_VERSION,
+    PROVIDER_PAYOUT_SCHEMA_VERSION, PixPaymentIntentRecord, PixPaymentIntentResponse,
+    ProviderPayoutAccountRecord, ProviderPayoutAccountResponse, ProviderPayoutRecord,
+    ProviderPayoutResponse, ReconciliationEventRecord, ReconciliationEventResponse,
+    SettleReservationBillingRequest, UpsertMarketplacePriceRequest,
+    UpsertProviderPayoutAccountRequest,
 };
 pub use challenge::{
     Challenge, ChallengePolicy, ChallengeResponse, ChallengeRunOutput, ChallengeVerification,

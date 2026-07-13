@@ -1,3 +1,4 @@
+use crate::billing::{CreatePixPaymentIntentCommand, CreatePixPaymentIntentOutcome};
 use crate::config::ControlPlaneConfig;
 use crate::customer::{CreateReservationCommand, CreateReservationOutcome, CustomerApiKeyAuth};
 use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};
@@ -22,16 +23,18 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_protocol::{
     AcceptJobRequest, CancelJobRequest, CancelReservationRequest, ClientControlMessage,
-    CreateCustomerApiKeyRequest, CreateCustomerUserRequest, CreateJobRequest,
-    CreateOrganizationRequest, CreateProjectRequest, CreateReservationRequest,
+    ConfirmPixPaymentIntentRequest, CreateCustomerApiKeyRequest, CreateCustomerUserRequest,
+    CreateJobRequest, CreateOrganizationRequest, CreatePixPaymentIntentRequest,
+    CreateProjectRequest, CreateProviderPayoutRequest, CreateReservationRequest,
     EnrollmentProofRequest, GrantCustomerCreditsRequest, IssueProofChallengeRequest,
     JobEventRequest, KeyRotationProofRequest, RevokeEvidenceRequest,
     RunMarketplaceListingSweepRequest, RunSchedulerRequest, RunTrustSweepRequest,
     RunVerificationSweepRequest, RunWorkloadEligibilityRequest, ServerControlMessage,
-    SignedBenchmarkResult, SignedProofCapabilityResponse, StartEnrollmentRequest,
-    StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
-    SubmitJobResultRequest, SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
-    UpsertProjectQuotaRequest, UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
+    SettleReservationBillingRequest, SignedBenchmarkResult, SignedProofCapabilityResponse,
+    StartEnrollmentRequest, StartKeyRotationRequest, StartRemoteSessionRequest,
+    SubmitEvidenceRequest, SubmitJobResultRequest, SubmitNetworkProbeObservationRequest,
+    UpsertBenchmarkProfileRequest, UpsertMarketplacePriceRequest, UpsertProjectQuotaRequest,
+    UpsertProviderPayoutAccountRequest, UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -246,6 +249,50 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/marketplace/listings/sweep",
             post(run_marketplace_listing_sweep),
+        )
+        .route(
+            "/v1/marketplace/listings/{listing_id}/price",
+            post(upsert_marketplace_price),
+        )
+        .route(
+            "/v1/billing/projects/{project_id}/pix/payment-intents",
+            post(create_pix_payment_intent),
+        )
+        .route(
+            "/v1/billing/pix/payment-intents/{payment_intent_id}/confirm",
+            post(confirm_pix_payment_intent),
+        )
+        .route(
+            "/v1/billing/projects/{project_id}/balance",
+            get(project_billing_balance),
+        )
+        .route(
+            "/v1/billing/projects/{project_id}/ledger",
+            get(list_project_financial_ledger),
+        )
+        .route(
+            "/v1/billing/reservations/{reservation_id}/settle",
+            post(settle_reservation_billing),
+        )
+        .route(
+            "/v1/billing/invoices/{invoice_id}",
+            get(get_billing_invoice),
+        )
+        .route(
+            "/v1/billing/providers/{provider_id}/balance",
+            get(provider_billing_balance),
+        )
+        .route(
+            "/v1/billing/providers/{provider_id}/ledger",
+            get(list_provider_financial_ledger),
+        )
+        .route(
+            "/v1/billing/providers/{provider_id}/payout-account",
+            post(upsert_provider_payout_account),
+        )
+        .route(
+            "/v1/billing/providers/{provider_id}/payouts",
+            post(create_provider_payout),
         )
         .route("/v1/customer/users", post(create_customer_user))
         .route("/v1/customer/organizations", post(create_organization))
@@ -1016,6 +1063,198 @@ async fn list_provider_marketplace_listings(
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
+}
+async fn upsert_marketplace_price(
+    State(state): State<Arc<AppState>>,
+    Path(listing_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<UpsertMarketplacePriceRequest>,
+) -> Result<Json<burd_protocol::MarketplacePriceResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .upsert_marketplace_price(&request_id, &listing_id, &payload)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn create_pix_payment_intent(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreatePixPaymentIntentRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    let idempotency_key = required_idempotency_key(&headers, &request_id)?;
+    let request_hash = hash_canonical(&payload)
+        .map_err(|error| ApiError::invalid_request(error, request_id.clone()))?;
+    let outcome = state
+        .db
+        .create_pix_payment_intent_idempotently(CreatePixPaymentIntentCommand {
+            request_id: request_id.clone(),
+            scope: format!("POST /v1/billing/projects/{project_id}/pix/payment-intents"),
+            idempotency_key,
+            request_hash,
+            auth,
+            project_id,
+            request: payload,
+        })
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    match outcome {
+        CreatePixPaymentIntentOutcome::Response(record) => {
+            let value = serde_json::from_str::<serde_json::Value>(&record.response_json).map_err(
+                |error| ApiError::invalid_request(error.to_string(), request_id.clone()),
+            )?;
+            let status = StatusCode::from_u16(record.status_code).unwrap_or(StatusCode::OK);
+            Ok((status, Json(value)).into_response())
+        }
+        CreatePixPaymentIntentOutcome::Conflict => Err(ApiError::idempotency_conflict(request_id)),
+    }
+}
+
+async fn confirm_pix_payment_intent(
+    State(state): State<Arc<AppState>>,
+    Path(payment_intent_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<ConfirmPixPaymentIntentRequest>,
+) -> Result<Json<burd_protocol::PixPaymentIntentResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .confirm_pix_payment_intent(&request_id, &payment_intent_id, &payload)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn project_billing_balance(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::BillingBalanceResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    state
+        .db
+        .project_billing_balance(&request_id, &auth, &project_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_project_financial_ledger(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    Query(query): Query<CustomerListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::FinancialLedgerResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    state
+        .db
+        .list_project_financial_ledger(&request_id, &auth, &project_id, query.limit.unwrap_or(50))
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn settle_reservation_billing(
+    State(state): State<Arc<AppState>>,
+    Path(reservation_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<SettleReservationBillingRequest>,
+) -> Result<Json<burd_protocol::BillingInvoiceResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .settle_reservation_billing(&request_id, &reservation_id, &payload)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn get_billing_invoice(
+    State(state): State<Arc<AppState>>,
+    Path(invoice_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::BillingInvoiceResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .get_billing_invoice(&request_id, &invoice_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn provider_billing_balance(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::BillingBalanceResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .provider_billing_balance(&request_id, &provider_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_provider_financial_ledger(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    Query(query): Query<JobListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::FinancialLedgerResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_financial_ledger(&request_id, &provider_id, query.limit.unwrap_or(50))
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn upsert_provider_payout_account(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<UpsertProviderPayoutAccountRequest>,
+) -> Result<Json<burd_protocol::ProviderPayoutAccountResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .upsert_provider_payout_account(&request_id, &provider_id, &payload)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn create_provider_payout(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateProviderPayoutRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .create_provider_payout(&request_id, &provider_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
 }
 async fn create_customer_user(
     State(state): State<Arc<AppState>>,

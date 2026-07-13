@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 pub mod benchmark_profile;
+pub mod billing;
 pub mod config;
 pub mod customer;
 pub mod db;
