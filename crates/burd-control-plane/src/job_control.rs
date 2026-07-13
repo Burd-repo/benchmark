@@ -1,5 +1,9 @@
 use crate::db::{Database, DbError, IdempotencyRecord, NewAuditEvent, insert_audit_event};
 use crate::remote_session::{AuthorizedSession, SessionError};
+use crate::scheduler::{
+    load_job_lease_in_transaction, mark_lease_accepted_for_job, mark_lease_progress_for_job,
+    mark_lease_terminal_for_job,
+};
 use burd_protocol::{
     AcceptJobRequest, CancelJobRequest, CreateJobRequest, CreateJobResponse,
     JOB_DATA_PLANE_GRANT_VERSION, JOB_EVENT_SCHEMA_VERSION, JOB_SCHEMA_VERSION, JobArtifact,
@@ -223,29 +227,36 @@ impl Database {
     ) -> Result<NextJobResponse, SessionError> {
         let mut client = self.connect().await?;
         let transaction = client.transaction().await?;
-        let row = transaction
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        let lease_row = transaction
             .query_opt(
-                &format!(
-                    "{} WHERE provider_id = $1 AND device_id = $2 AND session_id = $3 AND status = 'queued' ORDER BY created_at ASC FOR UPDATE SKIP LOCKED LIMIT 1",
-                    job_select_columns()
-                ),
+                "SELECT l.lease_id, l.job_id FROM job_leases l JOIN compute_jobs j ON j.job_id = l.job_id WHERE l.provider_id = $1 AND l.device_id = $2 AND l.session_id = $3 AND l.status = 'offered' AND l.expires_at > $4 AND j.status = 'queued' ORDER BY l.offered_at ASC FOR UPDATE OF l SKIP LOCKED LIMIT 1",
                 &[
                     &authorized.provider_id,
                     &authorized.device_id,
                     &authorized.session_id,
+                    &now_text,
                 ],
             )
             .await?;
-        let Some(row) = row else {
+        let Some(lease_row) = lease_row else {
             transaction.commit().await?;
             return Ok(NextJobResponse {
                 request_id: request_id.to_string(),
                 job: None,
                 data_plane: None,
+                lease: None,
             });
         };
-        let queued = job_from_row(row)?;
-        let now = Utc::now();
+        let lease_id: String = lease_row.get("lease_id");
+        let job_id: String = lease_row.get("job_id");
+        let queued = locked_job(&transaction, &job_id).await?;
+        if queued.status != "queued" {
+            return Err(SessionError::Conflict(
+                "leased job is no longer queued".to_string(),
+            ));
+        }
         let credential = random_token("jobcred").map_err(SessionError::Invalid)?;
         let credential_hash = sha256_hex(credential.as_bytes());
         let credential_expires_at =
@@ -253,10 +264,11 @@ impl Database {
         transaction
             .execute(
                 "UPDATE compute_jobs SET status = 'assigned', assigned_at = $1, job_credential_hash = $2, job_credential_expires_at = $3, updated_at = $1 WHERE job_id = $4",
-                &[&now.to_rfc3339(), &credential_hash, &credential_expires_at, &queued.job_id],
+                &[&now_text, &credential_hash, &credential_expires_at, &queued.job_id],
             )
             .await?;
         let job = load_job_in_transaction(&transaction, &queued.job_id).await?;
+        let lease = load_job_lease_in_transaction(&transaction, &lease_id).await?;
         let data_plane = data_plane_grant(&job, credential, credential_expires_at);
         insert_audit_event(
             &transaction,
@@ -278,9 +290,9 @@ impl Database {
             request_id: request_id.to_string(),
             job: Some(job),
             data_plane: Some(data_plane),
+            lease: Some(lease),
         })
     }
-
     pub async fn accept_job(
         &self,
         request_id: &str,
@@ -304,6 +316,7 @@ impl Database {
                 &[&now, &request.status_message, &job.job_id],
             )
             .await?;
+        mark_lease_accepted_for_job(&transaction, &job.job_id, &now).await?;
         let updated = load_job_in_transaction(&transaction, &job.job_id).await?;
         insert_audit_event(
             &transaction,
@@ -388,6 +401,7 @@ impl Database {
             )
             .await?;
         apply_event_state_update(&transaction, &job, request, &now).await?;
+        mark_lease_progress_for_job(&transaction, &job.job_id, &request.event_type, &now).await?;
         let event = load_event_in_transaction(&transaction, &event_id).await?;
         let updated = load_job_in_transaction(&transaction, &job.job_id).await?;
         transaction.commit().await?;
@@ -442,6 +456,14 @@ impl Database {
             )
             .await?;
         let updated = load_job_in_transaction(&transaction, &job.job_id).await?;
+        mark_lease_terminal_for_job(
+            &transaction,
+            &job.job_id,
+            &request.status,
+            request.error_message.as_deref(),
+            &completed_at,
+        )
+        .await?;
         insert_audit_event(
             &transaction,
             NewAuditEvent {
@@ -492,6 +514,14 @@ impl Database {
             )
             .await?;
         let updated = load_job_in_transaction(&transaction, &job.job_id).await?;
+        mark_lease_terminal_for_job(
+            &transaction,
+            &job.job_id,
+            "cancelled",
+            request.reason.as_deref().or(Some("job_cancelled")),
+            &now,
+        )
+        .await?;
         insert_audit_event(
             &transaction,
             NewAuditEvent {
@@ -1204,6 +1234,19 @@ mod tests {
         let created: CreateJobResponse = serde_json::from_str(&record.response_json).unwrap();
         assert_eq!(created.job.status, "queued");
 
+        let scheduled = db
+            .run_scheduler(
+                "req_scheduler",
+                &burd_protocol::RunSchedulerRequest {
+                    limit: Some(10),
+                    lease_ttl_seconds: Some(120),
+                    reason: Some("integration_test".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(scheduled.offered, 1);
+
         let authorized = AuthorizedSession {
             provider_id: "provider_1".to_string(),
             device_id: "device_1".to_string(),
@@ -1226,6 +1269,15 @@ mod tests {
                 .starts_with("jobcred_")
         );
 
+        assert_eq!(next.lease.as_ref().unwrap().status, "offered");
+
+        let duplicate_next = db
+            .next_job_for_session("req_next_again", &authorized)
+            .await
+            .unwrap();
+        assert!(duplicate_next.job.is_none());
+        assert!(duplicate_next.data_plane.is_none());
+        assert!(duplicate_next.lease.is_none());
         let accepted = db
             .accept_job(
                 "req_accept",

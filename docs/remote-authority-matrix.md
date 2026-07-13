@@ -96,7 +96,7 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | runtime template allowlist | agent constants in BN-12; backend policy later | `agent_claimed` in BN-12, `backend_attested` after job policy | Provider cannot define templates for paid jobs. |
 | runtime image reference | agent CLI input in BN-12; backend job policy later | `agent_claimed` until backend job assignment | Must be digest-pinned before execution planning. |
 | image allowlist | agent CLI input in BN-12; backend/admin policy later | `agent_claimed` in BN-12, `backend_attested` for jobs | BN-12 local allowlist avoids accidental unsafe plans, but backend owns production image approval. |
-| GPU UUID binding | agent telemetry or CLI input | `agent_signed_evidence` after telemetry/result binding | Future leases must bind the exact GPU UUID. |
+| GPU UUID binding | agent telemetry or CLI input | `agent_signed_evidence` after telemetry/result binding | BN-14 leases bind the exact GPU UUID before assignment. |
 | Docker security profile | agent plan | `agent_claimed` | Backend/job runtime must enforce and audit the actual launched container. |
 | runtime plan status | agent local calculation | `agent_claimed` | `ready` means locally plannable, not marketplace approval. |
 | job execution authorization | none in BN-12 | `backend_attested` | Requires future job, lease, policy, credentials, and audit events. |
@@ -118,6 +118,18 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | job terminal result status | provider session, constrained by backend | `agent_claimed` until future verifier/metering | BN-13 accepts `succeeded` or `failed` metadata but does not meter paid usage. |
 | job cancellation | backend/admin | `backend_attested` | Cancels only non-terminal jobs. |
 | arbitrary shell command | customer/provider input | `never_accepted` | BN-13 accepts approved templates and structured parameters, not shell payloads. |
+
+## Scheduler And Leases
+
+| Field | Local source | Remote authority | Notes |
+| --- | --- | --- | --- |
+| scheduler decision | backend scheduler pass | `backend_derived` | Calculated from job state, provider/device/session state, workload eligibility, and active leases. |
+| lease id and status | backend scheduler/job control | `backend_attested` | Provider cannot create or extend leases. |
+| lease expiry | backend server clock | `backend_derived` | Expired offers are recalculated by the backend, not by provider time. |
+| lease job/provider/device/session/GPU binding | backend job plus scheduler validation | `backend_attested` | Assignment is limited to the exact authenticated session that received the offer. |
+| provider lease acknowledgement | provider session | `agent_claimed` with backend state transition | Backend accepts it only for the matching assigned job and active lease. |
+| double assignment prevention | backend database constraints | `backend_attested` | Active leases are unique per job and per provider/device/GPU. |
+
 ## Policy And Marketplace Signals
 
 | Field | Local source | Remote authority | Notes |

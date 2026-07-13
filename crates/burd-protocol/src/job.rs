@@ -1,3 +1,4 @@
+use crate::lease::JobLeaseRecord;
 use serde::{Deserialize, Serialize};
 
 pub const JOB_SCHEMA_VERSION: &str = "burd-job-v1";
@@ -128,6 +129,8 @@ pub struct NextJobResponse {
     pub job: Option<JobRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_plane: Option<JobDataPlaneGrant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<JobLeaseRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

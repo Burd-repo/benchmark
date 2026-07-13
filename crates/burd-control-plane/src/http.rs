@@ -22,7 +22,7 @@ use axum::{Json, Router};
 use burd_protocol::{
     AcceptJobRequest, CancelJobRequest, ClientControlMessage, CreateJobRequest,
     EnrollmentProofRequest, IssueProofChallengeRequest, JobEventRequest, KeyRotationProofRequest,
-    RevokeEvidenceRequest, RunTrustSweepRequest, RunVerificationSweepRequest,
+    RevokeEvidenceRequest, RunSchedulerRequest, RunTrustSweepRequest, RunVerificationSweepRequest,
     RunWorkloadEligibilityRequest, ServerControlMessage, SignedBenchmarkResult,
     SignedProofCapabilityResponse, StartEnrollmentRequest, StartKeyRotationRequest,
     StartRemoteSessionRequest, SubmitEvidenceRequest, SubmitJobResultRequest,
@@ -227,7 +227,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/jobs", post(create_job))
         .route("/v1/jobs/{job_id}", get(get_job))
         .route("/v1/jobs/{job_id}/cancel", post(cancel_job))
+        .route("/v1/jobs/{job_id}/leases", get(list_job_leases))
+        .route("/v1/scheduler/run", post(run_scheduler))
         .route("/v1/providers/{provider_id}/jobs", get(list_provider_jobs))
+        .route(
+            "/v1/providers/{provider_id}/leases",
+            get(list_provider_leases),
+        )
         .route("/v1/sessions/{session_id}/jobs/next", get(next_job))
         .route(
             "/v1/sessions/{session_id}/jobs/{job_id}/accept",
@@ -953,6 +959,51 @@ async fn list_provider_jobs(
         .map_err(|error| session_api_error(error, request_id))
 }
 
+async fn run_scheduler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<RunSchedulerRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .run_scheduler(&request_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::ACCEPTED, Json(response)).into_response())
+}
+
+async fn list_provider_leases(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    Query(query): Query<JobListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListJobLeasesResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_job_leases(&request_id, &provider_id, query.limit.unwrap_or(50))
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_job_leases(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListJobLeasesResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_job_leases(&request_id, &job_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
 async fn next_job(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,

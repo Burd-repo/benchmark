@@ -4,6 +4,7 @@ pub mod enrollment;
 pub mod evidence;
 pub mod identity;
 pub mod job;
+pub mod lease;
 pub mod network_probe;
 pub mod remote_session;
 pub mod report;
@@ -67,6 +68,10 @@ pub use job::{
     JOB_SCHEMA_VERSION, JobArtifact, JobDataPlaneGrant, JobDataPlaneUrl, JobEventRecord,
     JobEventRequest, JobEventResponse, JobRecord, JobResponse, ListJobsResponse, NextJobResponse,
     SubmitJobResultRequest, SubmitJobResultResponse,
+};
+pub use lease::{
+    JOB_LEASE_SCHEMA_VERSION, JobLeaseRecord, ListJobLeasesResponse, RunSchedulerRequest,
+    RunSchedulerResponse, SchedulerDecisionRecord,
 };
 pub use network_probe::{
     ListNetworkProbeObservationsResponse, ListProviderNetworkStatesResponse,
