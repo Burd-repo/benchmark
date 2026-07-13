@@ -1,4 +1,5 @@
 use crate::config::ControlPlaneConfig;
+use crate::customer::{CreateReservationCommand, CreateReservationOutcome, CustomerApiKeyAuth};
 use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};
 use crate::enrollment::EnrollmentError;
 use crate::error::{ApiError, ErrorCode};
@@ -20,14 +21,17 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use burd_protocol::{
-    AcceptJobRequest, CancelJobRequest, ClientControlMessage, CreateJobRequest,
-    EnrollmentProofRequest, IssueProofChallengeRequest, JobEventRequest, KeyRotationProofRequest,
-    RevokeEvidenceRequest, RunMarketplaceListingSweepRequest, RunSchedulerRequest,
-    RunTrustSweepRequest, RunVerificationSweepRequest, RunWorkloadEligibilityRequest,
-    ServerControlMessage, SignedBenchmarkResult, SignedProofCapabilityResponse,
-    StartEnrollmentRequest, StartKeyRotationRequest, StartRemoteSessionRequest,
-    SubmitEvidenceRequest, SubmitJobResultRequest, SubmitNetworkProbeObservationRequest,
-    UpsertBenchmarkProfileRequest, UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
+    AcceptJobRequest, CancelJobRequest, CancelReservationRequest, ClientControlMessage,
+    CreateCustomerApiKeyRequest, CreateCustomerUserRequest, CreateJobRequest,
+    CreateOrganizationRequest, CreateProjectRequest, CreateReservationRequest,
+    EnrollmentProofRequest, GrantCustomerCreditsRequest, IssueProofChallengeRequest,
+    JobEventRequest, KeyRotationProofRequest, RevokeEvidenceRequest,
+    RunMarketplaceListingSweepRequest, RunSchedulerRequest, RunTrustSweepRequest,
+    RunVerificationSweepRequest, RunWorkloadEligibilityRequest, ServerControlMessage,
+    SignedBenchmarkResult, SignedProofCapabilityResponse, StartEnrollmentRequest,
+    StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
+    SubmitJobResultRequest, SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
+    UpsertProjectQuotaRequest, UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -53,6 +57,11 @@ impl AppState {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct CustomerListQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+}
 #[derive(Debug, Clone, Deserialize)]
 struct MarketplaceListingQuery {
     #[serde(default)]
@@ -237,6 +246,44 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/marketplace/listings/sweep",
             post(run_marketplace_listing_sweep),
+        )
+        .route("/v1/customer/users", post(create_customer_user))
+        .route("/v1/customer/organizations", post(create_organization))
+        .route(
+            "/v1/customer/organizations/{organization_id}",
+            get(get_organization),
+        )
+        .route(
+            "/v1/customer/organizations/{organization_id}/projects",
+            post(create_project),
+        )
+        .route(
+            "/v1/customer/organizations/{organization_id}/audit-events",
+            get(list_customer_audit_events),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/quotas",
+            post(upsert_project_quota),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/api-keys",
+            post(create_customer_api_key),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/credits",
+            post(grant_customer_credits),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/reservations",
+            get(list_project_reservations).post(create_marketplace_reservation),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/usage",
+            get(customer_project_usage),
+        )
+        .route(
+            "/v1/customer/reservations/{reservation_id}/cancel",
+            post(cancel_marketplace_reservation),
         )
         .route("/v1/jobs", post(create_job))
         .route("/v1/jobs/{job_id}", get(get_job))
@@ -970,6 +1017,213 @@ async fn list_provider_marketplace_listings(
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
 }
+async fn create_customer_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateCustomerUserRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .create_customer_user(&request_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn create_organization(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateOrganizationRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .create_organization(&request_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn get_organization(
+    State(state): State<Arc<AppState>>,
+    Path(organization_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::OrganizationResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .get_organization(&request_id, &organization_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn create_project(
+    State(state): State<Arc<AppState>>,
+    Path(organization_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateProjectRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .create_project(&request_id, &organization_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn upsert_project_quota(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<UpsertProjectQuotaRequest>,
+) -> Result<Json<burd_protocol::ProjectQuotaResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .upsert_project_quota(&request_id, &project_id, &payload)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn create_customer_api_key(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateCustomerApiKeyRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .create_customer_api_key(&request_id, &project_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn grant_customer_credits(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<GrantCustomerCreditsRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .grant_customer_credits(&request_id, &project_id, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn create_marketplace_reservation(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateReservationRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    let idempotency_key = required_idempotency_key(&headers, &request_id)?;
+    let request_hash = hash_canonical(&payload)
+        .map_err(|error| ApiError::invalid_request(error, request_id.clone()))?;
+    let outcome = state
+        .db
+        .create_marketplace_reservation_idempotently(CreateReservationCommand {
+            request_id: request_id.clone(),
+            scope: format!("POST /v1/customer/projects/{project_id}/reservations"),
+            idempotency_key,
+            request_hash,
+            auth,
+            project_id,
+            request: payload,
+        })
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    match outcome {
+        CreateReservationOutcome::Response(record) => {
+            let value = serde_json::from_str::<serde_json::Value>(&record.response_json).map_err(
+                |error| ApiError::invalid_request(error.to_string(), request_id.clone()),
+            )?;
+            let status = StatusCode::from_u16(record.status_code).unwrap_or(StatusCode::OK);
+            Ok((status, Json(value)).into_response())
+        }
+        CreateReservationOutcome::Conflict => Err(ApiError::idempotency_conflict(request_id)),
+    }
+}
+
+async fn list_project_reservations(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    Query(query): Query<CustomerListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListMarketplaceReservationsResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    state
+        .db
+        .list_project_reservations(&request_id, &auth, &project_id, query.limit.unwrap_or(50))
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn customer_project_usage(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::CustomerUsageResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    state
+        .db
+        .customer_project_usage(&request_id, &auth, &project_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn cancel_marketplace_reservation(
+    State(state): State<Arc<AppState>>,
+    Path(reservation_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CancelReservationRequest>,
+) -> Result<Json<burd_protocol::MarketplaceReservationResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, None, &request_id).await?;
+    state
+        .db
+        .cancel_marketplace_reservation(&request_id, &auth, &reservation_id, &payload)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_customer_audit_events(
+    State(state): State<Arc<AppState>>,
+    Path(organization_id): Path<String>,
+    Query(query): Query<CustomerListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListCustomerAuditEventsResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_customer_audit_events(&request_id, &organization_id, query.limit.unwrap_or(50))
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
 async fn create_job(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1430,6 +1684,19 @@ async fn revoke_remote_session(
     Ok(Json(response))
 }
 
+async fn authorize_customer_headers(
+    state: &AppState,
+    headers: &HeaderMap,
+    project_id: Option<&str>,
+    request_id: &str,
+) -> Result<CustomerApiKeyAuth, ApiError> {
+    let token = required_bearer_token(headers, request_id)?;
+    state
+        .db
+        .authorize_customer_api_key(&token, project_id)
+        .await
+        .map_err(|error| session_api_error(error, request_id.to_string()))
+}
 async fn authorize_session_headers(
     state: &AppState,
     headers: &HeaderMap,

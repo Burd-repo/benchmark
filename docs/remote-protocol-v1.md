@@ -841,6 +841,47 @@ Listing status can be `published`, `limited`, `verification_required`, `temporar
 
 BN-16 does not create customer accounts, reservations, checkout, billing, Pix, payouts, provider-set prices, marketplace ranking, or financial settlement.
 
+## Customer Accounts And Reservations
+
+BN-17 adds customer-side identity and reservation contracts. Customer identity is separate from provider identity and provider device credentials.
+
+### Admin Customer Endpoints
+
+Admin endpoints:
+
+- `POST /v1/customer/users`
+- `POST /v1/customer/organizations`
+- `GET /v1/customer/organizations/{organization_id}`
+- `POST /v1/customer/organizations/{organization_id}/projects`
+- `GET /v1/customer/organizations/{organization_id}/audit-events`
+- `POST /v1/customer/projects/{project_id}/quotas`
+- `POST /v1/customer/projects/{project_id}/api-keys`
+- `POST /v1/customer/projects/{project_id}/credits`
+
+Backend behavior:
+
+- stores customer API keys only as hashes;
+- returns plaintext customer API key tokens once;
+- enforces project quota on reservation count, reserved GPU seconds, and reservation TTL;
+- records customer audit events separately from provider identity;
+- appends credit entries without mutating prior rows.
+
+### Customer API-Key Endpoints
+
+Customer endpoints use `Authorization: Bearer <customer_api_key>`:
+
+- `GET /v1/customer/projects/{project_id}/reservations`
+- `POST /v1/customer/projects/{project_id}/reservations`
+- `GET /v1/customer/projects/{project_id}/usage`
+- `POST /v1/customer/reservations/{reservation_id}/cancel`
+
+Reservation creation also requires `Idempotency-Key`.
+
+A reservation is accepted only when the API key is active and scoped, the project and organization are active, quota is available, and the target marketplace listing is backend-published with `current_status` of `available` or `degraded`.
+
+BN-17 reservation holds do not create jobs and do not debit billable credits. Credit hold/release entries use zero movement until BN-18 introduces marketplace pricing and financial settlement.
+
+BN-17 does not implement checkout, provider-set pricing, customer job submission, billing, Pix, payouts, invoices, refunds, disputes, or taxes.
 ## Trust And Antifraud API
 
 BN-09 calculates backend-owned trust and antifraud state from prior remote

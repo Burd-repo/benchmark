@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-16 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, usage metering ledger receipts, marketplace registry listings, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-17 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, usage metering ledger receipts, marketplace registry listings, customer accounts, project quotas, customer API keys, credits, marketplace reservations, customer usage views, customer audit logs, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -17,6 +17,11 @@ pub fn document() -> serde_json::Value {
                     "type": "http",
                     "scheme": "bearer",
                     "description": "Short-lived device credential issued after enrollment proof."
+                },
+                "customerBearer": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "description": "Customer API key token returned once by the project API-key endpoint."
                 }
             }
         },
@@ -399,6 +404,89 @@ pub fn document() -> serde_json::Value {
                         "401": { "description": "admin credential missing or invalid" }
                     }
                 }
+            },
+            "/v1/customer/users": {
+                "post": {
+                    "summary": "Create a human customer identity record",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "201": { "description": "customer user created" }, "401": { "description": "admin credential missing or invalid" } }
+                }
+            },
+            "/v1/customer/organizations": {
+                "post": {
+                    "summary": "Create a customer organization and optional owner membership",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "201": { "description": "organization created" }, "404": { "description": "owner user not found" } }
+                }
+            },
+            "/v1/customer/organizations/{organization_id}": {
+                "get": {
+                    "summary": "Read a customer organization",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "200": { "description": "organization returned" }, "404": { "description": "organization not found" } }
+                }
+            },
+            "/v1/customer/organizations/{organization_id}/projects": {
+                "post": {
+                    "summary": "Create a customer project with default reservation quota",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "201": { "description": "project created" }, "409": { "description": "organization is not active" } }
+                }
+            },
+            "/v1/customer/organizations/{organization_id}/audit-events": {
+                "get": {
+                    "summary": "List customer audit log events for an organization",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "200": { "description": "customer audit events returned" } }
+                }
+            },
+            "/v1/customer/projects/{project_id}/quotas": {
+                "post": {
+                    "summary": "Upsert backend-enforced customer project reservation quota",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "200": { "description": "quota updated" }, "400": { "description": "invalid quota" } }
+                }
+            },
+            "/v1/customer/projects/{project_id}/api-keys": {
+                "post": {
+                    "summary": "Create a scoped customer API key for one project",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "201": { "description": "API key token returned once" }, "404": { "description": "project not found" } }
+                }
+            },
+            "/v1/customer/projects/{project_id}/credits": {
+                "post": {
+                    "summary": "Append a non-settlement customer credit ledger entry",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": { "201": { "description": "credit ledger entry appended" } }
+                }
+            },
+            "/v1/customer/projects/{project_id}/reservations": {
+                "get": {
+                    "summary": "List project marketplace reservations",
+                    "security": [{ "customerBearer": [] }],
+                    "responses": { "200": { "description": "reservations returned" }, "401": { "description": "customer API key invalid or scope missing" } }
+                },
+                "post": {
+                    "summary": "Reserve one backend-published marketplace listing for a project",
+                    "security": [{ "customerBearer": [] }],
+                    "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "201": { "description": "reservation created" }, "409": { "description": "quota exceeded, listing unavailable, or idempotency conflict" } }
+                }
+            },
+            "/v1/customer/projects/{project_id}/usage": {
+                "get": {
+                    "summary": "Read project reservation usage and credit balance view",
+                    "security": [{ "customerBearer": [] }],
+                    "responses": { "200": { "description": "usage summary returned" } }
+                }
+            },
+            "/v1/customer/reservations/{reservation_id}/cancel": {
+                "post": {
+                    "summary": "Cancel a customer marketplace reservation",
+                    "security": [{ "customerBearer": [] }],
+                    "responses": { "200": { "description": "reservation cancelled or returned as duplicate terminal state" }, "404": { "description": "reservation not found" } }
+                }
             },            "/v1/jobs": {
                 "post": {
                     "summary": "Create one backend-authorized compute job for a specific provider session",
@@ -677,7 +765,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn16_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_job_scheduler_metering_and_marketplace_endpoints()
+    fn openapi_lists_bn17_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_job_scheduler_metering_marketplace_and_customer_endpoints()
      {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
@@ -716,6 +804,17 @@ mod tests {
             "/v1/providers/{provider_id}/workload-eligibility",
             "/v1/marketplace/listings",
             "/v1/marketplace/listings/sweep",
+            "/v1/customer/users",
+            "/v1/customer/organizations",
+            "/v1/customer/organizations/{organization_id}",
+            "/v1/customer/organizations/{organization_id}/projects",
+            "/v1/customer/organizations/{organization_id}/audit-events",
+            "/v1/customer/projects/{project_id}/quotas",
+            "/v1/customer/projects/{project_id}/api-keys",
+            "/v1/customer/projects/{project_id}/credits",
+            "/v1/customer/projects/{project_id}/reservations",
+            "/v1/customer/projects/{project_id}/usage",
+            "/v1/customer/reservations/{reservation_id}/cancel",
             "/v1/jobs",
             "/v1/jobs/{job_id}",
             "/v1/jobs/{job_id}/usage-ledger",
@@ -745,5 +844,6 @@ mod tests {
         }
         assert!(document["components"]["securitySchemes"]["adminBearer"].is_object());
         assert!(document["components"]["securitySchemes"]["deviceBearer"].is_object());
+        assert!(document["components"]["securitySchemes"]["customerBearer"].is_object());
     }
 }

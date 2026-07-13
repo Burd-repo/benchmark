@@ -1,5 +1,6 @@
 pub mod benchmark_profile;
 pub mod challenge;
+pub mod customer;
 pub mod enrollment;
 pub mod evidence;
 pub mod identity;
@@ -39,6 +40,20 @@ pub use challenge::{
     challenge_response_message_with_fingerprint, load_latest_challenge_output, mock_challenge,
     proof_capability_response_hash, proof_capability_response_signature_message,
     save_latest_challenge_output, verify_challenge_response,
+};
+pub use customer::{
+    CUSTOMER_API_KEY_SCHEMA_VERSION, CUSTOMER_AUDIT_SCHEMA_VERSION,
+    CUSTOMER_CREDIT_LEDGER_SCHEMA_VERSION, CUSTOMER_ORGANIZATION_SCHEMA_VERSION,
+    CUSTOMER_PROJECT_SCHEMA_VERSION, CancelReservationRequest, CreateCustomerApiKeyRequest,
+    CreateCustomerApiKeyResponse, CreateCustomerUserRequest, CreateOrganizationRequest,
+    CreateProjectRequest, CreateReservationRequest, CustomerApiKeyRecord, CustomerAuditEventRecord,
+    CustomerCreditLedgerEntry, CustomerCreditLedgerResponse, CustomerUsageResponse,
+    CustomerUsageSummary, CustomerUserRecord, CustomerUserResponse, GrantCustomerCreditsRequest,
+    ListCustomerAuditEventsResponse, ListMarketplaceReservationsResponse,
+    MARKETPLACE_RESERVATION_SCHEMA_VERSION, MarketplaceReservationRecord,
+    MarketplaceReservationResponse, OrganizationMembershipRecord, OrganizationRecord,
+    OrganizationResponse, ProjectQuotaRecord, ProjectQuotaResponse, ProjectRecord, ProjectResponse,
+    UpsertProjectQuotaRequest,
 };
 pub use enrollment::{
     DeviceCredentialResponse, DeviceRecord, DeviceRevocationResponse, ENROLLMENT_PROOF_DOMAIN,

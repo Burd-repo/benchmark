@@ -144,6 +144,22 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | ledger mutation | operator/provider/customer input | `never_accepted` | `usage_ledger_entries` rejects update/delete; corrections require future compensating entries. |
 | receipt signature | backend signing key | `backend_attested` when configured | BN-15 stores hash-only receipts until backend receipt signing key management exists. |
 
+## Customer Accounts And Reservations
+
+| Field | Local source | Remote authority | Notes |
+| --- | --- | --- | --- |
+| human customer user | admin/customer account operation | `backend_attested` | Separate from provider identity and device identity. |
+| organization id | backend | `backend_attested` | Owns projects, API keys, credits, reservations, and audit events. |
+| project id | backend | `backend_attested` | Workload/customer identity boundary; not a provider identity. |
+| customer API key token | returned once by backend | `backend_attested` | Stored only as hash; bearer token authenticates customer reservation APIs. |
+| API key scopes | admin API | `backend_attested` | Backend enforces `reservations:read`, `reservations:write`, and `usage:read`. |
+| project quota | admin API | `backend_attested` | Backend enforces active reservation count, reserved GPU seconds, and TTL. |
+| reservation id/status | backend reservation service | `backend_attested` | Customers request reservations; backend decides accepted/cancelled/expired state. |
+| reservation listing/provider/GPU binding | backend marketplace listing | `backend_derived` | Reservation binds to a backend-published listing, not a provider claim. |
+| reservation idempotency | customer header plus body hash | `backend_attested` | Conflicting replay is rejected. |
+| customer usage view | backend reservation and credit tables | `backend_derived` | BN-17 usage is reservation/account balance view, not billing-grade settlement. |
+| customer credit ledger | admin/reservation service append | `backend_attested` | Append-only non-settlement credits; corrections require new entries. |
+| billing amount, Pix charge, payout amount | none in BN-17 | `never_accepted` | Reserved for BN-18 financial ledger and payment adapters. |
 ## Policy And Marketplace Signals
 
 | Field | Local source | Remote authority | Notes |
@@ -156,7 +172,7 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | remote workload eligibility state | backend policy engine | `backend_derived` | Calculated from trust, verification, network, telemetry, signed benchmark results, and policy version. |
 | marketplace eligibility | backend policy engine | `backend_derived` | Provider cannot self-approve. |
 | marketplace listing status | backend marketplace sweep | `backend_derived` | Derived from eligibility, trust, verification, benchmark, network, session, and lease state. |
-| marketplace current status | backend marketplace sweep | `backend_derived` | Uses backend session and active lease state; provider cannot self-declare available/reserved. |
+| marketplace current status | backend marketplace sweep and reservation service | `backend_derived` | Uses backend session, active leases, and active customer reservations; provider cannot self-declare available/reserved. |
 | marketplace GPU verified flag | backend proof plus benchmark binding | `backend_derived` | Observed GPU UUID alone is never shown as verified marketplace inventory. |
 | marketplace VRAM verified flag | backend telemetry bound to verified GPU | `backend_derived` | Self-reported VRAM is not marketplace-verified. |
 | marketplace region | regional probes | `backend_derived` | User/provider-declared region is not authoritative. |

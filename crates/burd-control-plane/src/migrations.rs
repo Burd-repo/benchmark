@@ -81,6 +81,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "marketplace_registry_listings",
         sql: include_str!("../migrations/0015_marketplace_registry_listings.sql"),
     },
+    Migration {
+        version: "0016",
+        name: "customer_accounts_reservations",
+        sql: include_str!("../migrations/0016_customer_accounts_reservations.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -233,5 +238,23 @@ mod tests {
         assert!(sql.contains("gpu_verified BOOLEAN NOT NULL"));
         assert!(sql.contains("vram_verified BOOLEAN NOT NULL"));
         assert!(sql.contains("idx_marketplace_listings_status_workload"));
+    }
+    #[test]
+    fn customer_accounts_reservations_migration_declares_customer_registry() {
+        let sql = MIGRATIONS[15].sql;
+        for table in [
+            "organizations",
+            "organization_users",
+            "projects",
+            "project_quotas",
+            "customer_api_keys",
+            "customer_credit_ledger_entries",
+            "marketplace_reservations",
+            "customer_audit_events",
+        ] {
+            assert!(sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")));
+        }
+        assert!(sql.contains("idx_marketplace_reservations_active_listing"));
+        assert!(sql.contains("prevent_customer_credit_ledger_mutation"));
     }
 }
