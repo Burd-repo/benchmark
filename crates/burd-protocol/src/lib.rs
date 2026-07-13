@@ -6,6 +6,7 @@ pub mod identity;
 pub mod network_probe;
 pub mod remote_session;
 pub mod report;
+pub mod secure_runtime;
 pub mod session;
 pub mod signature;
 pub mod telemetry;
@@ -74,6 +75,11 @@ pub use remote_session::{
     update_remote_telemetry_sequence,
 };
 pub use report::{FullReport, ReportSignature, SignedReport, VerifyReportResult};
+pub use secure_runtime::{
+    SECURE_RUNTIME_POLICY_VERSION, SECURE_RUNTIME_SCHEMA_VERSION, SecureRuntimeCheck,
+    SecureRuntimeImageAllowlistEntry, SecureRuntimePlan, SecureRuntimeResourceLimits,
+    SecureRuntimeSecurityProfile, SecureRuntimeTmpfsMount,
+};
 pub use session::{
     ProviderHeartbeatSummary, ProviderSession, ProviderSessionMode, ProviderSessionStatus,
     ProviderSessionStatusReport, active_provider_session, heartbeat_summary_from_session,

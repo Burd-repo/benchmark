@@ -2,10 +2,11 @@
 
 This threat model covers the first Burd Network control-plane phase: provider
 enrollment, remote sessions, signed evidence, challenge response, telemetry,
-trust policy, and audit logs.
+trust policy, audit logs, and BN-12 secure runtime planning.
 
-It does not cover paid jobs, container runtime isolation, customer data plane,
-billing, Pix, payouts, Kubernetes, distributed training, or marketplace UI.
+It does not cover paid job execution, customer workload payloads, customer data
+plane transfer, billing, Pix, payouts, Kubernetes, distributed training, or
+marketplace UI.
 
 ## Security Goals
 
@@ -39,7 +40,10 @@ billing, Pix, payouts, Kubernetes, distributed training, or marketplace UI.
 - trust, reliability, network, and policy scores;
 - PostgreSQL records;
 - object-storage envelopes;
-- audit log.
+- audit log;
+- runtime image digests and allowlists;
+- secure runtime plans;
+- future job secrets and artifact credentials, reserved for BN-13.
 
 ## Actors
 
@@ -52,7 +56,7 @@ billing, Pix, payouts, Kubernetes, distributed training, or marketplace UI.
 - attacker with stolen provider private key;
 - compromised or outdated agent binary;
 - backend operator or automation with elevated access;
-- future customer submitting workloads, out of scope for BN-01.
+- future customer submitting approved workload templates, reserved for BN-13 and later.
 
 ## Trust Boundaries
 
@@ -97,6 +101,10 @@ evidence, and backend observations.
 | Idempotency abuse | Scope idempotency keys by actor, endpoint, method, and body hash. |
 | Rate-limit bypass | Per-provider, per-device, per-IP, and per-token rate limits. |
 | Operator mistake | Append-only audit events and explicit admin actions for revocation/unblock. |
+| Unpinned or unapproved runtime image | BN-12 requires digest-pinned image references and local allowlist before emitting Docker args; backend image policy becomes authoritative for jobs. |
+| Arbitrary customer shell payload | BN-12 runtime plan does not accept commands or entrypoint overrides; BN-13 must use approved templates only. |
+| Container escape surface | Planned defaults use read-only rootfs, non-root user, dropped capabilities, no-new-privileges, seccomp, PID/memory/CPU limits, no network, no IPC sharing, explicit tmpfs, and cleanup requirement. |
+| Wrong GPU used for workload | Runtime plan binds `--gpus device=<GPU UUID>`; future leases must bind provider, device, session, job, lease, and GPU UUID. |
 
 ## Antifraud Signals For BN-01 Through BN-09
 
