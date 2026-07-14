@@ -20,6 +20,7 @@ pub mod proof_challenge;
 pub mod rate_limit;
 pub mod remote_session;
 pub mod scheduler;
+pub mod security_hardening;
 pub mod telemetry;
 pub mod trust_policy;
 pub mod verification_policy;

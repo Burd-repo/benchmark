@@ -32,6 +32,13 @@ pub struct ControlPlaneConfig {
     pub observability_recent_events_limit: u32,
     pub slo_availability_target_bps: u32,
     pub slo_p95_latency_ms: u32,
+    pub security_min_agent_version: Option<String>,
+    pub security_require_signed_agent_release: bool,
+    pub security_require_hardware_backed_key: bool,
+    pub security_require_remote_attestation: bool,
+    pub security_require_sbom_hash: bool,
+    pub security_accepted_release_channels: Vec<String>,
+    pub security_accepted_attestation_modes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +180,36 @@ impl ControlPlaneConfig {
             lookup("BURD_CONTROL_SLO_P95_LATENCY_MS").unwrap_or_else(|| "500".to_string()),
             "BURD_CONTROL_SLO_P95_LATENCY_MS",
         )?;
+        let security_require_signed_agent_release = parse_bool(
+            lookup("BURD_CONTROL_SECURITY_REQUIRE_SIGNED_AGENT_RELEASE")
+                .unwrap_or_else(|| "false".to_string()),
+            "BURD_CONTROL_SECURITY_REQUIRE_SIGNED_AGENT_RELEASE",
+        )?;
+        let security_require_hardware_backed_key = parse_bool(
+            lookup("BURD_CONTROL_SECURITY_REQUIRE_HARDWARE_BACKED_KEY")
+                .unwrap_or_else(|| "false".to_string()),
+            "BURD_CONTROL_SECURITY_REQUIRE_HARDWARE_BACKED_KEY",
+        )?;
+        let security_require_remote_attestation = parse_bool(
+            lookup("BURD_CONTROL_SECURITY_REQUIRE_REMOTE_ATTESTATION")
+                .unwrap_or_else(|| "false".to_string()),
+            "BURD_CONTROL_SECURITY_REQUIRE_REMOTE_ATTESTATION",
+        )?;
+        let security_require_sbom_hash = parse_bool(
+            lookup("BURD_CONTROL_SECURITY_REQUIRE_SBOM_HASH")
+                .unwrap_or_else(|| "false".to_string()),
+            "BURD_CONTROL_SECURITY_REQUIRE_SBOM_HASH",
+        )?;
+        let security_accepted_release_channels = parse_csv(
+            lookup("BURD_CONTROL_SECURITY_ACCEPTED_RELEASE_CHANNELS")
+                .unwrap_or_else(|| "dev,stable".to_string()),
+            "BURD_CONTROL_SECURITY_ACCEPTED_RELEASE_CHANNELS",
+        )?;
+        let security_accepted_attestation_modes = parse_csv(
+            lookup("BURD_CONTROL_SECURITY_ACCEPTED_ATTESTATION_MODES")
+                .unwrap_or_else(|| "none,tpm,os_keychain,hsm,sev_snp,sgx".to_string()),
+            "BURD_CONTROL_SECURITY_ACCEPTED_ATTESTATION_MODES",
+        )?;
         Ok(Self {
             environment: lookup("BURD_CONTROL_ENV").unwrap_or_else(|| "local".to_string()),
             host: lookup("BURD_CONTROL_HOST").unwrap_or_else(|| "127.0.0.1".to_string()),
@@ -205,6 +242,14 @@ impl ControlPlaneConfig {
             observability_recent_events_limit,
             slo_availability_target_bps,
             slo_p95_latency_ms,
+            security_min_agent_version: lookup("BURD_CONTROL_SECURITY_MIN_AGENT_VERSION")
+                .filter(|value| !value.trim().is_empty()),
+            security_require_signed_agent_release,
+            security_require_hardware_backed_key,
+            security_require_remote_attestation,
+            security_require_sbom_hash,
+            security_accepted_release_channels,
+            security_accepted_attestation_modes,
         })
     }
 }
@@ -232,6 +277,27 @@ fn parse_bps(raw: String, name: &str) -> Result<u32, ConfigError> {
         return Err(ConfigError::new(format!("{name} must be at most 10000")));
     }
     Ok(value)
+}
+
+fn parse_bool(raw: String, name: &str) -> Result<bool, ConfigError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(ConfigError::new(format!("{name} must be a boolean value"))),
+    }
+}
+
+fn parse_csv(raw: String, name: &str) -> Result<Vec<String>, ConfigError> {
+    let values = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return Err(ConfigError::new(format!("{name} must not be empty")));
+    }
+    Ok(values)
 }
 #[cfg(test)]
 mod tests {
@@ -288,6 +354,19 @@ mod tests {
         assert_eq!(config.observability_recent_events_limit, 100);
         assert_eq!(config.slo_availability_target_bps, 9990);
         assert_eq!(config.slo_p95_latency_ms, 500);
+        assert_eq!(config.security_min_agent_version, None);
+        assert!(!config.security_require_signed_agent_release);
+        assert!(!config.security_require_hardware_backed_key);
+        assert!(!config.security_require_remote_attestation);
+        assert!(!config.security_require_sbom_hash);
+        assert_eq!(
+            config.security_accepted_release_channels,
+            vec!["dev", "stable"]
+        );
+        assert_eq!(
+            config.security_accepted_attestation_modes,
+            vec!["none", "tpm", "os_keychain", "hsm", "sev_snp", "sgx"]
+        );
         assert_eq!(config.admin_token_hash, sha256_hex(b"admin-secret"));
         assert!(!config.admin_token_hash.contains("admin-secret"));
     }
@@ -302,5 +381,21 @@ mod tests {
             ControlPlaneConfig::from_lookup(|key| values.get(key).map(|value| value.to_string()))
                 .unwrap_err();
         assert!(error.to_string().contains("SLO_AVAILABILITY"));
+    }
+
+    #[test]
+    fn config_rejects_invalid_security_boolean() {
+        let mut values = HashMap::new();
+        values.insert("DATABASE_URL", "postgres://localhost/burd");
+        values.insert("BURD_CONTROL_ADMIN_TOKEN", "admin-secret");
+        values.insert("BURD_CONTROL_SECURITY_REQUIRE_REMOTE_ATTESTATION", "maybe");
+        let error =
+            ControlPlaneConfig::from_lookup(|key| values.get(key).map(|value| value.to_string()))
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("SECURITY_REQUIRE_REMOTE_ATTESTATION")
+        );
     }
 }

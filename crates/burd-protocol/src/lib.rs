@@ -12,6 +12,7 @@ pub mod network_probe;
 pub mod remote_session;
 pub mod report;
 pub mod secure_runtime;
+pub mod security;
 pub mod session;
 pub mod signature;
 pub mod telemetry;
@@ -131,6 +132,15 @@ pub use secure_runtime::{
     SECURE_RUNTIME_POLICY_VERSION, SECURE_RUNTIME_SCHEMA_VERSION, SecureRuntimeCheck,
     SecureRuntimeImageAllowlistEntry, SecureRuntimePlan, SecureRuntimeResourceLimits,
     SecureRuntimeSecurityProfile, SecureRuntimeTmpfsMount,
+};
+pub use security::{
+    AgentReleasePosture, ArtifactIntegrityPosture, AttestationPosture, KeyStoragePosture,
+    ListProviderSecurityPosturesResponse, SECURITY_POLICY_VERSION,
+    SECURITY_POSTURE_CANONICALIZATION_VERSION, SECURITY_POSTURE_SCHEMA_VERSION,
+    SECURITY_POSTURE_SIGNATURE_DOMAIN, SecurityHardeningPosture, SecurityPolicyStatusResponse,
+    SecurityPosturePayload, SecurityPostureRecord, SecurityPostureVerification,
+    SignedSecurityPosture, SubmitSecurityPostureResponse, security_posture_hash,
+    security_posture_signature_message,
 };
 pub use session::{
     ProviderHeartbeatSummary, ProviderSession, ProviderSessionMode, ProviderSessionStatus,

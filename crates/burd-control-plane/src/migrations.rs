@@ -91,6 +91,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "billing_pix_payouts",
         sql: include_str!("../migrations/0017_billing_pix_payouts.sql"),
     },
+    Migration {
+        version: "0018",
+        name: "security_hardening_attestation",
+        sql: include_str!("../migrations/0018_security_hardening_attestation.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -264,6 +269,16 @@ mod tests {
         assert!(sql.contains("financial_ledger_no_update"));
         assert!(sql.contains("idx_marketplace_listing_prices_active"));
     }
+    #[test]
+    fn security_hardening_attestation_migration_declares_posture_registry() {
+        let sql = MIGRATIONS[17].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS device_security_postures"));
+        assert!(sql.contains("posture_hash TEXT NOT NULL UNIQUE"));
+        assert!(sql.contains("prevent_device_security_posture_mutation"));
+        assert!(sql.contains("device_security_postures_no_update"));
+        assert!(sql.contains("idx_device_security_postures_provider_time"));
+    }
+
     #[test]
     fn customer_accounts_reservations_migration_declares_customer_registry() {
         let sql = MIGRATIONS[15].sql;

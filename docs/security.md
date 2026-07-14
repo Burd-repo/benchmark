@@ -1,7 +1,8 @@
 # Security
 
-This MVP implements local security primitives for provider validation. It is not
-production-grade platform security yet.
+This repository implements local provider security primitives plus the first
+Burd control-plane security registries. It is not production-grade platform
+security yet.
 
 Implemented now:
 
@@ -41,15 +42,28 @@ Implemented now:
 - Real VRAM measurements are not overwritten by lower-confidence estimates.
 - Migration backups are not included in reports or raw payloads, but may retain
   legacy secret fields from an old config.
+- The control plane verifies enrolled Ed25519 device keys for enrollment,
+  evidence, telemetry, proof challenges, benchmark results, and BN-20 security
+  posture records.
+- Backend-issued challenges, nonces, server-side expiry, remote session
+  credentials, and server-authoritative evidence freshness exist in the control
+  plane.
+- BN-20 stores signed security posture records bound to provider, device,
+  session, active public key, hardware fingerprint, canonical posture hash, and
+  backend policy verification.
+- BN-20 can policy-gate signed release posture, hardware-backed key posture,
+  attestation mode/evidence hash, SBOM hash, and scan status.
 
 Not implemented yet:
 
-- Backend-side signature verification.
-- Backend-issued challenges.
 - mTLS or browser login for remote access.
-- Hardware attestation.
-- Fraud scoring beyond local heuristic warnings.
-- Production key storage such as OS keychain, TPM, HSM, or encrypted secrets.
+- Production TPM/HSM quote verification and remote attestation verifier
+  integration.
+- Fraud scoring operations beyond the initial backend trust/antifraud model.
+- Agent-side production key migration to OS keychain, TPM, HSM, or a managed
+  secret store.
+- Signed release distribution, SBOM generation, vulnerability scanner execution,
+  supply-chain scanning service integration, and production security review.
 - Backend attestation of VRAM source/confidence and enforcement of marketplace
   policy for estimated or user-provided capacity.
 
@@ -60,9 +74,11 @@ Recommended operation for this MVP:
 3. Create an API token before binding beyond loopback:
    `burd-agent api-token create --json`.
 4. Treat `~/.burd/agent.key` as sensitive.
-5. Use signed reports and challenge responses only as local validation artifacts
-   until the Burd backend exists.
+5. Treat local signed reports as evidence; backend APIs are the authority for
+   enrollment, remote session state, evidence freshness, challenges, and BN-20
+   security posture records.
 6. Treat `estimated` or `provided` VRAM as local/MVP evidence, not production
-   hardware attestation.
+   hardware attestation. Treat BN-20 attestation fields as signed posture
+   metadata until remote quote verification is implemented.
 7. Review and securely remove migration backups after validating the migrated
    state.

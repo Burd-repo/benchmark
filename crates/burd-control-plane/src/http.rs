@@ -15,6 +15,7 @@ use crate::remote_session::{
     AuthorizedSession, ControlChannelLease, ControlChannelRegistry, RemoteSessionPolicy,
     SessionError,
 };
+use crate::security_hardening::SecurityPolicy;
 use crate::telemetry::TelemetryPolicy;
 use crate::verification_policy::VerificationPolicy;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -34,10 +35,11 @@ use burd_protocol::{
     RunMarketplaceListingSweepRequest, RunSchedulerRequest, RunTrustSweepRequest,
     RunVerificationSweepRequest, RunWorkloadEligibilityRequest, ServerControlMessage,
     SettleReservationBillingRequest, SignedBenchmarkResult, SignedProofCapabilityResponse,
-    StartEnrollmentRequest, StartKeyRotationRequest, StartRemoteSessionRequest,
-    SubmitEvidenceRequest, SubmitJobResultRequest, SubmitNetworkProbeObservationRequest,
-    UpsertBenchmarkProfileRequest, UpsertMarketplacePriceRequest, UpsertProjectQuotaRequest,
-    UpsertProviderPayoutAccountRequest, UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
+    SignedSecurityPosture, StartEnrollmentRequest, StartKeyRotationRequest,
+    StartRemoteSessionRequest, SubmitEvidenceRequest, SubmitJobResultRequest,
+    SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
+    UpsertMarketplacePriceRequest, UpsertProjectQuotaRequest, UpsertProviderPayoutAccountRequest,
+    UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -142,6 +144,12 @@ struct BenchmarkResultListQuery {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct SecurityPostureListQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct JobListQuery {
     #[serde(default)]
     limit: Option<u32>,
@@ -161,6 +169,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/openapi.json", get(openapi_json))
         .route("/metrics", get(metrics))
         .route("/v1/observability/snapshot", get(observability_snapshot))
+        .route("/v1/security/policy", get(security_policy_status))
         .route("/v1/providers", post(create_provider))
         .route("/v1/providers/{provider_id}", get(get_provider))
         .route(
@@ -212,6 +221,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(latest_gpu_telemetry),
         )
         .route(
+            "/v1/sessions/{session_id}/security-posture",
+            post(submit_security_posture),
+        )
+        .route(
             "/v1/sessions/{session_id}/evidence-records",
             post(submit_evidence_record),
         )
@@ -254,6 +267,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/providers/{provider_id}/benchmark-results",
             get(list_provider_benchmark_results),
+        )
+        .route(
+            "/v1/providers/{provider_id}/security-postures",
+            get(list_provider_security_postures),
         )
         .route(
             "/v1/providers/{provider_id}/workload-eligibility",
@@ -488,6 +505,17 @@ async fn observability_snapshot(
     let request_id = new_request_id();
     authorize_admin(&headers, &state.config, &request_id)?;
     Ok(Json(state.observability.snapshot()))
+}
+
+async fn security_policy_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::SecurityPolicyStatusResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    Ok(Json(
+        security_policy(&state.config).status_response(request_id),
+    ))
 }
 async fn create_provider(
     State(state): State<Arc<AppState>>,
@@ -798,6 +826,33 @@ async fn latest_gpu_telemetry(
         .map_err(|error| session_api_error(error, request_id))
 }
 
+async fn submit_security_posture(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<SignedSecurityPosture>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    let response = state
+        .db
+        .submit_security_posture(
+            &request_id,
+            &authorized,
+            &payload,
+            security_policy(&state.config),
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    let status = if response.duplicate {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(response)).into_response())
+}
+
 async fn submit_evidence_record(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -993,6 +1048,22 @@ async fn list_provider_benchmark_results(
     state
         .db
         .list_provider_benchmark_results(&request_id, &provider_id, query.limit.unwrap_or(50))
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_provider_security_postures(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    Query(query): Query<SecurityPostureListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListProviderSecurityPosturesResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_security_postures(&request_id, &provider_id, query.limit.unwrap_or(50))
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
@@ -1926,6 +1997,18 @@ fn verification_policy(config: &ControlPlaneConfig) -> VerificationPolicy {
         suspect_failures: config.verification_suspect_failures,
     }
 }
+
+fn security_policy(config: &ControlPlaneConfig) -> SecurityPolicy {
+    SecurityPolicy {
+        min_agent_version: config.security_min_agent_version.clone(),
+        require_signed_agent_release: config.security_require_signed_agent_release,
+        require_hardware_backed_key: config.security_require_hardware_backed_key,
+        require_remote_attestation: config.security_require_remote_attestation,
+        require_sbom_hash: config.security_require_sbom_hash,
+        accepted_release_channels: config.security_accepted_release_channels.clone(),
+        accepted_attestation_modes: config.security_accepted_attestation_modes.clone(),
+    }
+}
 async fn upgrade_control_channel(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -2564,6 +2647,20 @@ mod tests {
             observability_recent_events_limit: 16,
             slo_availability_target_bps: 9990,
             slo_p95_latency_ms: 500,
+            security_min_agent_version: None,
+            security_require_signed_agent_release: false,
+            security_require_hardware_backed_key: false,
+            security_require_remote_attestation: false,
+            security_require_sbom_hash: false,
+            security_accepted_release_channels: vec!["dev".to_string(), "stable".to_string()],
+            security_accepted_attestation_modes: vec![
+                "none".to_string(),
+                "tpm".to_string(),
+                "os_keychain".to_string(),
+                "hsm".to_string(),
+                "sev_snp".to_string(),
+                "sgx".to_string(),
+            ],
         }
     }
 
@@ -2632,6 +2729,43 @@ mod tests {
         let text = std::str::from_utf8(&body).unwrap();
         assert!(text.contains("burd_control_plane_http_requests_total"));
         assert!(text.contains("deployment_id=\"test\""));
+    }
+
+    #[tokio::test]
+    async fn security_policy_requires_admin_and_reports_defaults() {
+        let config = test_config("postgres://localhost/unavailable");
+        let db = Database::new(config.database_url.clone(), None).unwrap();
+        let app = router(Arc::new(AppState::new(config, db)));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/security/policy")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/security/policy")
+                    .header("authorization", "Bearer test-admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["policy_version"], "burd-security-policy-v1");
+        assert_eq!(value["require_remote_attestation"], false);
     }
 
     #[tokio::test]

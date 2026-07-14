@@ -954,6 +954,57 @@ BN-19 does not add OpenTelemetry export, alert routing, dashboards-as-code,
 automated backup jobs, automated restore tooling, or cross-service distributed
 tracing.
 
+## Security Hardening And Attestation API
+
+BN-20 adds a backend-owned registry for signed agent hardening posture and
+attestation metadata. These records are security evidence, not final proof that
+hardware attestation has been externally verified.
+
+### `GET /v1/security/policy`
+
+Admin endpoint that returns the active security policy flags, accepted release
+channels, accepted attestation modes, optional minimum agent version, and policy
+version.
+
+### `POST /v1/sessions/{session_id}/security-posture`
+
+Device endpoint using `Authorization: Bearer <device-credential>`. The payload
+contains:
+
+- provider, device, session, hardware fingerprint, agent version, OS, and
+  architecture;
+- key storage posture, including backend, hardware-backed flag, exportability,
+  and encryption-at-rest flag;
+- release posture, including channel, binary hash, signature status, signer key,
+  and auto-update status;
+- attestation posture, including mode, evidence hash, and local quote status;
+- artifact integrity posture, including SBOM hash and scan statuses;
+- hardening posture, including secrets backend, sandbox runtime, RBAC flag, and
+  admin-approval flag;
+- canonical posture hash, active `public_key_id`, signature, and
+  canonicalization version.
+
+Backend behavior:
+
+- validates schema and canonicalization versions;
+- requires provider/device/session IDs to match the authenticated session;
+- requires the remote session to be `online` or `degraded`;
+- requires the hardware fingerprint to match the session fingerprint;
+- recalculates the canonical posture hash;
+- verifies the Ed25519 signature with the active device public key;
+- classifies policy satisfaction server-side;
+- persists an immutable posture row and audit event;
+- returns duplicate posture hashes idempotently.
+
+### `GET /v1/providers/{provider_id}/security-postures`
+
+Admin endpoint that lists immutable security posture records for the provider,
+including backend verification booleans, warnings, policy status, and server
+receipt time.
+
+BN-20 does not add TPM quote parsing, HSM/OS keychain migration, signed release
+infrastructure, SBOM generation, scanner execution, or external supply-chain
+scanning.
 ## Trust And Antifraud API
 
 BN-09 calculates backend-owned trust and antifraud state from prior remote
