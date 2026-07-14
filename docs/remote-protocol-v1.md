@@ -922,6 +922,38 @@ Pix payment-intent creation also requires `Idempotency-Key`. Creating the intent
 
 BN-18 does not call a real Pix gateway, verify webhook signatures, execute bank payouts, expose checkout UI, complete KYC/tax/legal workflows, or implement refund/dispute adjudication beyond schema placeholders.
 
+## Observability And SRE API
+
+BN-19 adds the first operational API for the control plane itself. These signals
+are backend-observed operational state, not provider trust evidence and not
+billing/audit substitutes.
+
+### `GET /metrics`
+
+Public endpoint for aggregate Prometheus-compatible metrics. It exports process
+uptime, HTTP request totals, 5xx totals, in-flight requests, average latency,
+recent p95 latency, availability ratio, and background task error totals.
+
+The endpoint must not include raw request payloads, bearer tokens, Pix key
+material, customer workload bytes, or provider private material.
+
+### `GET /v1/observability/snapshot`
+
+Admin endpoint protected by `Authorization: Bearer <admin-token>`. It returns
+service identity, environment, deployment ID, uptime, HTTP totals, background
+error totals, SLO target/status, and recent normalized HTTP events with
+correlation IDs.
+
+### Correlation IDs
+
+HTTP responses include `x-burd-correlation-id`. The backend accepts an incoming
+`x-burd-correlation-id` or `x-request-id` only when it is short printable ASCII;
+otherwise it generates a `req_<uuid>` value.
+
+BN-19 does not add OpenTelemetry export, alert routing, dashboards-as-code,
+automated backup jobs, automated restore tooling, or cross-service distributed
+tracing.
+
 ## Trust And Antifraud API
 
 BN-09 calculates backend-owned trust and antifraud state from prior remote

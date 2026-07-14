@@ -165,6 +165,17 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | provider payable balance | append-only financial ledger | `backend_derived` | Settlement and payout transactions move provider payable. |
 | provider payout amount | admin payout request plus ledger balance | `backend_attested` | Requires KYC/tax status, minimum payout, hold policy, and sufficient payable balance. |
 | financial ledger mutation | operator/provider/customer input | `never_accepted` | `financial_ledger_lines` rejects update/delete; corrections require compensating entries. |
+
+## Observability And SRE Signals
+
+| Field | Local source | Remote authority | Notes |
+| --- | --- | --- | --- |
+| correlation id | incoming request header or backend generator | `backend_attested` | Diagnostic only; not identity, trust, billing, or audit authority. |
+| HTTP request metrics | backend HTTP middleware | `backend_derived` | Aggregate operational state from observed responses. |
+| recent request event | backend HTTP middleware | `backend_derived` | Paths are normalized to reduce cardinality and avoid leaking entity IDs. |
+| SLO status | backend observability state | `backend_derived` | Indicates operational health, not provider capability or marketplace eligibility. |
+| background task error count | backend background tasks | `backend_derived` | Used for SRE triage around session expiration and telemetry retention tasks. |
+| log payload mutation | provider/customer input | `never_accepted` | Raw request bodies, bearer tokens, Pix keys, and workload payloads must not become log fields. |
 ## Policy And Marketplace Signals
 
 | Field | Local source | Remote authority | Notes |

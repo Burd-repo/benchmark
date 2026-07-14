@@ -243,6 +243,7 @@ impl Database {
         row.map(proof_challenge_record_from_row).transpose()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn submit_proof_challenge_response(
         &self,
         request_id: &str,
