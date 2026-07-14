@@ -29,6 +29,23 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | private key | local secure storage | `never_accepted` | Must never be transmitted, logged, or stored by backend. |
 | contact/location fields | agent config/user input | `agent_claimed` | May inform UX, not region trust. |
 
+## Security Hardening And Attestation
+
+| Field | Local source | Remote authority | Notes |
+| --- | --- | --- | --- |
+| security posture hash | agent canonical JSON, recalculated by backend | `agent_signed_evidence` after backend hash check | Backend stores the canonical hash and rejects mismatches. |
+| security posture signature | agent Ed25519 key | `agent_signed_evidence` after backend verification | Must verify against an active provider device public key. |
+| security posture status | backend policy engine | `backend_derived` | `verified` or `needs_hardening` is decided by backend policy, not by the agent. |
+| key storage backend | agent host posture | `agent_claimed` | Backend can require hardware-backed non-exportable posture but does not itself prove TPM/HSM use in BN-20. |
+| private key exportability | agent host posture | `agent_claimed` | Useful hardening signal; future attestation/keychain work must strengthen it. |
+| release channel and agent version | agent binary/posture | `agent_signed_evidence` after active-key signature | Backend policy decides whether the value is accepted. |
+| signed release verification flag | agent local verifier | `agent_claimed` | Backend records and evaluates it; production release signing infrastructure is future. |
+| binary hash | agent binary/posture | `agent_signed_evidence` | Stored as hash metadata, not raw binary proof. |
+| attestation mode | agent host posture | `agent_claimed` | Accepted mode is policy-gated; remote quote verification is future. |
+| attestation evidence hash | agent host posture | `agent_signed_evidence` | Backend stores the hash only; raw quote parsing is not implemented in BN-20. |
+| SBOM hash | agent/artifact scanner | `agent_signed_evidence` | Backend can require the hash but does not generate the SBOM in BN-20. |
+| vulnerability/dependency scan status | agent/scanner | `agent_claimed` | Backend records and policy-gates status; scanner execution remains future. |
+| server receipt time | backend | `backend_attested` | Used for registry ordering and audit. |
 ## Evidence
 
 | Field | Local source | Remote authority | Notes |

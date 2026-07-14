@@ -4,7 +4,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-19 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, usage metering ledger receipts, marketplace registry listings, customer accounts, project quotas, customer API keys, credits, marketplace reservations, customer usage views, billing price book, Pix payment intents, financial ledger, invoices, customer balances, provider payable balances, payout accounts, provider payouts, customer audit logs, observability metrics, SLO snapshot, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-20 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, usage metering ledger receipts, marketplace registry listings, customer accounts, project quotas, customer API keys, credits, marketplace reservations, customer usage views, billing price book, Pix payment intents, financial ledger, invoices, customer balances, provider payable balances, payout accounts, provider payouts, customer audit logs, observability metrics, SLO snapshot, signed security posture registry, security hardening policy, attestation posture metadata, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -63,7 +63,16 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
-            "/v1/providers": {
+            "/v1/security/policy": {
+                "get": {
+                    "summary": "Read configured security hardening policy",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "security posture policy flags and accepted modes" },
+                        "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },            "/v1/providers": {
                 "post": {
                     "summary": "Create a provider registry record",
                     "security": [{ "adminBearer": [] }],
@@ -214,7 +223,18 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
-            "/v1/sessions/{session_id}/revoke": {
+            "/v1/sessions/{session_id}/security-posture": {
+                "post": {
+                    "summary": "Submit signed agent security posture and attestation metadata",
+                    "security": [{ "deviceBearer": [] }],
+                    "responses": {
+                        "201": { "description": "security posture verified, classified, and stored" },
+                        "200": { "description": "duplicate posture hash returned from registry" },
+                        "400": { "description": "invalid schema, hash, signature, binding, or policy metadata" },
+                        "401": { "description": "device, session, key, or signature invalid" }
+                    }
+                }
+            },            "/v1/sessions/{session_id}/revoke": {
                 "post": {
                     "summary": "Revoke a remote session and signal its active channel",
                     "security": [{ "adminBearer": [] }],
@@ -265,7 +285,16 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
-            "/v1/evidence-records/{evidence_id}": {
+            "/v1/providers/{provider_id}/security-postures": {
+                "get": {
+                    "summary": "List signed security posture records for a provider",
+                    "security": [{ "adminBearer": [] }],
+                    "responses": {
+                        "200": { "description": "security posture records and backend verification state" },
+                        "404": { "description": "provider not found" }
+                    }
+                }
+            },            "/v1/evidence-records/{evidence_id}": {
                 "get": {
                     "summary": "Read one remote evidence registry record",
                     "security": [{ "adminBearer": [] }],
@@ -860,7 +889,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn openapi_lists_bn19_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_job_scheduler_metering_marketplace_customer_billing_and_observability_endpoints()
+    fn openapi_lists_bn20_identity_session_telemetry_evidence_challenge_verification_network_trust_benchmark_workload_job_scheduler_metering_marketplace_customer_billing_observability_and_security_endpoints()
      {
         let document = document();
         let paths = document["paths"].as_object().unwrap();
@@ -869,6 +898,7 @@ mod tests {
             "/ready",
             "/metrics",
             "/v1/observability/snapshot",
+            "/v1/security/policy",
             "/v1/providers",
             "/v1/providers/{provider_id}",
             "/v1/providers/{provider_id}/enrollment-tokens",
@@ -888,6 +918,7 @@ mod tests {
             "/v1/sessions/{session_id}/telemetry/latest",
             "/v1/sessions/{session_id}/evidence-records",
             "/v1/providers/{provider_id}/evidence-records",
+            "/v1/providers/{provider_id}/security-postures",
             "/v1/evidence-records/{evidence_id}",
             "/v1/evidence-records/{evidence_id}/revoke",
             "/v1/network-probes/observations",
@@ -945,6 +976,7 @@ mod tests {
             "/v1/providers/{provider_id}/verification-states",
             "/v1/challenges",
             "/v1/challenges/{challenge_id}",
+            "/v1/sessions/{session_id}/security-posture",
             "/v1/sessions/{session_id}/challenges/next",
             "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
         ] {

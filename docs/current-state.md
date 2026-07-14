@@ -182,11 +182,11 @@ after the June 2026 reliability pass.
 - Real Pix gateway capture, bank payout execution, earnings settlement, refunds, disputes, tax workflows, and production financial reconciliation.
 - Production cloud deployment, external observability export, dashboards-as-code, alerting, automated backup/restore, and complete remote backend operations.
 - Reputation and provider marketplace ranking.
-- Hardware attestation through TPM/HSM/OS keychain.
+- Production TPM/HSM/OS keychain storage, remote quote verification, signed updater, SBOM generation, vulnerability scanner execution, and supply-chain scanning integrations.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
 - Production scheduler optimization, marketplace demand matching, reservations across supply inventory, and multi-GPU/multi-provider placement. BN-14 only offers leases for already-created, already-targeted jobs.
-- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-19 state.
+- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-20 state.
 
 ## Known Build Warnings
 
@@ -260,7 +260,7 @@ starting the API server or depending on host state:
 - `docs/remote-authority-matrix.md` defines which fields are agent-claimed,
   agent-signed evidence, backend-attested, backend-derived, or never accepted.
 - `docs/threat-model.md` defines assets, actors, trust boundaries, threats,
-  controls, privacy boundaries, and residual risk for BN-01 through BN-19.
+  controls, privacy boundaries, and residual risk for BN-01 through BN-20.
 
 ## BN-01 - Backend Foundation
 
@@ -522,3 +522,12 @@ starting the API server or depending on host state:
 - Config adds `BURD_CONTROL_DEPLOYMENT_ID`, `BURD_CONTROL_OBSERVABILITY_RECENT_EVENTS_LIMIT`, `BURD_CONTROL_SLO_AVAILABILITY_TARGET_BPS`, and `BURD_CONTROL_SLO_P95_LATENCY_MS`.
 - `docs/bn-19-observability-sre.md` records the operational runbook, metrics contract, SLO contract, backup/restore expectation, and explicit non-goals.
 - BN-19 does not implement OpenTelemetry Collector export, dashboards-as-code, alert routing, automated backup scheduling, automated restore tooling, incident ticket integration, or distributed tracing across services.
+
+## BN-20 - Security Hardening And Attestation
+
+- `burd-protocol` defines signed security posture payloads, canonical posture hashing, signature-message binding, verification records, list responses, and policy status responses.
+- PostgreSQL migration `0018_security_hardening_attestation` adds immutable `device_security_postures` with posture hash uniqueness, provider/device/session binding, release/key-storage/attestation/artifact metadata, payload JSON, and verification JSON.
+- The control plane exposes `GET /v1/security/policy`, `POST /v1/sessions/{session_id}/security-posture`, and `GET /v1/providers/{provider_id}/security-postures`.
+- Security posture submission requires an authenticated remote session, active device public key, matching hardware fingerprint, canonical hash match, and Ed25519 signature verification.
+- Backend policy classifies valid postures as `verified` or `needs_hardening` based on signed release posture, hardware-backed key posture, attestation evidence posture, SBOM hash, scan status, accepted release channels, accepted attestation modes, and optional minimum agent version.
+- BN-20 does not implement production TPM/HSM/OS keychain migration, remote quote verification, signed release distribution, secret-manager integration, SBOM generation, vulnerability scanner execution, or external supply-chain scanning.
