@@ -96,6 +96,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "security_hardening_attestation",
         sql: include_str!("../migrations/0018_security_hardening_attestation.sql"),
     },
+    Migration {
+        version: "0019",
+        name: "multi_gpu_inventory",
+        sql: include_str!("../migrations/0019_multi_gpu_inventory.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -277,6 +282,19 @@ mod tests {
         assert!(sql.contains("prevent_device_security_posture_mutation"));
         assert!(sql.contains("device_security_postures_no_update"));
         assert!(sql.contains("idx_device_security_postures_provider_time"));
+    }
+
+    #[test]
+    fn multi_gpu_inventory_migration_declares_inventory_registry() {
+        let sql = MIGRATIONS[18].sql;
+        for needle in [
+            "device_gpu_inventory",
+            "gpu_index",
+            "gpu_uuid",
+            "verification_json",
+        ] {
+            assert!(sql.contains(needle));
+        }
     }
 
     #[test]

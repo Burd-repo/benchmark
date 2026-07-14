@@ -4,6 +4,7 @@ pub mod challenge;
 pub mod customer;
 pub mod enrollment;
 pub mod evidence;
+pub mod gpu_inventory;
 pub mod identity;
 pub mod job;
 pub mod lease;
@@ -89,6 +90,14 @@ pub use evidence::{
     ListEvidenceResponse, RevokeEvidenceRequest, RevokeEvidenceResponse, SIGNED_REPORT_TTL_SECONDS,
     SubmitEvidenceRequest, SubmitEvidenceResponse, evidence_freshness, evidence_freshness_at,
     evidence_freshness_from_window, evidence_freshness_from_window_at,
+};
+pub use gpu_inventory::{
+    DEVICE_GPU_INVENTORY_CANONICALIZATION_VERSION, DEVICE_GPU_INVENTORY_SCHEMA_VERSION,
+    DEVICE_GPU_INVENTORY_SIGNATURE_DOMAIN, DeviceGpuInventoryGpu, DeviceGpuInventoryPayload,
+    DeviceGpuInventoryRecord, DeviceGpuInventoryVerification,
+    ListProviderDeviceGpuInventoryResponse, SignedDeviceGpuInventory,
+    SubmitDeviceGpuInventoryResponse, device_gpu_inventory_hash,
+    device_gpu_inventory_signature_message,
 };
 pub use identity::{
     AgentConfig, AgentIdentityPublic, AgentStatePaths, ApiTokenStatus, IdentityInitResult,

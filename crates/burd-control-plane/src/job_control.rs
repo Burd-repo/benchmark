@@ -1,4 +1,5 @@
 use crate::db::{Database, DbError, IdempotencyRecord, NewAuditEvent, insert_audit_event};
+use crate::gpu_inventory::assert_gpu_inventory_contains;
 use crate::metering::append_usage_ledger_for_job;
 use crate::remote_session::{AuthorizedSession, SessionError};
 use crate::scheduler::{
@@ -89,6 +90,13 @@ impl Database {
                 "job target is not eligible for this workload".to_string(),
             ));
         }
+        assert_gpu_inventory_contains(
+            &transaction,
+            &command.request.provider_id,
+            &command.request.device_id,
+            &command.request.gpu_uuid,
+        )
+        .await?;
 
         if let Some(client_job_id) = command.request.client_job_id.as_deref()
             && transaction
