@@ -1203,8 +1203,22 @@ mod tests {
             .unwrap();
         client
             .execute(
+                "INSERT INTO provider_public_keys (public_key_id, provider_id, device_id, public_key, key_algorithm, status, created_at) VALUES ('key_1', 'provider_1', 'device_1', 'pub_1', 'ed25519', 'active', $1)",
+                &[&now],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
                 "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint) VALUES ('session_1', 'provider_1', 'device_1', 'online', 0, $1, $2, 'fp_1')",
                 &[&now, &expires_at],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ('inventory_1', 'provider_1', 'device_1', 'session_1', 'burd-device-gpu-inventory-v1', 'inventory_hash_1', 'key_1', 'signature_1', 'burd-json-c14n-v1', 'GPU-test', 0, 'cuda', '10de', '2684', 24576, 'active', $1, $1, '{}', '{}')",
+                &[&now],
             )
             .await
             .unwrap();
