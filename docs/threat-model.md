@@ -2,7 +2,7 @@
 
 This threat model covers the first Burd Network control-plane phase: provider
 enrollment, remote sessions, signed evidence, challenge response, telemetry,
-trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control metadata, BN-14 scheduler leases, BN-15 usage ledger receipts, BN-16 marketplace listing registry snapshots, BN-17 customer accounts/reservations, BN-18 billing/Pix/payout settlement primitives, BN-19 observability/SRE primitives, and BN-20 security posture/attestation registry primitives.
+trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control metadata, BN-14 scheduler leases, BN-15 usage ledger receipts, BN-16 marketplace listing registry snapshots, BN-17 customer accounts/reservations, BN-18 billing/Pix/payout settlement primitives, BN-19 observability/SRE primitives, and BN-20 security posture/attestation registry primitives, and BN-21 multi-GPU inventory registry primitives.
 
 It does not cover paid job execution, raw customer workload payload bytes, customer data
 plane byte transfer, real Pix gateway integration, signed payment webhooks, executed bank payouts, completed KYC/tax/legal workflows, Kubernetes, distributed training, or
@@ -64,7 +64,7 @@ marketplace UI beyond backend listing/reservation/billing registry, vendor-speci
 - attacker with stolen provider private key;
 - compromised or outdated agent binary;
 - backend operator or automation with elevated access;
-- customer/admin submitting approved workload templates through BN-13 job metadata, triggering BN-14 scheduler passes, inspecting BN-15 usage receipts, inspecting BN-16 marketplace listings, reserving BN-17 customer inventory, performing BN-18 billing or payout actions, inspecting BN-19 operational snapshots, and inspecting BN-20 security posture records.
+- customer/admin submitting approved workload templates through BN-13 job metadata, triggering BN-14 scheduler passes, inspecting BN-15 usage receipts, inspecting BN-16 marketplace listings, reserving BN-17 customer inventory, performing BN-18 billing or payout actions, inspecting BN-19 operational snapshots, and inspecting BN-20 security posture records and BN-21 GPU inventory records.
 - backend operator or SRE using logs, metrics, snapshots, readiness, and audit events during incident response.
 
 ## Trust Boundaries
@@ -103,6 +103,7 @@ evidence, and backend observations.
 | Heartbeat replay | Monotonic sequence numbers and duplicate/gap detection. |
 | Duplicate device/session | One active session per provider/device; duplicate sessions become audit and antifraud signals. |
 | Fake GPU by name | Require GPU UUID, PCI IDs, VRAM evidence, telemetry consistency, and challenge proof. |
+| Fake GPU inventory snapshot | Require an active inventory row, signed snapshot, fingerprint binding, and append-only registry; scheduler and job validation must refuse missing GPU UUIDs. |
 | Inflated performance | Compare challenge metrics to hardware class, historical results, telemetry, and policy thresholds. |
 | Region spoofing | Use regional probes and channel observations; declared region is only a claim. |
 | Heartbeat without capacity | Correlate heartbeat with telemetry, GPU utilization, process use, and availability state. |
@@ -145,7 +146,7 @@ evidence, and backend observations.
 | Security posture replay | BN-20 stores unique posture hashes, binds records to provider/device/session/fingerprint, and returns duplicates without creating new authority. |
 | Raw secret leakage through posture warnings | BN-20 rejects warnings that look unredacted and stores only hashes/status metadata for binary, SBOM, and attestation evidence. |
 
-## Antifraud Signals For BN-01 Through BN-20
+## Antifraud Signals For BN-01 Through BN-21
 
 - same GPU UUID under multiple providers;
 - same public key across unrelated devices;
@@ -167,7 +168,7 @@ evidence, and backend observations.
 The backend should store what it needs to verify provider claims and operate the
 network. It should not collect private files, local paths, API tokens, private
 keys, arbitrary process arguments, raw Pix keys, bank account secrets, payment gateway secrets, bearer tokens, admin/customer API keys, or customer workload
-payloads during this phase. BN-18 stores only hashed Pix key material, masked suffixes, payment intent metadata, invoices, and ledger lines needed for settlement. BN-19 logs and snapshots must stay limited to operational metadata, normalized paths, counters, and correlation IDs. BN-20 stores posture metadata, hashes, and scan statuses, not raw private keys, raw attestation quotes, raw SBOM documents, scanner reports, or secret-manager credentials.
+payloads during this phase. BN-18 stores only hashed Pix key material, masked suffixes, payment intent metadata, invoices, and ledger lines needed for settlement. BN-19 logs and snapshots must stay limited to operational metadata, normalized paths, counters, and correlation IDs. BN-20 stores posture metadata, hashes, and scan statuses, not raw private keys, raw attestation quotes, raw SBOM documents, scanner reports, or secret-manager credentials. BN-21 stores inventory snapshots, hashes, and per-GPU status, not raw discovery dumps or private device metadata beyond what is needed for verification.
 
 Telemetry that can identify local activity should be minimized, redacted, and
 retained according to explicit policy.

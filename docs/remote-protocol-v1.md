@@ -1005,6 +1005,20 @@ receipt time.
 BN-20 does not add TPM quote parsing, HSM/OS keychain migration, signed release
 infrastructure, SBOM generation, scanner execution, or external supply-chain
 scanning.
+## Multi-GPU Inventory API
+
+BN-21 adds backend-owned GPU inventory snapshots so the backend can validate which GPU UUIDs belong to a provider device before jobs or scheduler logic rely on them.
+
+### `POST /v1/sessions/{session_id}/gpu-inventory`
+
+Device endpoint. Requires the short-lived device bearer credential for the remote session. The payload is signed by an active device key and binds provider, device, session, hardware fingerprint, public key, and inventory hash.
+
+### `GET /v1/providers/{provider_id}/gpu-inventory`
+
+Admin endpoint that lists immutable GPU inventory records for a provider, including GPU UUID, GPU index, backend, PCI IDs, VRAM, status, and backend verification state.
+
+BN-21 does not add distributed placement, cluster orchestration, or multi-provider GPU reservation.
+
 ## Trust And Antifraud API
 
 BN-09 calculates backend-owned trust and antifraud state from prior remote

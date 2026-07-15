@@ -46,6 +46,16 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | SBOM hash | agent/artifact scanner | `agent_signed_evidence` | Backend can require the hash but does not generate the SBOM in BN-20. |
 | vulnerability/dependency scan status | agent/scanner | `agent_claimed` | Backend records and policy-gates status; scanner execution remains future. |
 | server receipt time | backend | `backend_attested` | Used for registry ordering and audit. |
+## Multi-GPU Inventory
+
+| Field | Local source | Remote authority | Notes |
+| --- | --- | --- | --- |
+| device GPU inventory hash | agent canonical JSON, recalculated by backend | `agent_signed_evidence` after backend hash check | Backend stores the canonical inventory hash and rejects mismatches. |
+| device GPU inventory signature | agent Ed25519 key | `agent_signed_evidence` after backend verification | Must verify against an active provider device public key. |
+| gpu_uuid | device GPU report | `agent_claimed` | Backend requires a matching active inventory row before jobs or scheduler decisions can use it. |
+| gpu_index | device GPU report | `agent_claimed` | Useful for inventory ordering only; backend uses the inventory registry for truth. |
+| active GPU inventory row | backend inventory registry | `backend_attested` | Determined by the append-only inventory registry and server receipt time. |
+
 ## Evidence
 
 | Field | Local source | Remote authority | Notes |

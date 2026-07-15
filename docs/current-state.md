@@ -531,3 +531,10 @@ starting the API server or depending on host state:
 - Security posture submission requires an authenticated remote session, active device public key, matching hardware fingerprint, canonical hash match, and Ed25519 signature verification.
 - Backend policy classifies valid postures as `verified` or `needs_hardening` based on signed release posture, hardware-backed key posture, attestation evidence posture, SBOM hash, scan status, accepted release channels, accepted attestation modes, and optional minimum agent version.
 - BN-20 does not implement production TPM/HSM/OS keychain migration, remote quote verification, signed release distribution, secret-manager integration, SBOM generation, vulnerability scanner execution, or external supply-chain scanning.
+## BN-21 - Multi-GPU Inventory Foundation
+
+- `burd-protocol` defines signed device GPU inventory payloads, per-GPU inventory rows, canonical inventory hashing, and signature-message binding.
+- PostgreSQL migration `0019_multi_gpu_inventory` adds immutable `device_gpu_inventory` records with append-only enforcement.
+- The control plane exposes `POST /v1/sessions/{session_id}/gpu-inventory` and `GET /v1/providers/{provider_id}/gpu-inventory`.
+- Job creation and scheduler selection require an active inventory row for the requested GPU UUID.
+- BN-21 does not implement distributed placement, cluster orchestration, or GPU reservation across multiple providers.

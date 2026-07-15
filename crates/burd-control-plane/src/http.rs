@@ -34,10 +34,10 @@ use burd_protocol::{
     JobEventRequest, KeyRotationProofRequest, RevokeEvidenceRequest,
     RunMarketplaceListingSweepRequest, RunSchedulerRequest, RunTrustSweepRequest,
     RunVerificationSweepRequest, RunWorkloadEligibilityRequest, ServerControlMessage,
-    SettleReservationBillingRequest, SignedBenchmarkResult, SignedProofCapabilityResponse,
-    SignedSecurityPosture, StartEnrollmentRequest, StartKeyRotationRequest,
-    StartRemoteSessionRequest, SubmitEvidenceRequest, SubmitJobResultRequest,
-    SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
+    SettleReservationBillingRequest, SignedBenchmarkResult, SignedDeviceGpuInventory,
+    SignedProofCapabilityResponse, SignedSecurityPosture, StartEnrollmentRequest,
+    StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
+    SubmitJobResultRequest, SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
     UpsertMarketplacePriceRequest, UpsertProjectQuotaRequest, UpsertProviderPayoutAccountRequest,
     UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
 };
@@ -150,6 +150,11 @@ struct SecurityPostureListQuery {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct DeviceGpuInventoryListQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+}
+#[derive(Debug, Clone, Deserialize)]
 struct JobListQuery {
     #[serde(default)]
     limit: Option<u32>,
@@ -225,6 +230,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(submit_security_posture),
         )
         .route(
+            "/v1/sessions/{session_id}/gpu-inventory",
+            post(submit_device_gpu_inventory),
+        )
+        .route(
             "/v1/sessions/{session_id}/evidence-records",
             post(submit_evidence_record),
         )
@@ -271,6 +280,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/providers/{provider_id}/security-postures",
             get(list_provider_security_postures),
+        )
+        .route(
+            "/v1/providers/{provider_id}/gpu-inventory",
+            get(list_provider_device_gpu_inventory),
         )
         .route(
             "/v1/providers/{provider_id}/workload-eligibility",
@@ -853,6 +866,27 @@ async fn submit_security_posture(
     Ok((status, Json(response)).into_response())
 }
 
+async fn submit_device_gpu_inventory(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<SignedDeviceGpuInventory>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    let response = state
+        .db
+        .submit_device_gpu_inventory(&request_id, &authorized, &payload)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    let status = if response.duplicate {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(response)).into_response())
+}
 async fn submit_evidence_record(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -1067,6 +1101,22 @@ async fn list_provider_security_postures(
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_provider_device_gpu_inventory(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    Query(query): Query<DeviceGpuInventoryListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListProviderDeviceGpuInventoryResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .list_provider_device_gpu_inventory(&request_id, &provider_id, query.limit.unwrap_or(50))
+        .await
+        .map_err(|error| session_api_error(error, request_id))?;
+    Ok(Json(response))
 }
 async fn upsert_workload_policy(
     State(state): State<Arc<AppState>>,
