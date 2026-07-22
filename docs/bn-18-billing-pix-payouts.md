@@ -34,7 +34,7 @@ Every transaction written by the control plane balances to zero before insert. E
 
 ## Pix Adapter Boundary
 
-BN-18 does not call a real Pix gateway. The API stores intents and allows an admin/webhook adapter to confirm an external Pix payment reference. The ledger only changes on confirmation.
+BN-18 does not call a real Pix gateway. The API stores intents and allows an admin/webhook adapter to confirm an external Pix payment reference. The ledger only changes on first confirmation. Reconfirming an already confirmed intent is idempotent only when the provider, external reference, and supplied `paid_at` match the stored confirmation; conflicting confirmation data returns `409 Conflict` and does not append ledger lines.
 
 This keeps the ledger independent from payment providers. Replacing a Pix provider should change adapter code, not financial accounting.
 
@@ -48,7 +48,7 @@ This keeps the ledger independent from payment providers. Replacing a Pix provid
 - an active marketplace listing price;
 - sufficient confirmed project customer balance in the billing currency.
 
-The backend calculates billable amount from usage `billable_gpu_seconds` and the listing price, then requires enough confirmed project balance before issuing the invoice. The provider cannot submit billing amount, platform fee, payout amount, or customer balance.
+The backend calculates billable amount from usage `billable_gpu_seconds` and the listing price, then requires enough confirmed project balance before issuing the invoice. The provider cannot submit billing amount, platform fee, payout amount, or customer balance. A BN-15 usage ledger entry can settle into at most one billing invoice: replaying the same reservation/usage pair returns the existing invoice as `duplicate=true`, while attempting to settle that usage entry against another reservation returns `409 Conflict`.
 
 ## Payouts
 

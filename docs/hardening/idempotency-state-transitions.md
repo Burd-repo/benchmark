@@ -30,6 +30,10 @@ This hardening pass focused on already implemented backend state transitions. It
 - Ignored PostgreSQL reservation flow now checks cancellation releases the listing and allows a second reservation.
 - Ignored PostgreSQL billing flow now checks duplicate settlement returns the same invoice and does not duplicate billing ledger lines.
 
+## Later Tightening
+
+`hardening/customer-billing-ledger` later tightened billing settlement further: `usage_entry_id` is now globally unique across billing invoices, so a metered usage entry cannot be billed through a second reservation. See `docs/hardening/customer-billing-ledger.md`.
+
 ## Validation
 
 Passed:

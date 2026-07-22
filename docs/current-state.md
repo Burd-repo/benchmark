@@ -506,11 +506,11 @@ starting the API server or depending on host state:
 ## BN-18 - Billing, Pix And Payouts
 
 - `burd-protocol` defines marketplace price records, Pix payment intents, financial ledger lines, billing invoices, balances, payout accounts, payouts, refunds, disputes, and reconciliation event contracts.
-- PostgreSQL migration `0017_billing_pix_payouts` adds marketplace price book, Pix intents, billing invoices, append-only `financial_ledger_lines`, provider payout accounts, provider payouts, refunds, disputes, and reconciliation events.
+- PostgreSQL migration `0017_billing_pix_payouts` adds marketplace price book, Pix intents, billing invoices, append-only `financial_ledger_lines`, provider payout accounts, provider payouts, refunds, disputes, and reconciliation events. Hardening migration `0021_unique_billing_usage_invoice` prevents one BN-15 usage ledger entry from being settled into multiple billing invoices.
 - The control plane exposes admin endpoints for listing price, billing settlement, invoice reads, provider balances/ledger, payout account upsert, and payout creation.
 - Customer API keys now support `billing:read` and `billing:write`; customer endpoints can create Pix payment intents and read project balances/ledger.
-- Pix payment intents do not move money until confirmed by admin/adapter; confirmation appends balanced ledger lines.
-- Reservation billing settlement requires BN-15 usage, BN-17 reservation, matching provider/device/GPU binding, an active BN-18 listing price, and sufficient confirmed project balance.
+- Pix payment intents do not move money until confirmed by admin/adapter; first confirmation appends balanced ledger lines, exact duplicate confirmation is idempotent, and conflicting confirmation references are rejected.
+- Reservation billing settlement requires BN-15 usage, BN-17 reservation, matching provider/device/GPU binding, an active BN-18 listing price, and sufficient confirmed project balance. A usage ledger entry can back only one billing invoice; same-reservation retries return the existing invoice and cross-reservation rebilling conflicts.
 - Provider payouts require verified KYC/tax state, minimum payout, payable balance, and hold policy.
 - BN-18 does not call a real Pix gateway, verify webhook signatures, execute bank payouts, provide checkout UI, or complete legal/KYC/tax workflows.
 
