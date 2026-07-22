@@ -43,7 +43,7 @@ BN-00 freezes the first remote backend boundary. BN-01 adds the backend
 foundation. BN-02 adds remote provider enrollment, Ed25519 possession proof,
 short-lived device credentials, key rotation, and revocation. The target is a
 Rust modular monolith backed by PostgreSQL, object storage, and a simple queue.
-The authenticated outbound control channel remains BN-03.
+The authenticated outbound control channel remains BN-03. BN-21 adds backend-owned multi-GPU inventory snapshots that later scheduler logic can validate.
 
 The backend is authoritative for registry state, server-side evidence
 expiration, challenge issuance, nonce use, remote session state, revocation,
