@@ -122,6 +122,7 @@ after the June 2026 reliability pass.
 - The control plane can create backend-authorized compute jobs for a specific provider/device/session, let an authenticated provider session pull the next job, issue job-scoped data-plane grants, record progress events, accept final result metadata, and cancel non-terminal jobs.
 - The control plane can create customer users, organizations, projects, quotas, hashed customer API keys, credit ledger entries, marketplace reservations, usage summaries, and customer audit events. Reservations are scoped to backend-published marketplace listings and project quotas.
 - The control plane exposes operational observability with correlation IDs, structured JSON logs, Prometheus metrics, admin snapshots, background task error counters, and configurable HTTP SLO status.
+- Multi-GPU inventory persists one immutable row per GPU per signed snapshot, deduplicates repeated snapshot rows by `(inventory_hash, gpu_index)`, and gates jobs/scheduler decisions on the latest GPU inventory status.
 - Network benchmark includes latency aliases, request counts, status code,
   DNS timing, duration, jitter, and warnings.
 - Raw data includes explicit redaction metadata and summaries for history,

@@ -31,7 +31,7 @@ The backend accepts the inventory only when:
 - `public_key_id` is active for that provider device;
 - the Ed25519 signature verifies against the inventory signature message.
 
-A valid inventory can still be stored as duplicate history when the same hash is resubmitted. Invalid signature, inactive key, bad binding, or bad hash is rejected and audited.
+A valid inventory snapshot is deduplicated by `(inventory_hash, gpu_index)` when the same hash is resubmitted. Invalid signature, inactive key, bad binding, or bad hash is rejected and audited.
 
 ### `GET /v1/providers/{provider_id}/gpu-inventory`
 
@@ -43,7 +43,7 @@ The agent may claim GPU UUIDs, GPU indices, backend labels, PCI IDs, VRAM totals
 
 `server_received_at` is authoritative for registry ordering. Provider timestamps are recorded as observations only.
 
-Jobs and scheduler leases must check the active inventory registry before trusting a requested `gpu_uuid`.
+Jobs and scheduler leases must check the latest stored inventory row for the requested `gpu_uuid`; older active rows do not make a GPU eligible after a newer inactive, degraded, or retired snapshot.
 
 ## Non-Goals
 

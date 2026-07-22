@@ -68,11 +68,12 @@ impl Database {
         let verification_json = serde_json::to_string(&verification)
             .map_err(|error| SessionError::Invalid(error.to_string()))?;
         let server_received_at = Utc::now().to_rfc3339();
+        let mut inserted_rows = 0_u64;
         for (index, gpu) in signed.payload.gpus.iter().enumerate() {
             let inventory_row_id = format!("{row_prefix}_{index}");
-            transaction
+            inserted_rows += transaction
                 .execute(
-                    "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)",
+                    "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) ON CONFLICT (inventory_hash, gpu_index) DO NOTHING",
                     &[
                         &inventory_row_id,
                         &authorized.provider_id,
@@ -98,6 +99,7 @@ impl Database {
                 )
                 .await?;
         }
+        let duplicate = inserted_rows == 0;
         let audit_metadata = serde_json::json!({
             "inventory_hash": computed_hash,
             "gpu_count": signed.payload.gpus.len(),
@@ -125,7 +127,7 @@ impl Database {
 
         Ok(SubmitDeviceGpuInventoryResponse {
             request_id: request_id.to_string(),
-            duplicate: false,
+            duplicate,
             records,
         })
     }
@@ -451,18 +453,18 @@ pub(crate) async fn assert_gpu_inventory_contains(
     device_id: &str,
     gpu_uuid: &str,
 ) -> Result<(), SessionError> {
-    if transaction
+    let latest_status = transaction
         .query_opt(
-            "SELECT 1 FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 AND gpu_uuid = $3 AND status = 'active' ORDER BY server_received_at DESC LIMIT 1",
+            "SELECT status FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 AND gpu_uuid = $3 ORDER BY server_received_at DESC, observed_at DESC LIMIT 1",
             &[&provider_id, &device_id, &gpu_uuid],
         )
         .await?
-        .is_some()
-    {
+        .map(|row| row.get::<_, String>("status"));
+    if latest_status.as_deref() == Some("active") {
         Ok(())
     } else {
         Err(SessionError::Conflict(
-            "requested GPU is not present in the active device inventory".to_string(),
+            "requested GPU is not active in the latest device inventory".to_string(),
         ))
     }
 }
@@ -475,6 +477,7 @@ mod tests {
         DeviceGpuInventoryGpu, DeviceGpuInventoryPayload, SignedDeviceGpuInventory,
         device_gpu_inventory_hash,
     };
+    use chrono::Duration;
 
     fn signed_inventory() -> SignedDeviceGpuInventory {
         let payload = DeviceGpuInventoryPayload {
@@ -527,5 +530,154 @@ mod tests {
             missed_heartbeat_limit: 3,
         };
         assert!(validate_signed_inventory_shape(&inventory, &authorized).is_ok());
+    }
+    async fn setup_inventory_database() -> Database {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
+            .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
+        let schema = format!("burd_gpu_inventory_test_{}", Uuid::new_v4().simple());
+        let db = Database::new(url, Some(schema)).unwrap();
+        db.migrate().await.unwrap();
+
+        let now = Utc::now().to_rfc3339();
+        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
+        let client = db.connect().await.unwrap();
+        client
+            .execute(
+                "INSERT INTO providers (provider_id, user_id, display_name, status, created_at, updated_at) VALUES ('provider_1', NULL, 'GPU Provider', 'available', $1, $1)",
+                &[&now],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO devices (device_id, provider_id, machine_id, status, created_at, updated_at) VALUES ('device_1', 'provider_1', 'machine_1', 'active', $1, $1)",
+                &[&now],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO provider_public_keys (public_key_id, provider_id, device_id, public_key, key_algorithm, status, created_at) VALUES ('key_1', 'provider_1', 'device_1', 'pub_1', 'ed25519', 'active', $1)",
+                &[&now],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint) VALUES ('session_1', 'provider_1', 'device_1', 'online', 0, $1, $2, 'sha256:fingerprint')",
+                &[&now, &expires_at],
+            )
+            .await
+            .unwrap();
+        drop(client);
+        db
+    }
+
+    async fn insert_inventory_row(
+        client: &tokio_postgres::Client,
+        inventory_hash: &str,
+        inventory_row_id: &str,
+        gpu_uuid: &str,
+        gpu_index: i32,
+        status: &str,
+        observed_at: &str,
+        server_received_at: &str,
+    ) {
+        client
+            .execute(
+                "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, 'provider_1', 'device_1', 'session_1', 'burd-device-gpu-inventory-v1', $2, 'key_1', 'signature_1', 'burd-json-c14n-v1', $3, $4, 'cuda', '10de', '2684', 24576, $5, $6, $7, '{}', '{}')",
+                &[
+                    &inventory_row_id,
+                    &inventory_hash,
+                    &gpu_uuid,
+                    &gpu_index,
+                    &status,
+                    &observed_at,
+                    &server_received_at,
+                ],
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_inventory_schema_allows_one_row_per_gpu_for_same_snapshot_hash() {
+        let db = setup_inventory_database().await;
+        let client = db.connect().await.unwrap();
+        let now = Utc::now().to_rfc3339();
+        insert_inventory_row(
+            &client,
+            "inventory_hash_shared",
+            "inventory_1",
+            "GPU-1",
+            0,
+            "active",
+            &now,
+            &now,
+        )
+        .await;
+        insert_inventory_row(
+            &client,
+            "inventory_hash_shared",
+            "inventory_2",
+            "GPU-2",
+            1,
+            "active",
+            &now,
+            &now,
+        )
+        .await;
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM device_gpu_inventory WHERE inventory_hash = 'inventory_hash_shared'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(count, 2);
+        drop(client);
+        db.drop_schema_for_test().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_inventory_presence_uses_latest_gpu_status() {
+        let db = setup_inventory_database().await;
+        let mut client = db.connect().await.unwrap();
+        let first = Utc::now().to_rfc3339();
+        let second = (Utc::now() + Duration::seconds(1)).to_rfc3339();
+        insert_inventory_row(
+            &client,
+            "inventory_hash_active",
+            "inventory_active",
+            "GPU-stale",
+            0,
+            "active",
+            &first,
+            &first,
+        )
+        .await;
+        insert_inventory_row(
+            &client,
+            "inventory_hash_inactive",
+            "inventory_inactive",
+            "GPU-stale",
+            0,
+            "inactive",
+            &second,
+            &second,
+        )
+        .await;
+
+        let transaction = client.transaction().await.unwrap();
+        let result =
+            assert_gpu_inventory_contains(&transaction, "provider_1", "device_1", "GPU-stale")
+                .await;
+        assert!(matches!(result, Err(SessionError::Conflict(_))));
+        transaction.commit().await.unwrap();
+        drop(client);
+        db.drop_schema_for_test().await.unwrap();
     }
 }
