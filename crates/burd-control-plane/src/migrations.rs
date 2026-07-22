@@ -111,6 +111,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "unique_billing_usage_invoice",
         sql: include_str!("../migrations/0021_unique_billing_usage_invoice.sql"),
     },
+    Migration {
+        version: "0022",
+        name: "unique_customer_reservation_credit_entries",
+        sql: include_str!("../migrations/0022_unique_customer_reservation_credit_entries.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -324,6 +329,14 @@ mod tests {
         assert!(sql.contains("ON billing_invoices(usage_entry_id)"));
         assert!(sql.contains("WHERE usage_entry_id IS NOT NULL"));
     }
+    #[test]
+    fn unique_customer_reservation_credit_entries_migration_prevents_duplicate_hold_release() {
+        let sql = MIGRATIONS[21].sql;
+        assert!(sql.contains("idx_customer_credit_ledger_reservation_entry"));
+        assert!(sql.contains("ON customer_credit_ledger_entries(reservation_id, entry_type)"));
+        assert!(sql.contains("entry_type IN ('reservation_hold', 'reservation_release')"));
+    }
+
     #[test]
     fn customer_accounts_reservations_migration_declares_customer_registry() {
         let sql = MIGRATIONS[15].sql;

@@ -29,7 +29,7 @@ Migration `0016_customer_accounts_reservations` adds:
 - `marketplace_reservations`
 - `customer_audit_events`
 
-`customer_credit_ledger_entries` is append-only through a trigger. Active reservations are unique per `listing_id`, preventing two customers from reserving the same published listing at the same time.
+`customer_credit_ledger_entries` is append-only through a trigger. Reservation hold/release entries are unique per reservation and entry type, so retry paths cannot duplicate the zero-value reservation ledger markers. Active reservations are unique per `listing_id`, preventing two customers from reserving the same published listing at the same time.
 
 ## API
 
@@ -51,7 +51,7 @@ Customer API-key endpoints:
 - `GET /v1/customer/projects/{project_id}/usage`
 - `POST /v1/customer/reservations/{reservation_id}/cancel`
 
-Reservation creation requires `Authorization: Bearer <customer_api_key>` and `Idempotency-Key`.
+Reservation creation requires `Authorization: Bearer <customer_api_key>` and `Idempotency-Key`. Admin credit grants also require `Idempotency-Key` so retries replay the stored credit ledger response instead of appending duplicate credits.
 
 ## Reservation Rules
 
@@ -65,7 +65,7 @@ A reservation can be created only when:
 - the listing current status is `available` or `degraded`;
 - the optional request `workload_type` matches the listing workload type.
 
-The backend records reservation hold/release entries with zero credit movement because BN-17 has no marketplace pricing or billing settlement.
+The backend records reservation hold/release entries with zero credit movement because BN-17 has no marketplace pricing or billing settlement. Release entries are recorded both for explicit cancellation and for backend-expired reservations.
 
 ## Authority Boundaries
 
