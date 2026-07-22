@@ -433,9 +433,10 @@ impl Database {
         .map_err(SessionError::Invalid)?;
         let invoice_id = format!("invoice_{}", Uuid::new_v4());
         let now = Utc::now().to_rfc3339();
-        transaction
+
+        let inserted = transaction
             .execute(
-                "INSERT INTO billing_invoices (invoice_id, organization_id, project_id, reservation_id, usage_entry_id, schema_version, status, currency, subtotal_micros, platform_fee_micros, provider_net_micros, chargeback_reserve_micros, total_micros, source_hash, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 'issued', $7, $8, $9, $10, $11, $12, $13, $14, $14)",
+                "INSERT INTO billing_invoices (invoice_id, organization_id, project_id, reservation_id, usage_entry_id, schema_version, status, currency, subtotal_micros, platform_fee_micros, provider_net_micros, chargeback_reserve_micros, total_micros, source_hash, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 'issued', $7, $8, $9, $10, $11, $12, $13, $14, $14) ON CONFLICT (reservation_id, usage_entry_id) DO NOTHING",
                 &[
                     &invoice_id,
                     &reservation.organization_id,
@@ -453,7 +454,25 @@ impl Database {
                     &now,
                 ],
             )
-            .await?;
+            .await?
+            == 1;
+        if !inserted {
+            let row = transaction
+                .query_one(
+                    &format!(
+                        "{} WHERE reservation_id = $1 AND usage_entry_id = $2",
+                        invoice_select_columns()
+                    ),
+                    &[&reservation_id, &request.usage_entry_id],
+                )
+                .await?;
+            transaction.commit().await?;
+            return Ok(BillingInvoiceResponse {
+                request_id: request_id.to_string(),
+                invoice: invoice_from_row(row)?,
+                duplicate: true,
+            });
+        }
         append_financial_transaction(
             &transaction,
             "billing_invoice",
@@ -1756,6 +1775,34 @@ mod tests {
             .unwrap();
         assert_eq!(invoice.invoice.total_micros, 10_000_000);
         assert_eq!(invoice.invoice.provider_net_micros, 8_000_000);
+        let duplicate_invoice = db
+            .settle_reservation_billing(
+                "req_settlement_duplicate",
+                "reservation_billing",
+                &SettleReservationBillingRequest {
+                    usage_entry_id: "usage_billing".to_string(),
+                    platform_fee_bps: None,
+                    chargeback_reserve_bps: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(duplicate_invoice.duplicate);
+        assert_eq!(
+            duplicate_invoice.invoice.invoice_id,
+            invoice.invoice.invoice_id
+        );
+        let client = db.connect().await.unwrap();
+        let billing_ledger_lines: i64 = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT FROM financial_ledger_lines WHERE source_type = 'billing_invoice' AND source_id = $1",
+                &[&invoice.invoice.invoice_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(billing_ledger_lines, 4);
+        drop(client);
 
         let project_balance = db
             .project_billing_balance("req_project_balance_after", &auth, "project_billing")
