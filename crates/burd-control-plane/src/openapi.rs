@@ -11,17 +11,17 @@ pub fn document() -> serde_json::Value {
                 "adminBearer": {
                     "type": "http",
                     "scheme": "bearer",
-                    "description": "Bootstrap admin credential configured by BURD_CONTROL_ADMIN_TOKEN."
+                    "description": "Bootstrap admin credential configured by BURD_CONTROL_ADMIN_TOKEN. Send only as Authorization: Bearer; never in URLs."
                 },
                 "deviceBearer": {
                     "type": "http",
                     "scheme": "bearer",
-                    "description": "Short-lived device credential issued after enrollment proof."
+                    "description": "Short-lived device credential issued after enrollment proof. Send only as Authorization: Bearer; session resume token stays in x-burd-session-token."
                 },
                 "customerBearer": {
                     "type": "http",
                     "scheme": "bearer",
-                    "description": "Customer API key token returned once by the project API-key endpoint."
+                    "description": "Customer API key token returned once by the project API-key endpoint. Send only as Authorization: Bearer; never in URLs."
                 }
             }
         },
@@ -81,7 +81,7 @@ pub fn document() -> serde_json::Value {
                             "name": "Idempotency-Key",
                             "in": "header",
                             "required": true,
-                            "schema": { "type": "string" }
+                            "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$" }
                         }
                     ],
                     "responses": {
@@ -485,7 +485,7 @@ pub fn document() -> serde_json::Value {
                 "post": {
                     "summary": "Create a customer Pix payment intent without ledger movement until confirmation",
                     "security": [{ "customerBearer": [] }],
-                    "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }],
+                    "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$" } }],
                     "responses": { "201": { "description": "Pix intent created" }, "409": { "description": "idempotency conflict" } }
                 }
             },
@@ -617,7 +617,7 @@ pub fn document() -> serde_json::Value {
                 "post": {
                     "summary": "Reserve one backend-published marketplace listing for a project",
                     "security": [{ "customerBearer": [] }],
-                    "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string" } }],
+                    "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$" } }],
                     "responses": { "201": { "description": "reservation created" }, "409": { "description": "quota exceeded, listing unavailable, or idempotency conflict" } }
                 }
             },
@@ -642,7 +642,7 @@ pub fn document() -> serde_json::Value {
                         "name": "Idempotency-Key",
                         "in": "header",
                         "required": true,
-                        "schema": { "type": "string" }
+                        "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$" }
                     }],
                     "responses": {
                         "201": { "description": "job queued for an online or degraded eligible provider session" },
@@ -1011,5 +1011,65 @@ mod tests {
         assert!(document["components"]["securitySchemes"]["adminBearer"].is_object());
         assert!(document["components"]["securitySchemes"]["deviceBearer"].is_object());
         assert!(document["components"]["securitySchemes"]["customerBearer"].is_object());
+    }
+    #[test]
+    fn openapi_documents_security_boundaries_and_idempotency_header_limits() {
+        let document = document();
+        let paths = document["paths"].as_object().unwrap();
+        for (path, method, scheme) in [
+            ("/v1/providers", "post", "adminBearer"),
+            ("/v1/security/policy", "get", "adminBearer"),
+            ("/v1/marketplace/listings", "get", "adminBearer"),
+            (
+                "/v1/billing/reservations/{reservation_id}/settle",
+                "post",
+                "adminBearer",
+            ),
+            (
+                "/v1/customer/projects/{project_id}/reservations",
+                "post",
+                "customerBearer",
+            ),
+            (
+                "/v1/billing/projects/{project_id}/balance",
+                "get",
+                "customerBearer",
+            ),
+            ("/v1/sessions/{session_id}/jobs/next", "get", "deviceBearer"),
+            (
+                "/v1/sessions/{session_id}/gpu-inventory",
+                "post",
+                "deviceBearer",
+            ),
+        ] {
+            let operation = paths.get(path).unwrap().get(method).unwrap();
+            let security = operation["security"].as_array().unwrap();
+            assert!(
+                security.iter().any(|entry| entry[scheme].is_array()),
+                "{method} {path} must document {scheme}"
+            );
+        }
+
+        for (path, method) in [
+            ("/v1/providers", "post"),
+            (
+                "/v1/billing/projects/{project_id}/pix/payment-intents",
+                "post",
+            ),
+            ("/v1/customer/projects/{project_id}/reservations", "post"),
+            ("/v1/jobs", "post"),
+        ] {
+            let operation = paths.get(path).unwrap().get(method).unwrap();
+            let parameters = operation["parameters"].as_array().unwrap();
+            let idempotency = parameters
+                .iter()
+                .find(|parameter| parameter["name"] == "Idempotency-Key")
+                .unwrap();
+            let schema = &idempotency["schema"];
+            assert_eq!(schema["type"], "string");
+            assert_eq!(schema["minLength"], 1);
+            assert_eq!(schema["maxLength"], 128);
+            assert_eq!(schema["pattern"], "^[!-~]+$");
+        }
     }
 }

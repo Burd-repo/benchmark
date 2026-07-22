@@ -79,13 +79,15 @@ impl ApiError {
         )
     }
 
-    pub fn database(error: impl std::fmt::Display, request_id: impl Into<String>) -> Self {
-        Self::new(
+    pub fn database(_error: impl std::fmt::Display, request_id: impl Into<String>) -> Self {
+        let mut error = Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
             ErrorCode::DatabaseUnavailable,
-            format!("database unavailable: {error}"),
+            "database unavailable",
             request_id,
-        )
+        );
+        error.details = serde_json::json!({ "reason": "database_unavailable" });
+        error
     }
 
     pub fn idempotency_conflict(request_id: impl Into<String>) -> Self {
@@ -138,5 +140,18 @@ mod tests {
             ErrorCode::DatabaseUnavailable.as_str(),
             "database_unavailable"
         );
+    }
+
+    #[test]
+    fn database_errors_do_not_echo_source_details() {
+        let error = ApiError::database(
+            "postgres://burd:super-secret@db.example/burd failed",
+            "req_test",
+        );
+        assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error.code, ErrorCode::DatabaseUnavailable);
+        assert_eq!(error.message, "database unavailable");
+        assert!(!error.message.contains("super-secret"));
+        assert_eq!(error.details["reason"], "database_unavailable");
     }
 }

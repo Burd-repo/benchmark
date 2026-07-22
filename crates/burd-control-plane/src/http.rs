@@ -167,6 +167,11 @@ struct ProviderEnvelope {
     provider: ProviderRecord,
 }
 
+const MAX_IDEMPOTENCY_KEY_LENGTH: usize = 128;
+const MAX_BEARER_TOKEN_LENGTH: usize = 4096;
+const MAX_SESSION_HEADER_LENGTH: usize = 256;
+const MAX_RATE_LIMIT_KEY_LENGTH: usize = 128;
+const DEFAULT_CONTROL_CHANNEL_HOST: &str = "127.0.0.1:8080";
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -2412,16 +2417,7 @@ async fn rate_limit_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    let key = headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|value| value.to_str().ok())
-        })
-        .unwrap_or("local")
-        .to_string();
+    let key = rate_limit_key_from_headers(&headers);
     match state.rate_limiter.check(&key) {
         Ok(()) => next.run(request).await,
         Err(retry_after_seconds) => {
@@ -2430,53 +2426,82 @@ async fn rate_limit_middleware(
     }
 }
 
+fn rate_limit_key_from_headers(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| is_visible_ascii_without_whitespace(value, MAX_RATE_LIMIT_KEY_LENGTH))
+        .filter(|value| !contains_secret_hint(value))
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| "local".to_string())
+}
+
 fn correlation_id_from_headers(headers: &HeaderMap) -> String {
     headers
         .get("x-burd-correlation-id")
         .or_else(|| headers.get("x-request-id"))
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
-        .filter(|value| !value.is_empty() && value.len() <= 128)
-        .filter(|value| {
-            value
-                .chars()
-                .all(|character| character.is_ascii() && !character.is_ascii_control())
-        })
+        .filter(|value| is_visible_ascii_without_whitespace(value, 128))
+        .filter(|value| !contains_secret_hint(value))
         .map(ToOwned::to_owned)
         .unwrap_or_else(new_request_id)
 }
 
 fn required_idempotency_key(headers: &HeaderMap, request_id: &str) -> Result<String, ApiError> {
-    headers
+    let key = headers
         .get("idempotency-key")
         .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
         .ok_or_else(|| {
             ApiError::invalid_request(
                 "Idempotency-Key header is required for mutating requests",
                 request_id.to_string(),
             )
-        })
+        })?;
+    if is_visible_ascii_without_whitespace(key, MAX_IDEMPOTENCY_KEY_LENGTH) {
+        Ok(key.to_string())
+    } else {
+        Err(ApiError::invalid_request(
+            "Idempotency-Key header must be 1-128 visible ASCII characters without whitespace",
+            request_id.to_string(),
+        ))
+    }
 }
 
 fn required_bearer_token(headers: &HeaderMap, request_id: &str) -> Result<String, ApiError> {
-    headers
+    let Some(token) = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::UNAUTHORIZED,
-                ErrorCode::Unauthorized,
-                "Authorization: Bearer credential is required",
-                request_id,
-            )
-        })
+        .and_then(parse_bearer_token)
+    else {
+        return Err(missing_or_malformed_bearer(request_id));
+    };
+    if is_visible_ascii_without_whitespace(token, MAX_BEARER_TOKEN_LENGTH) {
+        Ok(token.to_string())
+    } else {
+        Err(missing_or_malformed_bearer(request_id))
+    }
+}
+
+fn parse_bearer_token(value: &str) -> Option<&str> {
+    let token = value.strip_prefix("Bearer ")?;
+    if token.trim() == token && !token.is_empty() {
+        Some(token)
+    } else {
+        None
+    }
+}
+
+fn missing_or_malformed_bearer(request_id: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        ErrorCode::Unauthorized,
+        "Authorization: Bearer credential is required",
+        request_id,
+    )
 }
 
 fn required_header(
@@ -2484,12 +2509,9 @@ fn required_header(
     name: &'static str,
     request_id: &str,
 ) -> Result<String, ApiError> {
-    headers
+    let value = headers
         .get(name)
         .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::UNAUTHORIZED,
@@ -2497,17 +2519,30 @@ fn required_header(
                 format!("{name} header is required"),
                 request_id,
             )
-        })
+        })?;
+    if is_visible_ascii_without_whitespace(value, MAX_SESSION_HEADER_LENGTH) {
+        Ok(value.to_string())
+    } else {
+        Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::Unauthorized,
+            format!("{name} header is malformed"),
+            request_id,
+        ))
+    }
 }
 
 fn control_channel_url(headers: &HeaderMap) -> String {
     let host = headers
         .get("host")
         .and_then(|value| value.to_str().ok())
-        .unwrap_or("127.0.0.1:8080");
+        .map(str::trim)
+        .filter(|value| is_safe_control_channel_host(value))
+        .unwrap_or(DEFAULT_CONTROL_CHANNEL_HOST);
     let forwarded = headers
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
+        .map(str::trim)
         .unwrap_or("http");
     let scheme = if forwarded.eq_ignore_ascii_case("https") {
         "wss"
@@ -2515,6 +2550,42 @@ fn control_channel_url(headers: &HeaderMap) -> String {
         "ws"
     };
     format!("{scheme}://{host}/v1/sessions/{{session_id}}/control")
+}
+
+fn is_visible_ascii_without_whitespace(value: &str, max_length: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_length
+        && value
+            .chars()
+            .all(|character| character.is_ascii_graphic() && !character.is_ascii_whitespace())
+}
+
+fn is_safe_control_channel_host(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value
+            .chars()
+            .any(|character| character.is_ascii_alphanumeric())
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | ':' | '[' | ']')
+        })
+}
+
+fn contains_secret_hint(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    [
+        "authorization",
+        "bearer",
+        "token",
+        "secret",
+        "password",
+        "credential",
+        "api_key",
+        "private_key",
+        "pix_key",
+    ]
+    .iter()
+    .any(|hint| lower.contains(hint))
 }
 fn authorize_admin(
     headers: &HeaderMap,
@@ -2664,7 +2735,7 @@ fn migrations_are_current(applied: &[String], expected: &[&str]) -> bool {
 mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
-    use axum::http::{Method, Request};
+    use axum::http::{HeaderValue, Method, Request};
     use tower::ServiceExt;
 
     fn test_config(database_url: &str) -> ControlPlaneConfig {
@@ -2925,6 +2996,92 @@ mod tests {
                 "0011"
             ]
         ));
+    }
+
+    #[test]
+    fn bearer_and_idempotency_headers_are_strict_and_redacted() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer test-admin"),
+        );
+        assert_eq!(
+            required_bearer_token(&headers, "req_test").unwrap(),
+            "test-admin"
+        );
+
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer test admin"),
+        );
+        let error = required_bearer_token(&headers, "req_test").unwrap_err();
+        assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+        assert!(!error.message.contains("test admin"));
+
+        headers.insert("idempotency-key", HeaderValue::from_static("request-001"));
+        assert_eq!(
+            required_idempotency_key(&headers, "req_test").unwrap(),
+            "request-001"
+        );
+
+        let long_key = "a".repeat(MAX_IDEMPOTENCY_KEY_LENGTH + 1);
+        headers.insert("idempotency-key", HeaderValue::from_str(&long_key).unwrap());
+        assert!(required_idempotency_key(&headers, "req_test").is_err());
+
+        headers.insert("idempotency-key", HeaderValue::from_static("request 001"));
+        assert!(required_idempotency_key(&headers, "req_test").is_err());
+    }
+
+    #[test]
+    fn session_headers_and_reflected_control_channel_url_are_bounded() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-burd-device-id", HeaderValue::from_static("device_123"));
+        assert_eq!(
+            required_header(&headers, "x-burd-device-id", "req_test").unwrap(),
+            "device_123"
+        );
+        headers.insert(
+            "x-burd-session-token",
+            HeaderValue::from_str(&"s".repeat(MAX_SESSION_HEADER_LENGTH + 1)).unwrap(),
+        );
+        assert!(required_header(&headers, "x-burd-session-token", "req_test").is_err());
+
+        headers.insert("host", HeaderValue::from_static("control.burd.local:8443"));
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        assert_eq!(
+            control_channel_url(&headers),
+            "wss://control.burd.local:8443/v1/sessions/{session_id}/control"
+        );
+
+        headers.insert("host", HeaderValue::from_static("evil.example/path"));
+        assert_eq!(
+            control_channel_url(&headers),
+            "wss://127.0.0.1:8080/v1/sessions/{session_id}/control"
+        );
+    }
+
+    #[test]
+    fn observability_header_values_do_not_persist_secret_like_inputs() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-request-id", HeaderValue::from_static("corr-test"));
+        assert_eq!(correlation_id_from_headers(&headers), "corr-test");
+
+        headers.insert(
+            "x-request-id",
+            HeaderValue::from_static("Bearer-token-leak"),
+        );
+        let generated = correlation_id_from_headers(&headers);
+        assert!(generated.starts_with("req_"));
+        assert_ne!(generated, "Bearer-token-leak");
+
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("203.0.113.10, 10.0.0.2"),
+        );
+        assert_eq!(rate_limit_key_from_headers(&headers), "203.0.113.10");
+
+        headers.insert("x-forwarded-for", HeaderValue::from_static("secret-token"));
+        assert_eq!(rate_limit_key_from_headers(&headers), "local");
     }
 
     #[test]

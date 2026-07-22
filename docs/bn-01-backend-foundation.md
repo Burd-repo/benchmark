@@ -12,8 +12,8 @@ Implemented in `crates/burd-control-plane`:
 - PostgreSQL connection and SQL migrations.
 - `GET /health` liveness endpoint.
 - `GET /ready` readiness endpoint with database and migration checks.
-- JSON error envelope aligned with BN-00 `remote-protocol-v1`.
-- Required `Idempotency-Key` handling for mutating provider creation.
+- JSON error envelope aligned with BN-00 `remote-protocol-v1`, with database/source errors redacted from client responses.
+- Required bounded `Idempotency-Key` handling for mutating provider creation.
 - In-memory per-client rate-limit guard.
 - Audit event persistence for provider creation.
 - Static `GET /openapi.json` contract.
