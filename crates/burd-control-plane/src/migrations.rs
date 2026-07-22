@@ -273,6 +273,7 @@ mod tests {
         assert!(sql.contains("prevent_financial_ledger_mutation"));
         assert!(sql.contains("financial_ledger_no_update"));
         assert!(sql.contains("idx_marketplace_listing_prices_active"));
+        assert!(sql.contains("UNIQUE(reservation_id, usage_entry_id)"));
     }
     #[test]
     fn security_hardening_attestation_migration_declares_posture_registry() {

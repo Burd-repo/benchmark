@@ -758,6 +758,7 @@ impl Database {
                 "reservation hold released without credit settlement in BN-17",
             )
             .await?;
+            release_listing_reservation_hold(&transaction, &before.listing_id, &now).await?;
             insert_customer_audit_event(
                 &transaction,
                 NewCustomerAuditEvent {
@@ -1060,14 +1061,87 @@ async fn expire_stale_reservations(
     transaction: &Transaction<'_>,
     now: &str,
 ) -> Result<u64, SessionError> {
-    Ok(transaction
-        .execute(
-            "UPDATE marketplace_reservations SET status = 'expired', updated_at = $1 WHERE status = 'reserved' AND expires_at <= $1",
+    let rows = transaction
+        .query(
+            "UPDATE marketplace_reservations SET status = 'expired', updated_at = $1 WHERE status = 'reserved' AND expires_at <= $1 RETURNING listing_id",
             &[&now],
         )
-        .await?)
+        .await?;
+    let expired_count = rows.len() as u64;
+    let mut listing_ids = Vec::new();
+    for row in rows {
+        let listing_id: String = row.get("listing_id");
+        if !listing_ids.contains(&listing_id) {
+            listing_ids.push(listing_id);
+        }
+    }
+    for listing_id in listing_ids {
+        release_listing_reservation_hold(transaction, &listing_id, now).await?;
+    }
+    Ok(expired_count)
 }
 
+async fn release_listing_reservation_hold(
+    transaction: &Transaction<'_>,
+    listing_id: &str,
+    now: &str,
+) -> Result<(), SessionError> {
+    let row = transaction
+        .query_opt(
+            "SELECT l.status, s.status AS session_status FROM marketplace_listings l LEFT JOIN provider_sessions s ON s.session_id = l.session_id WHERE l.listing_id = $1 FOR UPDATE OF l",
+            &[&listing_id],
+        )
+        .await?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    let listing_status: String = row.get("status");
+    let session_status: Option<String> = row.get("session_status");
+    let active_reservations: i64 = transaction
+        .query_one(
+            "SELECT COUNT(*)::BIGINT FROM marketplace_reservations WHERE listing_id = $1 AND status = 'reserved'",
+            &[&listing_id],
+        )
+        .await?
+        .get(0);
+    if active_reservations > 0 {
+        return Ok(());
+    }
+
+    let current_status = released_listing_status(&listing_status, session_status.as_deref());
+    let availability_window_json = serde_json::json!({
+        "mode": "reservation_released",
+        "source": "customer_reservation",
+        "reservations_enabled": matches!(current_status.as_str(), "available" | "degraded"),
+        "active_reservation_count": 0,
+        "session_status": session_status,
+    })
+    .to_string();
+    transaction
+        .execute(
+            "UPDATE marketplace_listings SET current_status = $1, availability_window_json = $2, updated_at = $3 WHERE listing_id = $4 AND current_status = 'reserved'",
+            &[&current_status, &availability_window_json, &now, &listing_id],
+        )
+        .await?;
+    Ok(())
+}
+
+fn released_listing_status(listing_status: &str, session_status: Option<&str>) -> String {
+    if listing_status == "blocked" {
+        return "blocked".to_string();
+    }
+    match session_status {
+        Some("online") if matches!(listing_status, "published" | "limited") => {
+            "available".to_string()
+        }
+        Some("degraded") if matches!(listing_status, "published" | "limited") => {
+            "degraded".to_string()
+        }
+        Some("online" | "degraded") => listing_status.to_string(),
+        Some("offline" | "expired" | "revoked" | "pending_connection") => "offline".to_string(),
+        _ => "offline".to_string(),
+    }
+}
 async fn append_customer_credit_ledger_entry(
     transaction: &Transaction<'_>,
     organization_id: &str,
@@ -1551,6 +1625,25 @@ mod tests {
         invalid.duration_seconds = 0;
         assert!(validate_reservation_request(&invalid).is_err());
     }
+    #[test]
+    fn released_listing_status_tracks_session_after_reservation_release() {
+        assert_eq!(
+            released_listing_status("published", Some("online")),
+            "available"
+        );
+        assert_eq!(
+            released_listing_status("limited", Some("degraded")),
+            "degraded"
+        );
+        assert_eq!(
+            released_listing_status("published", Some("offline")),
+            "offline"
+        );
+        assert_eq!(
+            released_listing_status("blocked", Some("online")),
+            "blocked"
+        );
+    }
     #[tokio::test]
     #[ignore]
     async fn postgres_customer_reservation_flow_persists_usage_and_cancellation() {
@@ -1674,6 +1767,40 @@ mod tests {
             .usage;
         assert_eq!(usage.active_reservations, 0);
         assert_eq!(usage.cancelled_reservations, 1);
+
+        let client = db.connect().await.unwrap();
+        let released_status: String = client
+            .query_one(
+                "SELECT current_status FROM marketplace_listings WHERE listing_id = 'listing_customer_flow'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(released_status, "available");
+        drop(client);
+
+        let second = db
+            .create_marketplace_reservation_idempotently(CreateReservationCommand {
+                request_id: "req_reservation_second".to_string(),
+                scope: format!(
+                    "POST /v1/customer/projects/{}/reservations",
+                    project.project_id
+                ),
+                idempotency_key: "customer-reservation-2".to_string(),
+                request_hash: "reservation-hash-2".to_string(),
+                auth: auth.clone(),
+                project_id: project.project_id.clone(),
+                request,
+            })
+            .await
+            .unwrap();
+        let CreateReservationOutcome::Response(second) = second else {
+            panic!("second reservation must succeed after cancellation releases listing");
+        };
+        let second_response: MarketplaceReservationResponse =
+            serde_json::from_str(&second.response_json).unwrap();
+        assert_eq!(second_response.reservation.status, "reserved");
 
         db.drop_schema_for_test().await.unwrap();
     }
