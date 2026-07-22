@@ -122,6 +122,7 @@ after the June 2026 reliability pass.
 - The control plane can create backend-authorized compute jobs for a specific provider/device/session, let an authenticated provider session pull the next job, issue job-scoped data-plane grants, record progress events, accept final result metadata, and cancel non-terminal jobs.
 - The control plane can create customer users, organizations, projects, quotas, hashed customer API keys, credit ledger entries, marketplace reservations, usage summaries, and customer audit events. Reservations are scoped to backend-published marketplace listings and project quotas.
 - The control plane exposes operational observability with correlation IDs, structured JSON logs, Prometheus metrics, admin snapshots, background task error counters, and configurable HTTP SLO status.
+- `GET /openapi.json` now attaches structural request/response schema refs for the implemented BN-01 through BN-11 control-plane endpoints. Nested and optional fields continue to follow the Rust serde contracts in `burd-protocol` and `burd-control-plane`.
 - Multi-GPU inventory persists one immutable row per GPU per signed snapshot, deduplicates repeated snapshot rows by `(inventory_hash, gpu_index)`, and gates jobs/scheduler decisions on the latest GPU inventory status.
 - Network benchmark includes latency aliases, request counts, status code,
   DNS timing, duration, jitter, and warnings.
@@ -268,6 +269,7 @@ starting the API server or depending on host state:
 - `crates/burd-control-plane` adds the first Rust backend foundation crate.
 - The control plane exposes `GET /health`, `GET /ready`, `GET /openapi.json`,
   `POST /v1/providers`, and `GET /v1/providers/{provider_id}`.
+- OpenAPI documents the health/readiness and provider registry request/response envelopes with component schema refs.
 - Configuration is environment-driven through `BURD_CONTROL_*` variables.
 - PostgreSQL migrations create the initial registry, evidence, session,
   idempotency, and audit tables.
@@ -296,6 +298,7 @@ starting the API server or depending on host state:
 - PostgreSQL stores only token and credential hashes, never raw values.
 - Credential refresh, device listing, key rotation, and cascading device
   revocation are implemented.
+- OpenAPI documents enrollment token, enrollment proof, device credential, key rotation, device list, and revocation schemas.
 - `burd-agent enrollment enroll`, `status`, and `refresh-credential` implement
   the agent side without exposing credentials in status or action logs.
 - PostgreSQL integration tests cover enrollment, replay rejection, credential
@@ -319,6 +322,7 @@ starting the API server or depending on host state:
   refresh and reconnect backoff. `remote-session status` reads backend state.
 - PostgreSQL integration coverage exercises start, duplicate rejection,
   heartbeat, degradation, resume, and revocation.
+- OpenAPI documents remote session start, session record, heartbeat control-message receipt, and revocation schemas.
 - BN-03 does not implement GPU telemetry, backend-issued challenges, Proof of
   Capability, trust policy, jobs, scheduler, marketplace, billing, Pix, or
   payouts.
@@ -335,6 +339,7 @@ starting the API server or depending on host state:
 - The control plane verifies signatures and physical ranges, enforces batch
   size/frequency/clock policy, persists normalized samples transactionally, and
   returns `telemetry_ack` over WebSocket or HTTP fallback.
+- OpenAPI documents the HTTP fallback as a telemetry-specific control-message envelope plus signed batch, receipt, and latest-telemetry response schemas.
 - Process paths are reduced to basenames; command lines are not collected.
 - Server-time retention removes old batches and cascades their samples.
 - `burd-agent remote-session connect --telemetry` enables collection without
@@ -360,6 +365,7 @@ starting the API server or depending on host state:
   the existing record with `duplicate=true`.
 - Admin endpoints list, read, and revoke evidence records. Revocation updates
   metadata and audit history without deleting the stored envelope.
+- OpenAPI documents evidence submit, verification, record/list, and revocation request/response schemas.
 - Accepted signed reports also create hardware snapshot rows for later policy,
   trust, and antifraud consumers.
 - BN-05 does not implement active Proof of Capability, recurring verification,
@@ -388,6 +394,7 @@ starting the API server or depending on host state:
   VRAM, GEMM, LLM metric, contention, and telemetry-window proof fields.
 - Audit events cover challenge issuance, acknowledgement, verification failure,
   verification success, and expiration-by-server-clock.
+- OpenAPI documents proof challenge issuance, challenge retrieval/next-pickup, signed response submission, and verification response schemas.
 - BN-06 does not implement the agent-side CUDA/VRAM/GEMM/LLM workload runner,
   recurring verification policy state, global trust/antifraud scoring, jobs,
   scheduler, marketplace, billing, Pix, or payouts. BN-07 adds the recurring
@@ -398,6 +405,7 @@ starting the API server or depending on host state:
 - `burd-protocol` defines verification sweep and verification-state response contracts plus `burd-verification-policy-v1`.
 - PostgreSQL migration `0007_recurring_verification_policy` adds `provider_verification_states` and policy metadata on `proof_challenges`.
 - The control plane exposes `POST /v1/verification/sweep` for admin-triggered recurring/risk verification and `GET /v1/providers/{provider_id}/verification-states` for state inspection.
+- OpenAPI documents verification sweep request/response and verification-state list schemas.
 - The sweep evaluates online/degraded sessions, skips blocked/quarantined providers and inactive devices, avoids duplicate active challenges, and issues BN-06 challenges when devices are new, due, suspect, forced, or stale-running.
 - Challenge expiry is recalculated by server time during sweeps. Expired running verifications become failed verification state.
 - BN-06 proof responses now update provider-device verification state to `verified`, `verification_due`, or `suspect` in the same transaction as challenge verification.
@@ -409,6 +417,7 @@ starting the API server or depending on host state:
 - `burd-protocol` defines trusted regional network probe observation, observation history, regional reachability, and provider network state contracts.
 - PostgreSQL migration `0008_regional_network_probes` adds `network_probe_observations` and `provider_network_states`.
 - The control plane exposes `POST /v1/network-probes/observations`, `GET /v1/providers/{provider_id}/network-probes`, and `GET /v1/providers/{provider_id}/network-state` behind admin/probe authorization.
+- OpenAPI documents trusted probe observation submission, observation lists, and provider network-state schemas.
 - Probe observations are tied to existing provider, device, and remote session IDs. The backend rejects blocked/quarantined providers, inactive devices, unsupported session states, invalid metrics, future timestamps, and non-redacted metadata.
 - Duplicate observations are deduplicated by `(session_id, probe_id, observed_at)` and do not inflate score history.
 - The backend calculates `remote_network_score`, `regional_reachability`, and `effective_network_score`; providers do not decide their own remote network reputation.
@@ -419,6 +428,7 @@ starting the API server or depending on host state:
 - `burd-protocol` defines backend trust sweep, provider trust state, and antifraud event contracts.
 - PostgreSQL migration `0009_global_trust_antifraud` adds `provider_trust_states` and `antifraud_events`.
 - The control plane exposes `POST /v1/trust/sweep`, `GET /v1/providers/{provider_id}/trust-states`, and `GET /v1/providers/{provider_id}/antifraud-events` behind admin authorization.
+- OpenAPI documents trust sweep request/response, provider trust-state list, and antifraud-event list schemas.
 - Trust state is recalculated from backend-owned provider/device state, latest remote session, heartbeat history, telemetry presence, evidence records, proof challenge history, recurring verification state, and regional network state.
 - The backend stores `trust_score`, `risk_score`, backend reliability score, trust status, reason codes, and active antifraud events; providers do not decide their own global trust or risk.
 - Cold start remains separate through `new_provider` and `insufficient_history`, so missing history is not treated as fraud by itself.
@@ -430,6 +440,7 @@ starting the API server or depending on host state:
 - `burd-protocol` defines versioned benchmark profile records, signed benchmark result envelopes, canonical result hashing, signature messages, verification records, and list/submit responses.
 - PostgreSQL migration `0010_benchmark_profiles_v2` adds `benchmark_profiles` and `benchmark_results`.
 - The control plane exposes `POST /v1/benchmark-profiles`, `GET /v1/benchmark-profiles`, `POST /v1/sessions/{session_id}/benchmark-results`, and `GET /v1/providers/{provider_id}/benchmark-results`.
+- OpenAPI documents benchmark profile upsert/list and signed benchmark result submit/list schemas.
 - Benchmark profiles include workload type, image digest, optional model/artifact hashes, backend, minimum VRAM, redacted parameters, warmup/duration/sample count, thresholds, and lifecycle status.
 - Signed benchmark results bind provider, device, session, run ID, profile ID/version, backend, hardware fingerprint, GPU UUID, image digest, optional model/artifact hashes, profile configuration, metrics, telemetry window hash, result hash, active key ID, canonicalization version, and Ed25519 signature.
 - The backend verifies result hash, active device-key signature, remote-session binding, hardware fingerprint, active profile binding, backend binding, image/model/artifact binding, profile timing/parameter binding, timestamps, metric ranges, and threshold satisfaction.
@@ -441,6 +452,7 @@ starting the API server or depending on host state:
 - `burd-protocol` defines backend-owned workload policy requirements, workload policy records, eligibility records, sweep requests, and list responses.
 - PostgreSQL migration `0011_workload_eligibility_v2` adds `workload_policies` and `provider_workload_eligibility`.
 - The control plane exposes `POST /v1/workload-policies`, `GET /v1/workload-policies`, `POST /v1/workload-eligibility/sweep`, and `GET /v1/providers/{provider_id}/workload-eligibility` behind admin authorization.
+- OpenAPI documents workload policy upsert/list and backend eligibility sweep/list schemas.
 - Eligibility is recalculated from provider/device state, latest remote session, verification state, global trust/risk/reliability state, regional network state, signed GPU telemetry, signed benchmark results, and backend policy requirements.
 - Stored statuses are `eligible`, `limited`, `ineligible`, `verification_required`, `temporarily_unavailable`, and `blocked`, with persisted reason codes and audit events.
 - The provider cannot submit or self-approve remote eligibility. Local workload eligibility remains diagnostic; BN-11 eligibility is backend-derived state for future scheduler and marketplace use.
@@ -451,6 +463,7 @@ starting the API server or depending on host state:
 - `burd-bench` builds local secure runtime plans from host probes, Docker/NVIDIA runtime availability, GPU UUID binding, template allowlist, digest-pinned image references, resource limits, and security defaults.
 - `burd-agent runtime check --json` returns a diagnostic plan for the current host without requiring an image.
 - `burd-agent runtime plan --image-ref <image@sha256:digest> --allow-image-ref <image@sha256:digest> --gpu-uuid <gpu_uuid> --json` emits Docker arguments only when the plan status is `ready`.
+- BN-12 remains an agent-local runtime planning surface; no remote control-plane runtime execution endpoint is documented in `/openapi.json`.
 - Ready plans require Linux, Docker, NVIDIA Container Toolkit runtime advertising, an approved template, a digest-pinned allowlisted image, a GPU UUID, valid limits, read-only rootfs, non-root user, dropped capabilities, no-new-privileges, seccomp, no network, no IPC sharing, explicit tmpfs mounts, ephemeral secrets mode, and cleanup requirement.
 - BN-12 does not implement job submission, backend leases, customer artifact download, result upload, arbitrary shell execution, metering, scheduler, marketplace, billing, Pix, payouts, Kubernetes, or distributed workloads.
 

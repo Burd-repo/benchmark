@@ -134,7 +134,8 @@ pub fn document() -> serde_json::Value {
                         "401": { "description": "admin credential missing or invalid" }
                     }
                 }
-            },            "/v1/providers": {
+            },
+            "/v1/providers": {
                 "post": {
                     "summary": "Create a provider registry record",
                     "security": [{ "adminBearer": [] }],
@@ -768,7 +769,8 @@ pub fn document() -> serde_json::Value {
                     "security": [{ "customerBearer": [] }],
                     "responses": { "200": { "description": "reservation cancelled or returned as duplicate terminal state" }, "404": { "description": "reservation not found" } }
                 }
-            },            "/v1/jobs": {
+            },
+            "/v1/jobs": {
                 "post": {
                     "summary": "Create one backend-authorized compute job for a specific provider session",
                     "security": [{ "adminBearer": [] }],
@@ -940,7 +942,8 @@ pub fn document() -> serde_json::Value {
                         "409": { "description": "terminal job result cannot be changed" }
                     }
                 }
-            },            "/v1/trust/sweep": {
+            },
+            "/v1/trust/sweep": {
                 "post": {
                     "summary": "Run one backend global trust and antifraud sweep",
                     "security": [{ "adminBearer": [] }],
@@ -1040,8 +1043,1167 @@ pub fn document() -> serde_json::Value {
             }
         }
     });
+    add_bn01_bn11_contracts(&mut document);
     add_jobs_scheduler_reservation_contracts(&mut document);
     document
+}
+
+fn add_bn01_bn11_contracts(document: &mut serde_json::Value) {
+    {
+        let schemas = document["components"]["schemas"]
+            .as_object_mut()
+            .expect("OpenAPI schemas object");
+        insert_structural_schemas(
+            schemas,
+            &[
+                (
+                    "HealthResponse",
+                    &["status", "service", "version", "environment", "request_id"],
+                ),
+                (
+                    "ReadyResponse",
+                    &[
+                        "status",
+                        "service",
+                        "database",
+                        "migrations_applied",
+                        "migrations_expected",
+                        "request_id",
+                    ],
+                ),
+                ("CreateProviderRequest", &[]),
+                (
+                    "ProviderRecord",
+                    &["provider_id", "status", "created_at", "updated_at"],
+                ),
+                ("ProviderEnvelope", &["request_id", "provider"]),
+                (
+                    "IssueEnrollmentTokenResponse",
+                    &["request_id", "enrollment_token", "expires_at", "max_uses"],
+                ),
+                (
+                    "StartEnrollmentRequest",
+                    &[
+                        "enrollment_token",
+                        "public_key",
+                        "key_algorithm",
+                        "machine_id",
+                        "registration_payload",
+                        "hardware_fingerprint",
+                        "agent_version",
+                        "benchmark_version",
+                    ],
+                ),
+                (
+                    "StartEnrollmentResponse",
+                    &[
+                        "request_id",
+                        "enrollment_id",
+                        "provider_id",
+                        "nonce",
+                        "expires_at",
+                    ],
+                ),
+                (
+                    "EnrollmentProofRequest",
+                    &["nonce", "signature", "public_key", "hardware_fingerprint"],
+                ),
+                (
+                    "EnrollmentProofResponse",
+                    &[
+                        "request_id",
+                        "provider_id",
+                        "device_id",
+                        "public_key_id",
+                        "credential",
+                        "credential_expires_at",
+                        "status",
+                    ],
+                ),
+                (
+                    "DeviceRecord",
+                    &[
+                        "device_id",
+                        "provider_id",
+                        "status",
+                        "created_at",
+                        "updated_at",
+                    ],
+                ),
+                ("ListProviderDevicesResponse", &["request_id", "devices"]),
+                (
+                    "DeviceCredentialResponse",
+                    &[
+                        "request_id",
+                        "provider_id",
+                        "device_id",
+                        "credential",
+                        "credential_expires_at",
+                    ],
+                ),
+                (
+                    "StartKeyRotationRequest",
+                    &["new_public_key", "key_algorithm"],
+                ),
+                (
+                    "StartKeyRotationResponse",
+                    &[
+                        "request_id",
+                        "rotation_id",
+                        "provider_id",
+                        "device_id",
+                        "current_public_key_id",
+                        "nonce",
+                        "expires_at",
+                    ],
+                ),
+                (
+                    "KeyRotationProofRequest",
+                    &["nonce", "signature", "new_public_key"],
+                ),
+                (
+                    "KeyRotationProofResponse",
+                    &[
+                        "request_id",
+                        "provider_id",
+                        "device_id",
+                        "public_key_id",
+                        "status",
+                    ],
+                ),
+                (
+                    "DeviceRevocationResponse",
+                    &[
+                        "request_id",
+                        "provider_id",
+                        "device_id",
+                        "status",
+                        "revoked_at",
+                    ],
+                ),
+                ("RemoteSessionResume", &["session_id", "resume_token"]),
+                (
+                    "StartRemoteSessionRequest",
+                    &[
+                        "provider_id",
+                        "device_id",
+                        "hardware_fingerprint",
+                        "agent_version",
+                    ],
+                ),
+                (
+                    "StartRemoteSessionResponse",
+                    &[
+                        "request_id",
+                        "session_id",
+                        "resume_token",
+                        "status",
+                        "expires_at",
+                        "heartbeat_interval_seconds",
+                        "missed_heartbeat_limit",
+                        "sequence_start",
+                        "telemetry_sequence_start",
+                        "control_url",
+                    ],
+                ),
+                (
+                    "RemoteSessionRecord",
+                    &[
+                        "request_id",
+                        "session_id",
+                        "provider_id",
+                        "device_id",
+                        "status",
+                        "sequence_last",
+                        "started_at",
+                        "expires_at",
+                    ],
+                ),
+                ("HeartbeatPayload", &["hardware_fingerprint"]),
+                (
+                    "HeartbeatControlMessage",
+                    &[
+                        "session_id",
+                        "device_id",
+                        "sequence",
+                        "sent_at",
+                        "type",
+                        "payload",
+                    ],
+                ),
+                (
+                    "HeartbeatReceipt",
+                    &[
+                        "request_id",
+                        "session_id",
+                        "sequence_ack",
+                        "status",
+                        "server_time",
+                        "next_heartbeat_seconds",
+                    ],
+                ),
+                (
+                    "RemoteSessionRevocationResponse",
+                    &["request_id", "session_id", "status", "revoked_at"],
+                ),
+                (
+                    "GpuProcessTelemetry",
+                    &["pid", "process_name", "process_kind"],
+                ),
+                (
+                    "GpuTelemetrySample",
+                    &[
+                        "sample_sequence",
+                        "observed_at",
+                        "gpu_uuid",
+                        "gpu_name",
+                        "pci_bus_id",
+                        "driver_version",
+                        "vram_total_mib",
+                        "throttle_reasons",
+                        "processes",
+                    ],
+                ),
+                (
+                    "TelemetryBatchPayload",
+                    &[
+                        "schema_version",
+                        "provider_id",
+                        "device_id",
+                        "session_id",
+                        "control_sequence",
+                        "sample_sequence_start",
+                        "sample_sequence_end",
+                        "hardware_fingerprint",
+                        "collector",
+                        "collected_at_start",
+                        "collected_at_end",
+                        "samples",
+                    ],
+                ),
+                (
+                    "SignedTelemetryBatch",
+                    &[
+                        "payload",
+                        "batch_hash",
+                        "public_key_id",
+                        "signature",
+                        "canonicalization_version",
+                    ],
+                ),
+                (
+                    "TelemetryBatchControlMessage",
+                    &[
+                        "session_id",
+                        "device_id",
+                        "sequence",
+                        "sent_at",
+                        "type",
+                        "payload",
+                    ],
+                ),
+                (
+                    "TelemetryBatchReceipt",
+                    &[
+                        "request_id",
+                        "batch_id",
+                        "session_id",
+                        "control_sequence_ack",
+                        "sample_sequence_end",
+                        "sample_count",
+                        "batch_hash",
+                        "status",
+                        "server_received_at",
+                    ],
+                ),
+                (
+                    "LatestTelemetryResponse",
+                    &[
+                        "request_id",
+                        "session_id",
+                        "batch_id",
+                        "batch_hash",
+                        "server_received_at",
+                        "samples",
+                    ],
+                ),
+                (
+                    "SignedReportEnvelope",
+                    &[
+                        "provider_id",
+                        "machine_id",
+                        "report",
+                        "report_hash",
+                        "signature",
+                        "public_key",
+                        "key_algorithm",
+                        "signed_at",
+                        "canonicalization_version",
+                    ],
+                ),
+                (
+                    "EvidenceFreshness",
+                    &[
+                        "issued_at",
+                        "expires_at",
+                        "is_expired",
+                        "age_seconds",
+                        "ttl_seconds",
+                    ],
+                ),
+                ("SubmitEvidenceRequest", &["signed_report"]),
+                (
+                    "EvidenceVerification",
+                    &[
+                        "schema_version",
+                        "checked_at",
+                        "report_hash_valid",
+                        "evidence_hash_valid",
+                        "signature_valid",
+                        "active_key_bound",
+                        "provider_bound",
+                        "device_bound",
+                        "fingerprint_bound",
+                        "expired_by_server",
+                        "warnings",
+                        "errors",
+                    ],
+                ),
+                (
+                    "EvidenceRecord",
+                    &[
+                        "evidence_id",
+                        "provider_id",
+                        "evidence_type",
+                        "canonicalization_version",
+                        "evidence_hash",
+                        "status",
+                        "server_received_at",
+                        "verification",
+                    ],
+                ),
+                (
+                    "SubmitEvidenceResponse",
+                    &["request_id", "duplicate", "evidence"],
+                ),
+                (
+                    "ListEvidenceResponse",
+                    &["request_id", "provider_id", "records"],
+                ),
+                ("RevokeEvidenceRequest", &["reason"]),
+                (
+                    "RevokeEvidenceResponse",
+                    &[
+                        "request_id",
+                        "evidence_id",
+                        "status",
+                        "revoked_at",
+                        "reason",
+                    ],
+                ),
+                (
+                    "IssueProofChallengeRequest",
+                    &[
+                        "provider_id",
+                        "device_id",
+                        "session_id",
+                        "profile_version",
+                        "required_fingerprint",
+                        "required_backend",
+                        "model_artifact_hash",
+                        "prompt_seed",
+                        "min_tokens_per_second",
+                        "max_ttft_ms",
+                    ],
+                ),
+                (
+                    "ProofCapabilityChallenge",
+                    &[
+                        "schema_version",
+                        "challenge_id",
+                        "nonce",
+                        "provider_id",
+                        "device_id",
+                        "session_id",
+                        "profile_version",
+                        "required_fingerprint",
+                        "required_backend",
+                        "model_artifact_hash",
+                        "prompt_seed",
+                        "required_proofs",
+                        "min_tokens_per_second",
+                        "max_ttft_ms",
+                        "issued_at",
+                        "expires_at",
+                    ],
+                ),
+                (
+                    "ProofCapabilityMetrics",
+                    &[
+                        "cuda_runtime_detected",
+                        "backend_proof",
+                        "contention_detected",
+                    ],
+                ),
+                (
+                    "ProofCapabilityResponsePayload",
+                    &[
+                        "schema_version",
+                        "challenge_id",
+                        "nonce",
+                        "provider_id",
+                        "device_id",
+                        "session_id",
+                        "profile_version",
+                        "hardware_fingerprint",
+                        "gpu_uuid",
+                        "backend",
+                        "model_artifact_hash",
+                        "prompt_seed",
+                        "driver_version",
+                        "metrics",
+                        "started_at",
+                        "completed_at",
+                    ],
+                ),
+                (
+                    "SignedProofCapabilityResponse",
+                    &[
+                        "payload",
+                        "response_hash",
+                        "public_key_id",
+                        "signature",
+                        "canonicalization_version",
+                    ],
+                ),
+                (
+                    "ProofChallengeVerification",
+                    &[
+                        "schema_version",
+                        "challenge_id",
+                        "checked_at",
+                        "response_hash_valid",
+                        "signature_valid",
+                        "provider_bound",
+                        "device_bound",
+                        "session_bound",
+                        "fingerprint_bound",
+                        "gpu_bound",
+                        "backend_bound",
+                        "artifact_bound",
+                        "prompt_bound",
+                        "metrics_satisfied",
+                        "expired_by_server",
+                        "warnings",
+                        "errors",
+                    ],
+                ),
+                (
+                    "ProofChallengeRecord",
+                    &["challenge", "status", "issued_at"],
+                ),
+                ("IssueProofChallengeResponse", &["request_id", "challenge"]),
+                ("NextProofChallengeResponse", &["request_id", "challenge"]),
+                (
+                    "SubmitProofChallengeResponse",
+                    &[
+                        "request_id",
+                        "challenge_id",
+                        "status",
+                        "response_hash",
+                        "server_received_at",
+                        "verification",
+                    ],
+                ),
+                ("RunVerificationSweepRequest", &[]),
+                (
+                    "VerificationSweepIssuedChallenge",
+                    &[
+                        "provider_id",
+                        "device_id",
+                        "session_id",
+                        "challenge_id",
+                        "reason",
+                    ],
+                ),
+                (
+                    "RunVerificationSweepResponse",
+                    &["request_id", "evaluated", "issued"],
+                ),
+                (
+                    "VerificationStateRecord",
+                    &[
+                        "provider_id",
+                        "device_id",
+                        "status",
+                        "policy_version",
+                        "risk_score",
+                        "success_count",
+                        "failure_count",
+                        "retry_budget_remaining",
+                        "updated_at",
+                    ],
+                ),
+                ("ListVerificationStatesResponse", &["request_id", "states"]),
+                (
+                    "SubmitNetworkProbeObservationRequest",
+                    &[
+                        "provider_id",
+                        "device_id",
+                        "session_id",
+                        "probe_id",
+                        "probe_region",
+                        "observed_at",
+                        "sample_count",
+                    ],
+                ),
+                (
+                    "NetworkProbeObservationRecord",
+                    &[
+                        "observation_id",
+                        "provider_id",
+                        "device_id",
+                        "session_id",
+                        "probe_id",
+                        "probe_region",
+                        "schema_version",
+                        "observed_at",
+                        "server_received_at",
+                        "sample_count",
+                        "remote_network_score",
+                        "status",
+                        "warnings",
+                        "metadata",
+                    ],
+                ),
+                (
+                    "RegionalReachability",
+                    &[
+                        "probe_region",
+                        "status",
+                        "remote_network_score",
+                        "sample_count",
+                        "observed_at",
+                    ],
+                ),
+                (
+                    "ProviderNetworkState",
+                    &[
+                        "provider_id",
+                        "device_id",
+                        "regional_reachability",
+                        "sample_count",
+                        "updated_at",
+                    ],
+                ),
+                (
+                    "SubmitNetworkProbeObservationResponse",
+                    &["request_id", "duplicate", "observation", "network_state"],
+                ),
+                (
+                    "ListNetworkProbeObservationsResponse",
+                    &["request_id", "observations"],
+                ),
+                (
+                    "ListProviderNetworkStatesResponse",
+                    &["request_id", "states"],
+                ),
+                ("RunTrustSweepRequest", &[]),
+                (
+                    "TrustSweepUpdatedState",
+                    &[
+                        "provider_id",
+                        "device_id",
+                        "status",
+                        "trust_score",
+                        "risk_score",
+                        "reason_codes",
+                    ],
+                ),
+                (
+                    "RunTrustSweepResponse",
+                    &["request_id", "evaluated", "updated"],
+                ),
+                (
+                    "ProviderTrustStateRecord",
+                    &[
+                        "provider_id",
+                        "device_id",
+                        "status",
+                        "policy_version",
+                        "trust_score",
+                        "risk_score",
+                        "evidence_count",
+                        "successful_challenge_count",
+                        "failed_challenge_count",
+                        "reason_codes",
+                        "created_at",
+                        "updated_at",
+                    ],
+                ),
+                ("ListProviderTrustStatesResponse", &["request_id", "states"]),
+                (
+                    "AntifraudEventRecord",
+                    &[
+                        "event_id",
+                        "provider_id",
+                        "device_id",
+                        "event_type",
+                        "severity",
+                        "status",
+                        "reason",
+                        "metadata",
+                        "first_seen_at",
+                        "last_seen_at",
+                        "occurrence_count",
+                    ],
+                ),
+                ("ListAntifraudEventsResponse", &["request_id", "events"]),
+                ("BenchmarkProfileThresholds", &[]),
+                (
+                    "UpsertBenchmarkProfileRequest",
+                    &[
+                        "profile_id",
+                        "profile_version",
+                        "workload_type",
+                        "display_name",
+                        "image_digest",
+                        "required_backend",
+                        "min_vram_gb",
+                        "warmup_seconds",
+                        "duration_seconds",
+                        "sample_count",
+                    ],
+                ),
+                (
+                    "BenchmarkProfileRecord",
+                    &[
+                        "profile_id",
+                        "profile_version",
+                        "schema_version",
+                        "workload_type",
+                        "display_name",
+                        "image_digest",
+                        "required_backend",
+                        "min_vram_gb",
+                        "parameters",
+                        "warmup_seconds",
+                        "duration_seconds",
+                        "sample_count",
+                        "thresholds",
+                        "status",
+                        "created_at",
+                        "updated_at",
+                    ],
+                ),
+                ("UpsertBenchmarkProfileResponse", &["request_id", "profile"]),
+                ("ListBenchmarkProfilesResponse", &["request_id", "profiles"]),
+                ("BenchmarkResultMetrics", &[]),
+                (
+                    "BenchmarkResultPayload",
+                    &[
+                        "schema_version",
+                        "provider_id",
+                        "device_id",
+                        "session_id",
+                        "run_id",
+                        "profile_id",
+                        "profile_version",
+                        "workload_type",
+                        "backend",
+                        "hardware_fingerprint",
+                        "gpu_uuid",
+                        "image_digest",
+                        "parameters",
+                        "warmup_seconds",
+                        "duration_seconds",
+                        "sample_count",
+                        "started_at",
+                        "completed_at",
+                        "driver_version",
+                        "metrics",
+                        "warnings",
+                    ],
+                ),
+                (
+                    "SignedBenchmarkResult",
+                    &[
+                        "payload",
+                        "result_hash",
+                        "public_key_id",
+                        "signature",
+                        "canonicalization_version",
+                    ],
+                ),
+                (
+                    "BenchmarkResultVerification",
+                    &[
+                        "schema_version",
+                        "result_hash_valid",
+                        "signature_valid",
+                        "session_bound",
+                        "profile_bound",
+                        "backend_bound",
+                        "fingerprint_bound",
+                        "image_bound",
+                        "model_bound",
+                        "artifact_bound",
+                        "profile_configuration_bound",
+                        "metrics_satisfied",
+                        "warnings",
+                        "errors",
+                    ],
+                ),
+                (
+                    "BenchmarkResultRecord",
+                    &[
+                        "result_id",
+                        "provider_id",
+                        "device_id",
+                        "session_id",
+                        "run_id",
+                        "profile_id",
+                        "profile_version",
+                        "schema_version",
+                        "workload_type",
+                        "backend",
+                        "hardware_fingerprint",
+                        "gpu_uuid",
+                        "image_digest",
+                        "parameters",
+                        "warmup_seconds",
+                        "duration_seconds",
+                        "sample_count",
+                        "started_at",
+                        "completed_at",
+                        "server_received_at",
+                        "driver_version",
+                        "metrics",
+                        "result_hash",
+                        "public_key_id",
+                        "status",
+                        "verification",
+                        "warnings",
+                    ],
+                ),
+                (
+                    "SubmitBenchmarkResultResponse",
+                    &["request_id", "duplicate", "result"],
+                ),
+                (
+                    "ListProviderBenchmarkResultsResponse",
+                    &["request_id", "results"],
+                ),
+                ("WorkloadPolicyRequirements", &[]),
+                (
+                    "UpsertWorkloadPolicyRequest",
+                    &[
+                        "policy_id",
+                        "policy_version",
+                        "workload_type",
+                        "display_name",
+                    ],
+                ),
+                (
+                    "WorkloadPolicyRecord",
+                    &[
+                        "policy_id",
+                        "policy_version",
+                        "schema_version",
+                        "workload_type",
+                        "display_name",
+                        "requirements",
+                        "status",
+                        "created_at",
+                        "updated_at",
+                    ],
+                ),
+                ("UpsertWorkloadPolicyResponse", &["request_id", "policy"]),
+                ("ListWorkloadPoliciesResponse", &["request_id", "policies"]),
+                ("RunWorkloadEligibilityRequest", &[]),
+                (
+                    "WorkloadEligibilityRecord",
+                    &[
+                        "provider_id",
+                        "device_id",
+                        "workload_type",
+                        "policy_id",
+                        "policy_version",
+                        "schema_version",
+                        "engine_version",
+                        "status",
+                        "reason_codes",
+                        "evaluated_at",
+                        "updated_at",
+                    ],
+                ),
+                (
+                    "RunWorkloadEligibilityResponse",
+                    &["request_id", "evaluated", "updated"],
+                ),
+                (
+                    "ListProviderWorkloadEligibilityResponse",
+                    &["request_id", "states"],
+                ),
+            ],
+        );
+    }
+
+    for (path, method, schema) in [
+        ("/v1/providers", "post", "CreateProviderRequest"),
+        ("/v1/enrollments", "post", "StartEnrollmentRequest"),
+        (
+            "/v1/enrollments/{enrollment_id}/proof",
+            "post",
+            "EnrollmentProofRequest",
+        ),
+        (
+            "/v1/devices/{device_id}/key-rotations",
+            "post",
+            "StartKeyRotationRequest",
+        ),
+        (
+            "/v1/devices/{device_id}/key-rotations/{rotation_id}/proof",
+            "post",
+            "KeyRotationProofRequest",
+        ),
+        ("/v1/sessions", "post", "StartRemoteSessionRequest"),
+        (
+            "/v1/sessions/{session_id}/heartbeats",
+            "post",
+            "HeartbeatControlMessage",
+        ),
+        (
+            "/v1/sessions/{session_id}/telemetry-batches",
+            "post",
+            "TelemetryBatchControlMessage",
+        ),
+        (
+            "/v1/sessions/{session_id}/evidence-records",
+            "post",
+            "SubmitEvidenceRequest",
+        ),
+        (
+            "/v1/evidence-records/{evidence_id}/revoke",
+            "post",
+            "RevokeEvidenceRequest",
+        ),
+        ("/v1/challenges", "post", "IssueProofChallengeRequest"),
+        (
+            "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
+            "post",
+            "SignedProofCapabilityResponse",
+        ),
+        (
+            "/v1/verification/sweep",
+            "post",
+            "RunVerificationSweepRequest",
+        ),
+        (
+            "/v1/network-probes/observations",
+            "post",
+            "SubmitNetworkProbeObservationRequest",
+        ),
+        ("/v1/trust/sweep", "post", "RunTrustSweepRequest"),
+        (
+            "/v1/benchmark-profiles",
+            "post",
+            "UpsertBenchmarkProfileRequest",
+        ),
+        (
+            "/v1/sessions/{session_id}/benchmark-results",
+            "post",
+            "SignedBenchmarkResult",
+        ),
+        (
+            "/v1/workload-policies",
+            "post",
+            "UpsertWorkloadPolicyRequest",
+        ),
+        (
+            "/v1/workload-eligibility/sweep",
+            "post",
+            "RunWorkloadEligibilityRequest",
+        ),
+    ] {
+        set_request_body(document, path, method, schema);
+    }
+
+    for (path, method, status, schema) in [
+        ("/health", "get", "200", "HealthResponse"),
+        ("/ready", "get", "200", "ReadyResponse"),
+        ("/v1/providers", "post", "201", "ProviderEnvelope"),
+        (
+            "/v1/providers/{provider_id}",
+            "get",
+            "200",
+            "ProviderEnvelope",
+        ),
+        (
+            "/v1/providers/{provider_id}/enrollment-tokens",
+            "post",
+            "201",
+            "IssueEnrollmentTokenResponse",
+        ),
+        ("/v1/enrollments", "post", "202", "StartEnrollmentResponse"),
+        (
+            "/v1/enrollments/{enrollment_id}/proof",
+            "post",
+            "201",
+            "EnrollmentProofResponse",
+        ),
+        (
+            "/v1/providers/{provider_id}/devices",
+            "get",
+            "200",
+            "ListProviderDevicesResponse",
+        ),
+        (
+            "/v1/devices/{device_id}/credentials",
+            "post",
+            "201",
+            "DeviceCredentialResponse",
+        ),
+        (
+            "/v1/devices/{device_id}/key-rotations",
+            "post",
+            "202",
+            "StartKeyRotationResponse",
+        ),
+        (
+            "/v1/devices/{device_id}/key-rotations/{rotation_id}/proof",
+            "post",
+            "200",
+            "KeyRotationProofResponse",
+        ),
+        (
+            "/v1/devices/{device_id}/revoke",
+            "post",
+            "200",
+            "DeviceRevocationResponse",
+        ),
+        ("/v1/sessions", "post", "201", "StartRemoteSessionResponse"),
+        (
+            "/v1/sessions/{session_id}",
+            "get",
+            "200",
+            "RemoteSessionRecord",
+        ),
+        (
+            "/v1/sessions/{session_id}/heartbeats",
+            "post",
+            "200",
+            "HeartbeatReceipt",
+        ),
+        (
+            "/v1/sessions/{session_id}/revoke",
+            "post",
+            "200",
+            "RemoteSessionRevocationResponse",
+        ),
+        (
+            "/v1/sessions/{session_id}/telemetry-batches",
+            "post",
+            "200",
+            "TelemetryBatchReceipt",
+        ),
+        (
+            "/v1/sessions/{session_id}/telemetry/latest",
+            "get",
+            "200",
+            "LatestTelemetryResponse",
+        ),
+        (
+            "/v1/sessions/{session_id}/evidence-records",
+            "post",
+            "201",
+            "SubmitEvidenceResponse",
+        ),
+        (
+            "/v1/sessions/{session_id}/evidence-records",
+            "post",
+            "200",
+            "SubmitEvidenceResponse",
+        ),
+        (
+            "/v1/providers/{provider_id}/evidence-records",
+            "get",
+            "200",
+            "ListEvidenceResponse",
+        ),
+        (
+            "/v1/evidence-records/{evidence_id}",
+            "get",
+            "200",
+            "EvidenceRecord",
+        ),
+        (
+            "/v1/evidence-records/{evidence_id}/revoke",
+            "post",
+            "200",
+            "RevokeEvidenceResponse",
+        ),
+        (
+            "/v1/challenges",
+            "post",
+            "201",
+            "IssueProofChallengeResponse",
+        ),
+        (
+            "/v1/challenges/{challenge_id}",
+            "get",
+            "200",
+            "ProofChallengeRecord",
+        ),
+        (
+            "/v1/sessions/{session_id}/challenges/next",
+            "get",
+            "200",
+            "NextProofChallengeResponse",
+        ),
+        (
+            "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
+            "post",
+            "200",
+            "SubmitProofChallengeResponse",
+        ),
+        (
+            "/v1/verification/sweep",
+            "post",
+            "202",
+            "RunVerificationSweepResponse",
+        ),
+        (
+            "/v1/providers/{provider_id}/verification-states",
+            "get",
+            "200",
+            "ListVerificationStatesResponse",
+        ),
+        (
+            "/v1/network-probes/observations",
+            "post",
+            "201",
+            "SubmitNetworkProbeObservationResponse",
+        ),
+        (
+            "/v1/network-probes/observations",
+            "post",
+            "200",
+            "SubmitNetworkProbeObservationResponse",
+        ),
+        (
+            "/v1/providers/{provider_id}/network-probes",
+            "get",
+            "200",
+            "ListNetworkProbeObservationsResponse",
+        ),
+        (
+            "/v1/providers/{provider_id}/network-state",
+            "get",
+            "200",
+            "ListProviderNetworkStatesResponse",
+        ),
+        ("/v1/trust/sweep", "post", "202", "RunTrustSweepResponse"),
+        (
+            "/v1/providers/{provider_id}/trust-states",
+            "get",
+            "200",
+            "ListProviderTrustStatesResponse",
+        ),
+        (
+            "/v1/providers/{provider_id}/antifraud-events",
+            "get",
+            "200",
+            "ListAntifraudEventsResponse",
+        ),
+        (
+            "/v1/benchmark-profiles",
+            "post",
+            "201",
+            "UpsertBenchmarkProfileResponse",
+        ),
+        (
+            "/v1/benchmark-profiles",
+            "get",
+            "200",
+            "ListBenchmarkProfilesResponse",
+        ),
+        (
+            "/v1/sessions/{session_id}/benchmark-results",
+            "post",
+            "201",
+            "SubmitBenchmarkResultResponse",
+        ),
+        (
+            "/v1/sessions/{session_id}/benchmark-results",
+            "post",
+            "200",
+            "SubmitBenchmarkResultResponse",
+        ),
+        (
+            "/v1/providers/{provider_id}/benchmark-results",
+            "get",
+            "200",
+            "ListProviderBenchmarkResultsResponse",
+        ),
+        (
+            "/v1/workload-policies",
+            "post",
+            "201",
+            "UpsertWorkloadPolicyResponse",
+        ),
+        (
+            "/v1/workload-policies",
+            "get",
+            "200",
+            "ListWorkloadPoliciesResponse",
+        ),
+        (
+            "/v1/workload-eligibility/sweep",
+            "post",
+            "202",
+            "RunWorkloadEligibilityResponse",
+        ),
+        (
+            "/v1/providers/{provider_id}/workload-eligibility",
+            "get",
+            "200",
+            "ListProviderWorkloadEligibilityResponse",
+        ),
+    ] {
+        set_json_response(document, path, method, status, schema);
+    }
+}
+
+fn insert_structural_schemas(
+    schemas: &mut serde_json::Map<String, serde_json::Value>,
+    definitions: &[(&str, &[&str])],
+) {
+    for (name, required) in definitions {
+        insert_schema(schemas, name, structural_object_schema(name, required));
+    }
+}
+
+fn structural_object_schema(contract: &str, required: &[&str]) -> serde_json::Value {
+    let properties = required
+        .iter()
+        .map(|field| ((*field).to_string(), serde_json::json!({})))
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::json!({
+        "type": "object",
+        "required": required,
+        "properties": properties,
+        "additionalProperties": true,
+        "description": format!("Structural OpenAPI contract for {contract}; nested and optional fields follow the Rust serde contract in burd-protocol/control-plane.")
+    })
+}
+
+fn insert_schema(
+    schemas: &mut serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    schema: serde_json::Value,
+) {
+    schemas.insert(name.to_string(), schema);
 }
 
 fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
@@ -1900,6 +3062,422 @@ mod tests {
             );
             assert_no_idempotency_header(operation);
         }
+    }
+    #[test]
+    fn openapi_documents_bn01_bn11_request_response_schemas() {
+        fn request_schema_ref<'a>(
+            paths: &'a serde_json::Map<String, serde_json::Value>,
+            path: &str,
+            method: &str,
+        ) -> &'a str {
+            paths[path][method]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+                .as_str()
+                .expect("request schema ref")
+        }
+
+        fn response_schema_ref<'a>(
+            paths: &'a serde_json::Map<String, serde_json::Value>,
+            path: &str,
+            method: &str,
+            status: &str,
+        ) -> &'a str {
+            paths[path][method]["responses"][status]["content"]["application/json"]["schema"]["$ref"]
+                .as_str()
+                .expect("response schema ref")
+        }
+
+        let document = document();
+        let schemas = document["components"]["schemas"].as_object().unwrap();
+        for schema in [
+            "HealthResponse",
+            "ReadyResponse",
+            "CreateProviderRequest",
+            "ProviderEnvelope",
+            "IssueEnrollmentTokenResponse",
+            "StartEnrollmentRequest",
+            "StartEnrollmentResponse",
+            "EnrollmentProofRequest",
+            "EnrollmentProofResponse",
+            "ListProviderDevicesResponse",
+            "DeviceCredentialResponse",
+            "StartKeyRotationRequest",
+            "StartKeyRotationResponse",
+            "KeyRotationProofRequest",
+            "KeyRotationProofResponse",
+            "DeviceRevocationResponse",
+            "StartRemoteSessionRequest",
+            "StartRemoteSessionResponse",
+            "RemoteSessionRecord",
+            "HeartbeatControlMessage",
+            "HeartbeatReceipt",
+            "RemoteSessionRevocationResponse",
+            "SignedTelemetryBatch",
+            "TelemetryBatchControlMessage",
+            "TelemetryBatchReceipt",
+            "LatestTelemetryResponse",
+            "SubmitEvidenceRequest",
+            "SubmitEvidenceResponse",
+            "ListEvidenceResponse",
+            "RevokeEvidenceRequest",
+            "RevokeEvidenceResponse",
+            "IssueProofChallengeRequest",
+            "IssueProofChallengeResponse",
+            "NextProofChallengeResponse",
+            "SignedProofCapabilityResponse",
+            "SubmitProofChallengeResponse",
+            "RunVerificationSweepRequest",
+            "RunVerificationSweepResponse",
+            "ListVerificationStatesResponse",
+            "SubmitNetworkProbeObservationRequest",
+            "SubmitNetworkProbeObservationResponse",
+            "ListNetworkProbeObservationsResponse",
+            "ListProviderNetworkStatesResponse",
+            "RunTrustSweepRequest",
+            "RunTrustSweepResponse",
+            "ListProviderTrustStatesResponse",
+            "ListAntifraudEventsResponse",
+            "UpsertBenchmarkProfileRequest",
+            "UpsertBenchmarkProfileResponse",
+            "ListBenchmarkProfilesResponse",
+            "SignedBenchmarkResult",
+            "SubmitBenchmarkResultResponse",
+            "ListProviderBenchmarkResultsResponse",
+            "UpsertWorkloadPolicyRequest",
+            "UpsertWorkloadPolicyResponse",
+            "ListWorkloadPoliciesResponse",
+            "RunWorkloadEligibilityRequest",
+            "RunWorkloadEligibilityResponse",
+            "ListProviderWorkloadEligibilityResponse",
+        ] {
+            assert!(schemas.contains_key(schema), "missing schema {schema}");
+        }
+
+        let paths = document["paths"].as_object().unwrap();
+        for (path, method, schema) in [
+            ("/v1/providers", "post", "CreateProviderRequest"),
+            ("/v1/enrollments", "post", "StartEnrollmentRequest"),
+            (
+                "/v1/enrollments/{enrollment_id}/proof",
+                "post",
+                "EnrollmentProofRequest",
+            ),
+            (
+                "/v1/devices/{device_id}/key-rotations",
+                "post",
+                "StartKeyRotationRequest",
+            ),
+            (
+                "/v1/devices/{device_id}/key-rotations/{rotation_id}/proof",
+                "post",
+                "KeyRotationProofRequest",
+            ),
+            ("/v1/sessions", "post", "StartRemoteSessionRequest"),
+            (
+                "/v1/sessions/{session_id}/heartbeats",
+                "post",
+                "HeartbeatControlMessage",
+            ),
+            (
+                "/v1/sessions/{session_id}/telemetry-batches",
+                "post",
+                "TelemetryBatchControlMessage",
+            ),
+            (
+                "/v1/sessions/{session_id}/evidence-records",
+                "post",
+                "SubmitEvidenceRequest",
+            ),
+            (
+                "/v1/evidence-records/{evidence_id}/revoke",
+                "post",
+                "RevokeEvidenceRequest",
+            ),
+            ("/v1/challenges", "post", "IssueProofChallengeRequest"),
+            (
+                "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
+                "post",
+                "SignedProofCapabilityResponse",
+            ),
+            (
+                "/v1/verification/sweep",
+                "post",
+                "RunVerificationSweepRequest",
+            ),
+            (
+                "/v1/network-probes/observations",
+                "post",
+                "SubmitNetworkProbeObservationRequest",
+            ),
+            ("/v1/trust/sweep", "post", "RunTrustSweepRequest"),
+            (
+                "/v1/benchmark-profiles",
+                "post",
+                "UpsertBenchmarkProfileRequest",
+            ),
+            (
+                "/v1/sessions/{session_id}/benchmark-results",
+                "post",
+                "SignedBenchmarkResult",
+            ),
+            (
+                "/v1/workload-policies",
+                "post",
+                "UpsertWorkloadPolicyRequest",
+            ),
+            (
+                "/v1/workload-eligibility/sweep",
+                "post",
+                "RunWorkloadEligibilityRequest",
+            ),
+        ] {
+            assert_eq!(
+                request_schema_ref(paths, path, method),
+                format!("#/components/schemas/{schema}"),
+                "wrong request schema for {method} {path}"
+            );
+        }
+
+        for (path, method, status, schema) in [
+            ("/health", "get", "200", "HealthResponse"),
+            ("/ready", "get", "200", "ReadyResponse"),
+            ("/v1/providers", "post", "201", "ProviderEnvelope"),
+            (
+                "/v1/providers/{provider_id}",
+                "get",
+                "200",
+                "ProviderEnvelope",
+            ),
+            (
+                "/v1/providers/{provider_id}/enrollment-tokens",
+                "post",
+                "201",
+                "IssueEnrollmentTokenResponse",
+            ),
+            ("/v1/enrollments", "post", "202", "StartEnrollmentResponse"),
+            (
+                "/v1/enrollments/{enrollment_id}/proof",
+                "post",
+                "201",
+                "EnrollmentProofResponse",
+            ),
+            (
+                "/v1/providers/{provider_id}/devices",
+                "get",
+                "200",
+                "ListProviderDevicesResponse",
+            ),
+            (
+                "/v1/devices/{device_id}/credentials",
+                "post",
+                "201",
+                "DeviceCredentialResponse",
+            ),
+            (
+                "/v1/devices/{device_id}/key-rotations",
+                "post",
+                "202",
+                "StartKeyRotationResponse",
+            ),
+            (
+                "/v1/devices/{device_id}/key-rotations/{rotation_id}/proof",
+                "post",
+                "200",
+                "KeyRotationProofResponse",
+            ),
+            (
+                "/v1/devices/{device_id}/revoke",
+                "post",
+                "200",
+                "DeviceRevocationResponse",
+            ),
+            ("/v1/sessions", "post", "201", "StartRemoteSessionResponse"),
+            (
+                "/v1/sessions/{session_id}",
+                "get",
+                "200",
+                "RemoteSessionRecord",
+            ),
+            (
+                "/v1/sessions/{session_id}/heartbeats",
+                "post",
+                "200",
+                "HeartbeatReceipt",
+            ),
+            (
+                "/v1/sessions/{session_id}/revoke",
+                "post",
+                "200",
+                "RemoteSessionRevocationResponse",
+            ),
+            (
+                "/v1/sessions/{session_id}/telemetry-batches",
+                "post",
+                "200",
+                "TelemetryBatchReceipt",
+            ),
+            (
+                "/v1/sessions/{session_id}/telemetry/latest",
+                "get",
+                "200",
+                "LatestTelemetryResponse",
+            ),
+            (
+                "/v1/sessions/{session_id}/evidence-records",
+                "post",
+                "201",
+                "SubmitEvidenceResponse",
+            ),
+            (
+                "/v1/providers/{provider_id}/evidence-records",
+                "get",
+                "200",
+                "ListEvidenceResponse",
+            ),
+            (
+                "/v1/evidence-records/{evidence_id}",
+                "get",
+                "200",
+                "EvidenceRecord",
+            ),
+            (
+                "/v1/evidence-records/{evidence_id}/revoke",
+                "post",
+                "200",
+                "RevokeEvidenceResponse",
+            ),
+            (
+                "/v1/challenges",
+                "post",
+                "201",
+                "IssueProofChallengeResponse",
+            ),
+            (
+                "/v1/sessions/{session_id}/challenges/next",
+                "get",
+                "200",
+                "NextProofChallengeResponse",
+            ),
+            (
+                "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
+                "post",
+                "200",
+                "SubmitProofChallengeResponse",
+            ),
+            (
+                "/v1/verification/sweep",
+                "post",
+                "202",
+                "RunVerificationSweepResponse",
+            ),
+            (
+                "/v1/providers/{provider_id}/verification-states",
+                "get",
+                "200",
+                "ListVerificationStatesResponse",
+            ),
+            (
+                "/v1/network-probes/observations",
+                "post",
+                "201",
+                "SubmitNetworkProbeObservationResponse",
+            ),
+            (
+                "/v1/providers/{provider_id}/network-probes",
+                "get",
+                "200",
+                "ListNetworkProbeObservationsResponse",
+            ),
+            (
+                "/v1/providers/{provider_id}/network-state",
+                "get",
+                "200",
+                "ListProviderNetworkStatesResponse",
+            ),
+            ("/v1/trust/sweep", "post", "202", "RunTrustSweepResponse"),
+            (
+                "/v1/providers/{provider_id}/trust-states",
+                "get",
+                "200",
+                "ListProviderTrustStatesResponse",
+            ),
+            (
+                "/v1/providers/{provider_id}/antifraud-events",
+                "get",
+                "200",
+                "ListAntifraudEventsResponse",
+            ),
+            (
+                "/v1/benchmark-profiles",
+                "post",
+                "201",
+                "UpsertBenchmarkProfileResponse",
+            ),
+            (
+                "/v1/benchmark-profiles",
+                "get",
+                "200",
+                "ListBenchmarkProfilesResponse",
+            ),
+            (
+                "/v1/sessions/{session_id}/benchmark-results",
+                "post",
+                "201",
+                "SubmitBenchmarkResultResponse",
+            ),
+            (
+                "/v1/providers/{provider_id}/benchmark-results",
+                "get",
+                "200",
+                "ListProviderBenchmarkResultsResponse",
+            ),
+            (
+                "/v1/workload-policies",
+                "post",
+                "201",
+                "UpsertWorkloadPolicyResponse",
+            ),
+            (
+                "/v1/workload-policies",
+                "get",
+                "200",
+                "ListWorkloadPoliciesResponse",
+            ),
+            (
+                "/v1/workload-eligibility/sweep",
+                "post",
+                "202",
+                "RunWorkloadEligibilityResponse",
+            ),
+            (
+                "/v1/providers/{provider_id}/workload-eligibility",
+                "get",
+                "200",
+                "ListProviderWorkloadEligibilityResponse",
+            ),
+        ] {
+            assert_eq!(
+                response_schema_ref(paths, path, method, status),
+                format!("#/components/schemas/{schema}"),
+                "wrong {status} response schema for {method} {path}"
+            );
+        }
+
+        let required = schemas["StartEnrollmentRequest"]["required"]
+            .as_array()
+            .unwrap();
+        assert!(required.iter().any(|value| value == "enrollment_token"));
+        assert!(required.iter().any(|value| value == "public_key"));
+        assert!(
+            schemas["StartEnrollmentRequest"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("burd-protocol/control-plane")
+        );
+
+        let session_required = schemas["StartRemoteSessionResponse"]["required"]
+            .as_array()
+            .unwrap();
+        assert!(session_required.iter().any(|value| value == "resume_token"));
     }
     #[test]
     fn openapi_documents_job_scheduler_reservation_schemas() {
