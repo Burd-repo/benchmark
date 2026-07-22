@@ -278,7 +278,9 @@ impl Database {
         let transaction = client.transaction().await?;
         let before = load_pix_payment_intent_for_update(&transaction, payment_intent_id).await?;
         let duplicate = before.status == "confirmed";
-        if !duplicate {
+        if duplicate {
+            assert_confirmed_pix_matches_request(&before, request)?;
+        } else {
             let confirmed_at = request
                 .paid_at
                 .clone()
@@ -379,22 +381,12 @@ impl Database {
         }
         let usage = load_usage_billing_source(&transaction, &request.usage_entry_id).await?;
         validate_usage_matches_reservation(&reservation, &usage)?;
-        if let Some(row) = transaction
-            .query_opt(
-                &format!(
-                    "{} WHERE reservation_id = $1 AND usage_entry_id = $2",
-                    invoice_select_columns()
-                ),
-                &[&reservation_id, &request.usage_entry_id],
-            )
-            .await?
+        if let Some(invoice) = load_invoice_for_usage(&transaction, &request.usage_entry_id).await?
         {
+            let response =
+                invoice_response_for_existing_usage(request_id, reservation_id, invoice)?;
             transaction.commit().await?;
-            return Ok(BillingInvoiceResponse {
-                request_id: request_id.to_string(),
-                invoice: invoice_from_row(row)?,
-                duplicate: true,
-            });
+            return Ok(response);
         }
         if usage.billable_gpu_seconds == 0 {
             return Err(SessionError::Conflict(
@@ -436,7 +428,7 @@ impl Database {
 
         let inserted = transaction
             .execute(
-                "INSERT INTO billing_invoices (invoice_id, organization_id, project_id, reservation_id, usage_entry_id, schema_version, status, currency, subtotal_micros, platform_fee_micros, provider_net_micros, chargeback_reserve_micros, total_micros, source_hash, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 'issued', $7, $8, $9, $10, $11, $12, $13, $14, $14) ON CONFLICT (reservation_id, usage_entry_id) DO NOTHING",
+                "INSERT INTO billing_invoices (invoice_id, organization_id, project_id, reservation_id, usage_entry_id, schema_version, status, currency, subtotal_micros, platform_fee_micros, provider_net_micros, chargeback_reserve_micros, total_micros, source_hash, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 'issued', $7, $8, $9, $10, $11, $12, $13, $14, $14) ON CONFLICT DO NOTHING",
                 &[
                     &invoice_id,
                     &reservation.organization_id,
@@ -457,21 +449,15 @@ impl Database {
             .await?
             == 1;
         if !inserted {
-            let row = transaction
-                .query_one(
-                    &format!(
-                        "{} WHERE reservation_id = $1 AND usage_entry_id = $2",
-                        invoice_select_columns()
-                    ),
-                    &[&reservation_id, &request.usage_entry_id],
-                )
-                .await?;
+            let invoice = load_invoice_for_usage(&transaction, &request.usage_entry_id)
+                .await?
+                .ok_or_else(|| {
+                    SessionError::Conflict("billing invoice insert conflicted".to_string())
+                })?;
+            let response =
+                invoice_response_for_existing_usage(request_id, reservation_id, invoice)?;
             transaction.commit().await?;
-            return Ok(BillingInvoiceResponse {
-                request_id: request_id.to_string(),
-                invoice: invoice_from_row(row)?,
-                duplicate: true,
-            });
+            return Ok(response);
         }
         append_financial_transaction(
             &transaction,
@@ -1062,6 +1048,62 @@ async fn load_pix_payment_intent_for_update(
     pix_from_row(row)
 }
 
+fn assert_confirmed_pix_matches_request(
+    before: &PixPaymentIntentRecord,
+    request: &ConfirmPixPaymentIntentRequest,
+) -> Result<(), SessionError> {
+    if before.provider != request.provider
+        || before.external_reference.as_deref() != Some(request.external_reference.as_str())
+    {
+        return Err(SessionError::Conflict(
+            "confirmed Pix payment intent cannot be reconfirmed with a different provider reference"
+                .to_string(),
+        ));
+    }
+    if let Some(paid_at) = request.paid_at.as_deref() {
+        if before.confirmed_at.as_deref() != Some(paid_at) {
+            return Err(SessionError::Conflict(
+                "confirmed Pix payment intent cannot be reconfirmed with a different paid_at"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn load_invoice_for_usage(
+    transaction: &Transaction<'_>,
+    usage_entry_id: &str,
+) -> Result<Option<BillingInvoiceRecord>, SessionError> {
+    let row = transaction
+        .query_opt(
+            &format!(
+                "{} WHERE usage_entry_id = $1 FOR UPDATE",
+                invoice_select_columns()
+            ),
+            &[&usage_entry_id],
+        )
+        .await?;
+    row.map(invoice_from_row).transpose()
+}
+
+fn invoice_response_for_existing_usage(
+    request_id: &str,
+    reservation_id: &str,
+    invoice: BillingInvoiceRecord,
+) -> Result<BillingInvoiceResponse, SessionError> {
+    if invoice.reservation_id.as_deref() == Some(reservation_id) {
+        Ok(BillingInvoiceResponse {
+            request_id: request_id.to_string(),
+            invoice,
+            duplicate: true,
+        })
+    } else {
+        Err(SessionError::Conflict(
+            "usage entry is already settled by another billing invoice".to_string(),
+        ))
+    }
+}
 async fn load_reservation_billing_source(
     transaction: &Transaction<'_>,
     reservation_id: &str,
@@ -1755,6 +1797,44 @@ mod tests {
         .await
         .unwrap();
 
+        let duplicate_pix = db
+            .confirm_pix_payment_intent(
+                "req_confirm_pix_duplicate",
+                &payment_intent_id,
+                &ConfirmPixPaymentIntentRequest {
+                    provider: "manual_pix".to_string(),
+                    external_reference: "pix_external_1".to_string(),
+                    paid_at: Some("2026-07-13T00:11:00Z".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(duplicate_pix.duplicate);
+
+        let mismatched_pix = db
+            .confirm_pix_payment_intent(
+                "req_confirm_pix_mismatch",
+                &payment_intent_id,
+                &ConfirmPixPaymentIntentRequest {
+                    provider: "manual_pix".to_string(),
+                    external_reference: "pix_external_2".to_string(),
+                    paid_at: Some("2026-07-13T00:11:00Z".to_string()),
+                },
+            )
+            .await;
+        assert!(matches!(mismatched_pix, Err(SessionError::Conflict(_))));
+
+        let client = db.connect().await.unwrap();
+        let pix_ledger_lines: i64 = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT FROM financial_ledger_lines WHERE source_type = 'pix_payment_intent' AND source_id = $1",
+                &[&payment_intent_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(pix_ledger_lines, 2);
+        drop(client);
         let funded_balance = db
             .project_billing_balance("req_project_balance", &auth, "project_billing")
             .await
@@ -1792,6 +1872,29 @@ mod tests {
             duplicate_invoice.invoice.invoice_id,
             invoice.invoice.invoice_id
         );
+        let client = db.connect().await.unwrap();
+        client
+            .execute(
+                "INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at) VALUES ('reservation_billing_second', 'org_billing', 'project_billing', 'listing_billing', 'provider_billing', 'device_billing', 'session_billing', 'burd-marketplace-reservation-v1', 'llm_realtime_api', 'GPU-billing', 'expired', 'reservation_key_second', 'reservation_hash_second', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z', 3600, '[]', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z')",
+                &[],
+            )
+            .await
+            .unwrap();
+        drop(client);
+
+        let rebill = db
+            .settle_reservation_billing(
+                "req_settlement_rebill_usage",
+                "reservation_billing_second",
+                &SettleReservationBillingRequest {
+                    usage_entry_id: "usage_billing".to_string(),
+                    platform_fee_bps: None,
+                    chargeback_reserve_bps: None,
+                },
+            )
+            .await;
+        assert!(matches!(rebill, Err(SessionError::Conflict(_))));
+
         let client = db.connect().await.unwrap();
         let billing_ledger_lines: i64 = client
             .query_one(

@@ -106,6 +106,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "gpu_inventory_snapshot_uniqueness",
         sql: include_str!("../migrations/0020_gpu_inventory_snapshot_uniqueness.sql"),
     },
+    Migration {
+        version: "0021",
+        name: "unique_billing_usage_invoice",
+        sql: include_str!("../migrations/0021_unique_billing_usage_invoice.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -312,6 +317,13 @@ mod tests {
         assert!(sql.contains("idx_device_gpu_inventory_hash"));
     }
 
+    #[test]
+    fn unique_billing_usage_invoice_migration_prevents_usage_rebilling() {
+        let sql = MIGRATIONS[20].sql;
+        assert!(sql.contains("idx_billing_invoices_unique_usage_entry"));
+        assert!(sql.contains("ON billing_invoices(usage_entry_id)"));
+        assert!(sql.contains("WHERE usage_entry_id IS NOT NULL"));
+    }
     #[test]
     fn customer_accounts_reservations_migration_declares_customer_registry() {
         let sql = MIGRATIONS[15].sql;
