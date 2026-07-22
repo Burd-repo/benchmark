@@ -101,6 +101,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "multi_gpu_inventory",
         sql: include_str!("../migrations/0019_multi_gpu_inventory.sql"),
     },
+    Migration {
+        version: "0020",
+        name: "gpu_inventory_snapshot_uniqueness",
+        sql: include_str!("../migrations/0020_gpu_inventory_snapshot_uniqueness.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -296,6 +301,15 @@ mod tests {
         ] {
             assert!(sql.contains(needle));
         }
+    }
+
+    #[test]
+    fn gpu_inventory_snapshot_uniqueness_migration_allows_per_gpu_snapshot_rows() {
+        let sql = MIGRATIONS[19].sql;
+        assert!(sql.contains("DROP CONSTRAINT IF EXISTS device_gpu_inventory_inventory_hash_key"));
+        assert!(sql.contains("idx_device_gpu_inventory_snapshot_gpu"));
+        assert!(sql.contains("inventory_hash, gpu_index"));
+        assert!(sql.contains("idx_device_gpu_inventory_hash"));
     }
 
     #[test]

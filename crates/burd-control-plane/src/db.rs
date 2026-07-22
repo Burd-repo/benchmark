@@ -396,14 +396,11 @@ mod tests {
         let db = Database::new(url, Some(schema)).unwrap();
         db.migrate().await.unwrap();
 
-        assert_eq!(
-            db.migration_versions().await.unwrap(),
-            vec![
-                "0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010",
-                "0011", "0012", "0013", "0014", "0015", "0016", "0017", "0018", "0019"
-            ]
-        );
-
+        let expected_versions = MIGRATIONS
+            .iter()
+            .map(|migration| migration.version.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(db.migration_versions().await.unwrap(), expected_versions);
         let command = CreateProviderCommand {
             request_id: "req_integration".to_string(),
             scope: "POST /v1/providers".to_string(),
