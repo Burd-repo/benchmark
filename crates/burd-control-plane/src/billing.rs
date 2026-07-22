@@ -1918,8 +1918,82 @@ mod tests {
             .unwrap();
         assert_eq!(provider_balance.balances[0].balance_micros, 8_000_000);
 
+        let payout_account = db
+            .upsert_provider_payout_account(
+                "req_payout_account",
+                "provider_billing",
+                &UpsertProviderPayoutAccountRequest {
+                    payout_method: "pix".to_string(),
+                    currency: "BRL".to_string(),
+                    pix_key_hash: "hash_0123456789abcdef".to_string(),
+                    pix_key_last4: "1234".to_string(),
+                    kyc_status: "verified".to_string(),
+                    tax_status: "verified".to_string(),
+                    minimum_payout_micros: Some(1_000_000),
+                    payout_hold_days: Some(3),
+                },
+            )
+            .await
+            .unwrap();
+
+        let client = db.connect().await.unwrap();
+        let invalid_ledger_line = client
+            .execute(
+                "INSERT INTO financial_ledger_lines (ledger_line_id, transaction_id, schema_version, line_number, account_type, account_owner_type, account_owner_id, currency, amount_micros, source_type, source_id, description, created_at) VALUES ('ledger_invalid_zero', 'txn_invalid_zero', 'burd-financial-ledger-v1', 1, 'customer_balance', 'project', 'project_billing', 'BRL', 0, 'test', 'invalid_zero', 'invalid zero amount', '2026-07-13T00:20:00Z')",
+                &[],
+            )
+            .await;
+        assert!(invalid_ledger_line.is_err());
+        let invalid_account_method = client
+            .execute(
+                "INSERT INTO provider_payout_accounts (payout_account_id, provider_id, schema_version, payout_method, currency, pix_key_hash, pix_key_last4, kyc_status, tax_status, minimum_payout_micros, payout_hold_days, status, created_at, updated_at) VALUES ('payout_account_invalid_method', 'provider_billing', 'burd-provider-payout-account-v1', 'wire', 'BRL', 'hash_0123456789abcdef', '1234', 'verified', 'verified', 1000000, 0, 'active', '2026-07-13T00:20:00Z', '2026-07-13T00:20:00Z')",
+                &[],
+            )
+            .await;
+        assert!(invalid_account_method.is_err());
+        let invalid_held_payout = client
+            .execute(
+                "INSERT INTO provider_payouts (payout_id, provider_id, payout_account_id, schema_version, status, amount_micros, currency, hold_until, created_at, updated_at) VALUES ('payout_invalid_held', 'provider_billing', $1, 'burd-provider-payout-v1', 'held', 1000000, 'BRL', NULL, '2026-07-13T00:20:00Z', '2026-07-13T00:20:00Z')",
+                &[&payout_account.payout_account.payout_account_id],
+            )
+            .await;
+        assert!(invalid_held_payout.is_err());
+        let invalid_reconciliation_event = client
+            .execute(
+                "INSERT INTO billing_reconciliation_events (reconciliation_event_id, schema_version, provider, external_reference, amount_micros, currency, event_type, status, created_at) VALUES ('recon_invalid_zero', 'burd-billing-reconciliation-v1', 'manual_pix', 'recon_ref_invalid_zero', 0, 'BRL', 'payout_reported', 'recorded', '2026-07-13T00:20:00Z')",
+                &[],
+            )
+            .await;
+        assert!(invalid_reconciliation_event.is_err());
+        drop(client);
+
+        let held_payout = db
+            .create_provider_payout(
+                "req_payout_held",
+                "provider_billing",
+                &CreateProviderPayoutRequest {
+                    amount_micros: 1_000_000,
+                    currency: "BRL".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(held_payout.payout.status, "held");
+        assert!(held_payout.payout.hold_until.is_some());
+        assert!(held_payout.payout.external_reference.is_none());
+        assert!(held_payout.payout.paid_at.is_none());
+
+        let provider_after_held_payout = db
+            .provider_billing_balance("req_provider_balance_after_held", "provider_billing")
+            .await
+            .unwrap();
+        assert_eq!(
+            provider_after_held_payout.balances[0].balance_micros,
+            7_000_000
+        );
+
         db.upsert_provider_payout_account(
-            "req_payout_account",
+            "req_payout_account_no_hold",
             "provider_billing",
             &UpsertProviderPayoutAccountRequest {
                 payout_method: "pix".to_string(),
@@ -1939,19 +2013,41 @@ mod tests {
                 "req_payout",
                 "provider_billing",
                 &CreateProviderPayoutRequest {
-                    amount_micros: 8_000_000,
+                    amount_micros: 7_000_000,
                     currency: "BRL".to_string(),
                 },
             )
             .await
             .unwrap();
         assert_eq!(payout.payout.status, "approved");
+        assert!(payout.payout.hold_until.is_none());
 
         let provider_after_payout = db
             .provider_billing_balance("req_provider_balance_after", "provider_billing")
             .await
             .unwrap();
         assert_eq!(provider_after_payout.balances[0].balance_micros, 0);
+
+        let client = db.connect().await.unwrap();
+        let payout_ledger_lines: i64 = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT FROM financial_ledger_lines WHERE source_type = 'provider_payout'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(payout_ledger_lines, 4);
+        let payout_clearing_balance: i64 = client
+            .query_one(
+                "SELECT COALESCE(SUM(amount_micros), 0)::BIGINT FROM financial_ledger_lines WHERE account_type = 'provider_payout_clearing' AND account_owner_type = 'platform' AND account_owner_id IS NULL AND currency = 'BRL'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(payout_clearing_balance, 8_000_000);
+        drop(client);
         db.drop_schema_for_test().await.unwrap();
     }
 }

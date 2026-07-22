@@ -116,6 +116,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "unique_customer_reservation_credit_entries",
         sql: include_str!("../migrations/0022_unique_customer_reservation_credit_entries.sql"),
     },
+    Migration {
+        version: "0023",
+        name: "provider_payout_reconciliation_integrity",
+        sql: include_str!("../migrations/0023_provider_payout_reconciliation_integrity.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -335,6 +340,25 @@ mod tests {
         assert!(sql.contains("idx_customer_credit_ledger_reservation_entry"));
         assert!(sql.contains("ON customer_credit_ledger_entries(reservation_id, entry_type)"));
         assert!(sql.contains("entry_type IN ('reservation_hold', 'reservation_release')"));
+    }
+
+    #[test]
+    fn provider_payout_reconciliation_integrity_migration_hardens_financial_tables() {
+        let sql = MIGRATIONS[22].sql;
+        for needle in [
+            "financial_ledger_lines_amount_nonzero",
+            "financial_ledger_lines_line_number_positive",
+            "provider_payout_accounts_method_pix",
+            "provider_payout_accounts_hold_days_range",
+            "provider_payouts_status_allowed",
+            "provider_payouts_held_requires_hold_until",
+            "provider_payouts_paid_requires_external_reference",
+            "billing_reconciliation_events_amount_positive",
+            "idx_provider_payouts_external_reference",
+            "idx_billing_reconciliation_reference",
+        ] {
+            assert!(sql.contains(needle));
+        }
     }
 
     #[test]
