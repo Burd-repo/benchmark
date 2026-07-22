@@ -60,7 +60,11 @@ Provider payout creation requires:
 - payable balance greater than or equal to requested amount;
 - amount greater than or equal to minimum payout.
 
-Payout hold days move the payout into `held` status while the ledger immediately reserves provider payable into payout clearing.
+Payout hold days move the payout into `held` status while the ledger immediately reserves provider payable into payout clearing. Hardening migration `0023_provider_payout_reconciliation_integrity` enforces payout account status, payout status, positive amounts, currency format, held payout hold timestamps, paid payout reference requirements, and unique payout external references at the database boundary.
+
+## Reconciliation Placeholder
+
+`billing_reconciliation_events` remains a schema placeholder for future payment and payout reconciliation ingestion. Migration `0023_provider_payout_reconciliation_integrity` only adds basic integrity constraints and lookup indexes; it does not add webhook ingestion, automatic matching, banking payout execution, or settlement release behavior.
 
 ## Not Implemented Yet
 
