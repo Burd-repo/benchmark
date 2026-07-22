@@ -26,6 +26,9 @@ The backend path prefix is `/v1`. The existing local agent API under
 
 - Human/admin endpoints use the backend account credential model selected in
   BN-01. Provider devices cannot call those endpoints with device credentials.
+- Customer project endpoints use customer API keys and explicit scopes such as
+  `billing:read` and `billing:write`; those keys cannot call admin/provider
+  operator endpoints.
 - Enrollment uses a short-lived one-time enrollment token plus an Ed25519
   nonce proof. The token alone is not enough to enroll a device.
 - Session and control-channel requests use a short-lived device credential

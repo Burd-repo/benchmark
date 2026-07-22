@@ -552,7 +552,7 @@ pub fn document() -> serde_json::Value {
             "/v1/billing/projects/{project_id}/pix/payment-intents": {
                 "post": {
                     "summary": "Create a customer Pix payment intent without ledger movement until confirmation",
-                    "description": "Requires `Idempotency-Key`. Creation records the intent only; it does not credit `customer_balance` until the admin/adapter confirmation endpoint succeeds.",
+                    "description": "Customer-scoped write requiring `billing:write` and `Idempotency-Key`. Creation records the intent only; it does not credit `customer_balance` until the admin/adapter confirmation endpoint succeeds.",
                     "security": [{ "customerBearer": [] }],
                     "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
                     "responses": {
@@ -1214,6 +1214,78 @@ mod tests {
         }
     }
 
+    #[test]
+    fn openapi_documents_bn18_admin_customer_authorization_boundaries() {
+        fn assert_single_scheme(operation: &serde_json::Value, expected: &str) {
+            let security = operation["security"].as_array().expect("security array");
+            assert_eq!(security.len(), 1);
+            let entry = security[0].as_object().expect("security object");
+            assert_eq!(entry.len(), 1);
+            assert!(
+                entry
+                    .get(expected)
+                    .and_then(|value| value.as_array())
+                    .is_some(),
+                "operation must document only {expected}"
+            );
+        }
+
+        fn assert_no_idempotency_header(operation: &serde_json::Value) {
+            if let Some(parameters) = operation["parameters"].as_array() {
+                assert!(
+                    !parameters.iter().any(|parameter| {
+                        parameter["name"] == "Idempotency-Key"
+                            || parameter["$ref"] == "#/components/parameters/IdempotencyKey"
+                    }),
+                    "operation must not document Idempotency-Key unless runtime requires it"
+                );
+            }
+        }
+
+        let document = document();
+        let paths = document["paths"].as_object().unwrap();
+        for (path, method) in [
+            ("/v1/marketplace/listings/{listing_id}/price", "post"),
+            (
+                "/v1/billing/pix/payment-intents/{payment_intent_id}/confirm",
+                "post",
+            ),
+            ("/v1/billing/reservations/{reservation_id}/settle", "post"),
+            ("/v1/billing/invoices/{invoice_id}", "get"),
+            ("/v1/billing/providers/{provider_id}/balance", "get"),
+            ("/v1/billing/providers/{provider_id}/ledger", "get"),
+            ("/v1/billing/providers/{provider_id}/payout-account", "post"),
+            ("/v1/billing/providers/{provider_id}/payouts", "post"),
+        ] {
+            let operation = paths.get(path).unwrap().get(method).unwrap();
+            assert_single_scheme(operation, "adminBearer");
+            assert_no_idempotency_header(operation);
+        }
+
+        let pix_create = &paths["/v1/billing/projects/{project_id}/pix/payment-intents"]["post"];
+        assert_single_scheme(pix_create, "customerBearer");
+        assert!(
+            pix_create["description"]
+                .as_str()
+                .unwrap()
+                .contains("billing:write")
+        );
+
+        for (path, method) in [
+            ("/v1/billing/projects/{project_id}/balance", "get"),
+            ("/v1/billing/projects/{project_id}/ledger", "get"),
+        ] {
+            let operation = paths.get(path).unwrap().get(method).unwrap();
+            assert_single_scheme(operation, "customerBearer");
+            assert!(
+                operation["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("billing:read")
+            );
+            assert_no_idempotency_header(operation);
+        }
+    }
     #[test]
     fn openapi_documents_bn18_billing_error_contracts() {
         let document = document();
