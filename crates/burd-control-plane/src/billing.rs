@@ -1693,6 +1693,30 @@ mod tests {
         assert!(assert_balanced(&unbalanced).is_err());
     }
 
+    #[test]
+    fn billing_customer_scopes_are_not_interchangeable() {
+        fn auth_with_scopes(scopes: &[&str]) -> CustomerApiKeyAuth {
+            CustomerApiKeyAuth {
+                api_key_id: "key_test".to_string(),
+                organization_id: "org_test".to_string(),
+                project_id: Some("project_test".to_string()),
+                scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
+            }
+        }
+
+        let read_only = auth_with_scopes(&["billing:read"]);
+        assert!(require_customer_scope(&read_only, "billing:read").is_ok());
+        assert!(require_customer_scope(&read_only, "billing:write").is_err());
+
+        let write_only = auth_with_scopes(&["billing:write"]);
+        assert!(require_customer_scope(&write_only, "billing:write").is_ok());
+        assert!(require_customer_scope(&write_only, "billing:read").is_err());
+
+        let reservation_only = auth_with_scopes(&["reservations:write"]);
+        assert!(require_customer_scope(&reservation_only, "billing:read").is_err());
+        assert!(require_customer_scope(&reservation_only, "billing:write").is_err());
+    }
+
     #[tokio::test]
     #[ignore]
     async fn postgres_billing_flow_settles_confirmed_balance_and_creates_payout() {

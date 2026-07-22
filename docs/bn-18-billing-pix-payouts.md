@@ -42,6 +42,14 @@ This keeps the ledger independent from payment providers. Replacing a Pix provid
 
 BN-18 HTTP errors use the shared control-plane error envelope: `{ "error": { "code": "conflict", "message": "...", "request_id": "req_example", "retry_after_seconds": null, "details": {} } }`. OpenAPI documents the `Idempotency-Key` header only on endpoints that actually require it, and distinguishes `idempotency_conflict` from normal billing or payout `conflict` responses.
 
+## Authorization Boundary
+
+BN-18 separates operator/admin actions from customer project billing actions.
+
+- Admin bearer authorization is required for listing price writes, Pix confirmation, reservation settlement, invoice reads, provider balance/ledger reads, payout account upsert, and payout creation.
+- Customer API keys are accepted only on project-scoped customer billing endpoints. Pix payment-intent creation requires `billing:write`; project balance and ledger reads require `billing:read`.
+- Customer API keys cannot administer provider payout, settlement, invoice, or price-book endpoints. Provider/device session credentials cannot call customer or admin billing endpoints.
+
 ## Billing Settlement
 
 `POST /v1/billing/reservations/{reservation_id}/settle` requires:
