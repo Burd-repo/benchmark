@@ -511,7 +511,7 @@ starting the API server or depending on host state:
 - Customer API keys now support `billing:read` and `billing:write`; customer endpoints can create Pix payment intents and read project balances/ledger.
 - Pix payment intents do not move money until confirmed by admin/adapter; first confirmation appends balanced ledger lines, exact duplicate confirmation is idempotent, and conflicting confirmation references are rejected.
 - Reservation billing settlement requires BN-15 usage, BN-17 reservation, matching provider/device/GPU binding, an active BN-18 listing price, and sufficient confirmed project balance. A usage ledger entry can back only one billing invoice; same-reservation retries return the existing invoice and cross-reservation rebilling conflicts.
-- Provider payouts require verified KYC/tax state, minimum payout, payable balance, and hold policy.
+- Provider payouts require verified KYC/tax state, minimum payout, payable balance, and hold policy. The OpenAPI document now explicitly covers BN-18 error envelopes, idempotency conflicts, billing settlement conflicts, Pix confirmation conflicts, and payout policy conflicts without claiming bank execution.
 - BN-18 does not call a real Pix gateway, verify webhook signatures, execute bank payouts, provide checkout UI, or complete legal/KYC/tax workflows.
 
 ## BN-19 - Observability And SRE

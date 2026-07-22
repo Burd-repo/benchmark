@@ -23,6 +23,68 @@ pub fn document() -> serde_json::Value {
                     "scheme": "bearer",
                     "description": "Customer API key token returned once by the project API-key endpoint. Send only as Authorization: Bearer; never in URLs."
                 }
+            },
+            "parameters": {
+                "IdempotencyKey": {
+                    "name": "Idempotency-Key",
+                    "in": "header",
+                    "required": true,
+                    "description": "Required only on mutating endpoints that explicitly list this parameter. Reusing the same key with the same canonical JSON body replays the stored response; reusing it with a different body returns 409 idempotency_conflict.",
+                    "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$" }
+                }
+            },
+            "schemas": {
+                "ErrorEnvelope": {
+                    "type": "object",
+                    "required": ["error"],
+                    "properties": {
+                        "error": {
+                            "type": "object",
+                            "required": ["code", "message", "request_id", "retry_after_seconds", "details"],
+                            "properties": {
+                                "code": {
+                                    "type": "string",
+                                    "enum": ["invalid_request", "unauthorized", "forbidden", "not_found", "conflict", "idempotency_conflict", "rate_limited", "expired", "revoked", "signature_invalid", "nonce_reused", "policy_blocked", "database_unavailable", "internal"]
+                                },
+                                "message": { "type": "string" },
+                                "request_id": { "type": "string" },
+                                "retry_after_seconds": { "type": ["integer", "null"], "minimum": 0 },
+                                "details": { "type": "object", "additionalProperties": true }
+                            }
+                        }
+                    }
+                }
+            },
+            "responses": {
+                "InvalidRequest": {
+                    "description": "request validation failed",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "invalid_request": { "value": { "error": { "code": "invalid_request", "message": "request field failed validation", "request_id": "req_example", "retry_after_seconds": null, "details": {} } } } } } }
+                },
+                "Unauthorized": {
+                    "description": "Bearer credential is missing, malformed, invalid, expired, or lacks the required scope",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "unauthorized": { "value": { "error": { "code": "unauthorized", "message": "Authorization: Bearer credential is required", "request_id": "req_example", "retry_after_seconds": null, "details": {} } } } } } }
+                },
+                "NotFound": {
+                    "description": "requested backend record was not found",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "not_found": { "value": { "error": { "code": "not_found", "message": "record not found", "request_id": "req_example", "retry_after_seconds": null, "details": {} } } } } } }
+                },
+                "Conflict": {
+                    "description": "request conflicts with backend-owned state or policy",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "conflict": { "value": { "error": { "code": "conflict", "message": "operation conflicts with backend-owned state", "request_id": "req_example", "retry_after_seconds": null, "details": {} } } } } } }
+                },
+                "IdempotencyConflict": {
+                    "description": "Idempotency-Key was reused with a different canonical JSON body",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "idempotency_conflict": { "value": { "error": { "code": "idempotency_conflict", "message": "idempotency key was reused with a different request body", "request_id": "req_example", "retry_after_seconds": null, "details": {} } } } } } }
+                },
+                "DatabaseUnavailable": {
+                    "description": "database dependency is unavailable; source details are redacted",
+                    "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "database_unavailable": { "value": { "error": { "code": "database_unavailable", "message": "database unavailable", "request_id": "req_example", "retry_after_seconds": null, "details": { "reason": "database_unavailable" } } } } } } }
+                }
+            },
+            "examples": {
+                "BillingInsufficientBalance": { "value": { "error": { "code": "conflict", "message": "project customer balance is insufficient for billing settlement", "request_id": "req_example", "retry_after_seconds": null, "details": {} } } },
+                "BillingUsageAlreadyInvoiced": { "value": { "error": { "code": "conflict", "message": "usage ledger entry has already been billed for another reservation", "request_id": "req_example", "retry_after_seconds": null, "details": {} } } },
+                "PayoutPolicyBlocked": { "value": { "error": { "code": "conflict", "message": "provider KYC and tax status must be verified before payout", "request_id": "req_example", "retry_after_seconds": null, "details": {} } } }
             }
         },
         "paths": {
@@ -477,79 +539,150 @@ pub fn document() -> serde_json::Value {
             "/v1/marketplace/listings/{listing_id}/price": {
                 "post": {
                     "summary": "Configure the active billing price for a marketplace listing",
+                    "description": "Admin-only BN-18 price-book write. This updates backend-owned listing price fields; providers cannot self-report authoritative billing prices.",
                     "security": [{ "adminBearer": [] }],
-                    "responses": { "200": { "description": "price stored and listing price fields updated" }, "404": { "description": "listing not found" } }
+                    "responses": {
+                        "200": { "description": "price stored and listing price fields updated" },
+                        "400": { "$ref": "#/components/responses/InvalidRequest" },
+                        "401": { "$ref": "#/components/responses/Unauthorized" },
+                        "404": { "$ref": "#/components/responses/NotFound" }
+                    }
                 }
             },
             "/v1/billing/projects/{project_id}/pix/payment-intents": {
                 "post": {
                     "summary": "Create a customer Pix payment intent without ledger movement until confirmation",
+                    "description": "Requires `Idempotency-Key`. Creation records the intent only; it does not credit `customer_balance` until the admin/adapter confirmation endpoint succeeds.",
                     "security": [{ "customerBearer": [] }],
-                    "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$" } }],
-                    "responses": { "201": { "description": "Pix intent created" }, "409": { "description": "idempotency conflict" } }
+                    "parameters": [{ "$ref": "#/components/parameters/IdempotencyKey" }],
+                    "responses": {
+                        "201": { "description": "Pix intent created or idempotently replayed from the stored response" },
+                        "400": { "$ref": "#/components/responses/InvalidRequest" },
+                        "401": { "$ref": "#/components/responses/Unauthorized" },
+                        "404": { "$ref": "#/components/responses/NotFound" },
+                        "409": { "$ref": "#/components/responses/IdempotencyConflict" }
+                    }
                 }
             },
             "/v1/billing/pix/payment-intents/{payment_intent_id}/confirm": {
                 "post": {
                     "summary": "Confirm a Pix payment intent and credit customer balance through double-entry ledger lines",
+                    "description": "Admin/adapter boundary. Exact duplicate confirmations replay as `duplicate=true`; conflicting provider, external reference, or paid_at evidence returns 409 `conflict` and appends no ledger lines.",
                     "security": [{ "adminBearer": [] }],
-                    "responses": { "200": { "description": "payment intent confirmed or replayed" }, "404": { "description": "payment intent not found" } }
+                    "responses": {
+                        "200": { "description": "payment intent confirmed or exact duplicate returned" },
+                        "400": { "$ref": "#/components/responses/InvalidRequest" },
+                        "401": { "$ref": "#/components/responses/Unauthorized" },
+                        "404": { "$ref": "#/components/responses/NotFound" },
+                        "409": { "$ref": "#/components/responses/Conflict" }
+                    }
                 }
             },
             "/v1/billing/projects/{project_id}/balance": {
                 "get": {
                     "summary": "Read customer project financial balances",
+                    "description": "Customer-scoped read requiring `billing:read`; balances are derived from append-only `financial_ledger_lines`.",
                     "security": [{ "customerBearer": [] }],
-                    "responses": { "200": { "description": "project balances returned" } }
+                    "responses": {
+                        "200": { "description": "project balances returned" },
+                        "401": { "$ref": "#/components/responses/Unauthorized" },
+                        "404": { "$ref": "#/components/responses/NotFound" }
+                    }
                 }
             },
             "/v1/billing/projects/{project_id}/ledger": {
                 "get": {
                     "summary": "List customer project financial ledger lines",
+                    "description": "Customer-scoped read requiring `billing:read`; returned rows are append-only accounting records, not mutable balances.",
                     "security": [{ "customerBearer": [] }],
-                    "responses": { "200": { "description": "project ledger lines returned" } }
+                    "responses": {
+                        "200": { "description": "project ledger lines returned" },
+                        "401": { "$ref": "#/components/responses/Unauthorized" },
+                        "404": { "$ref": "#/components/responses/NotFound" }
+                    }
                 }
             },
             "/v1/billing/reservations/{reservation_id}/settle": {
                 "post": {
                     "summary": "Settle metered reservation usage into invoice and double-entry financial ledger",
+                    "description": "Admin-only settlement over a BN-17 reservation, BN-15 usage entry, active price book row, and sufficient confirmed project balance. Same reservation/usage replay returns the existing invoice; cross-reservation usage reuse returns 409 `conflict`.",
                     "security": [{ "adminBearer": [] }],
-                    "responses": { "200": { "description": "invoice issued or replayed" }, "409": { "description": "usage, price, or reservation cannot be billed" } }
+                    "responses": {
+                        "200": { "description": "invoice issued or existing same-reservation invoice returned" },
+                        "400": { "$ref": "#/components/responses/InvalidRequest" },
+                        "401": { "$ref": "#/components/responses/Unauthorized" },
+                        "404": { "$ref": "#/components/responses/NotFound" },
+                        "409": {
+                            "description": "usage, price, balance, binding, or reservation state cannot be billed",
+                            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "insufficient_balance": { "$ref": "#/components/examples/BillingInsufficientBalance" }, "usage_already_invoiced": { "$ref": "#/components/examples/BillingUsageAlreadyInvoiced" } } } }
+                        }
+                    }
                 }
             },
             "/v1/billing/invoices/{invoice_id}": {
                 "get": {
                     "summary": "Read a billing invoice",
+                    "description": "Admin-only read of backend-derived invoice metadata. Invoice totals are calculated by the control plane, not supplied by customers or providers.",
                     "security": [{ "adminBearer": [] }],
-                    "responses": { "200": { "description": "invoice returned" }, "404": { "description": "invoice not found" } }
+                    "responses": {
+                        "200": { "description": "invoice returned" },
+                        "401": { "$ref": "#/components/responses/Unauthorized" },
+                        "404": { "$ref": "#/components/responses/NotFound" }
+                    }
                 }
             },
             "/v1/billing/providers/{provider_id}/balance": {
                 "get": {
                     "summary": "Read provider payable balances",
+                    "description": "Admin-only read derived from `financial_ledger_lines`; provider-submitted balances are never accepted.",
                     "security": [{ "adminBearer": [] }],
-                    "responses": { "200": { "description": "provider balances returned" } }
+                    "responses": {
+                        "200": { "description": "provider balances returned" },
+                        "400": { "$ref": "#/components/responses/InvalidRequest" },
+                        "401": { "$ref": "#/components/responses/Unauthorized" }
+                    }
                 }
             },
             "/v1/billing/providers/{provider_id}/ledger": {
                 "get": {
                     "summary": "List provider financial ledger lines",
+                    "description": "Admin-only append-only ledger read for provider payable and payout-clearing inspection.",
                     "security": [{ "adminBearer": [] }],
-                    "responses": { "200": { "description": "provider ledger lines returned" } }
+                    "responses": {
+                        "200": { "description": "provider ledger lines returned" },
+                        "400": { "$ref": "#/components/responses/InvalidRequest" },
+                        "401": { "$ref": "#/components/responses/Unauthorized" }
+                    }
                 }
             },
             "/v1/billing/providers/{provider_id}/payout-account": {
                 "post": {
                     "summary": "Create or update a provider Pix payout account with KYC and tax status",
+                    "description": "Admin-only account metadata write. The API stores hashed Pix key material and a masked suffix; it does not store raw Pix keys or execute payouts.",
                     "security": [{ "adminBearer": [] }],
-                    "responses": { "200": { "description": "payout account upserted" }, "404": { "description": "provider not found" } }
+                    "responses": {
+                        "200": { "description": "payout account upserted" },
+                        "400": { "$ref": "#/components/responses/InvalidRequest" },
+                        "401": { "$ref": "#/components/responses/Unauthorized" },
+                        "404": { "$ref": "#/components/responses/NotFound" }
+                    }
                 }
             },
             "/v1/billing/providers/{provider_id}/payouts": {
                 "post": {
                     "summary": "Create a provider payout from payable balance subject to minimum payout and hold policy",
+                    "description": "Admin-only accounting reservation. Payout creation moves `provider_payable` into `provider_payout_clearing`; it does not call a bank, mark the payout paid, or release funds externally.",
                     "security": [{ "adminBearer": [] }],
-                    "responses": { "201": { "description": "payout created" }, "409": { "description": "provider balance, KYC, tax, or minimum payout blocks payout" } }
+                    "responses": {
+                        "201": { "description": "payout accounting record created" },
+                        "400": { "$ref": "#/components/responses/InvalidRequest" },
+                        "401": { "$ref": "#/components/responses/Unauthorized" },
+                        "404": { "$ref": "#/components/responses/NotFound" },
+                        "409": {
+                            "description": "provider balance, KYC, tax, payout account, or minimum payout policy blocks payout",
+                            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }, "examples": { "policy_blocked": { "$ref": "#/components/examples/PayoutPolicyBlocked" } } } }
+                        }
+                    }
                 }
             },
             "/v1/customer/users": {
@@ -1064,13 +1197,76 @@ mod tests {
             let parameters = operation["parameters"].as_array().unwrap();
             let idempotency = parameters
                 .iter()
-                .find(|parameter| parameter["name"] == "Idempotency-Key")
+                .find(|parameter| {
+                    parameter["name"] == "Idempotency-Key"
+                        || parameter["$ref"] == "#/components/parameters/IdempotencyKey"
+                })
                 .unwrap();
-            let schema = &idempotency["schema"];
+            let schema = if idempotency["$ref"] == "#/components/parameters/IdempotencyKey" {
+                &document["components"]["parameters"]["IdempotencyKey"]["schema"]
+            } else {
+                &idempotency["schema"]
+            };
             assert_eq!(schema["type"], "string");
             assert_eq!(schema["minLength"], 1);
             assert_eq!(schema["maxLength"], 128);
             assert_eq!(schema["pattern"], "^[!-~]+$");
         }
+    }
+
+    #[test]
+    fn openapi_documents_bn18_billing_error_contracts() {
+        let document = document();
+        let components = &document["components"];
+        let error_schema = &components["schemas"]["ErrorEnvelope"];
+        assert_eq!(error_schema["required"][0], "error");
+        assert_eq!(
+            error_schema["properties"]["error"]["properties"]["retry_after_seconds"]["type"][1],
+            "null"
+        );
+        assert!(components["responses"]["IdempotencyConflict"].is_object());
+        assert!(components["examples"]["BillingInsufficientBalance"].is_object());
+        assert!(components["examples"]["BillingUsageAlreadyInvoiced"].is_object());
+        assert!(components["examples"]["PayoutPolicyBlocked"].is_object());
+
+        let paths = document["paths"].as_object().unwrap();
+        let pix_create = &paths["/v1/billing/projects/{project_id}/pix/payment-intents"]["post"];
+        assert_eq!(
+            pix_create["parameters"][0]["$ref"],
+            "#/components/parameters/IdempotencyKey"
+        );
+        assert_eq!(
+            pix_create["responses"]["409"]["$ref"],
+            "#/components/responses/IdempotencyConflict"
+        );
+
+        let pix_confirm =
+            &paths["/v1/billing/pix/payment-intents/{payment_intent_id}/confirm"]["post"];
+        assert_eq!(
+            pix_confirm["responses"]["409"]["$ref"],
+            "#/components/responses/Conflict"
+        );
+
+        let settlement = &paths["/v1/billing/reservations/{reservation_id}/settle"]["post"];
+        let settlement_examples =
+            settlement["responses"]["409"]["content"]["application/json"]["examples"]
+                .as_object()
+                .unwrap();
+        assert!(settlement_examples.contains_key("insufficient_balance"));
+        assert!(settlement_examples.contains_key("usage_already_invoiced"));
+
+        let payout = &paths["/v1/billing/providers/{provider_id}/payouts"]["post"];
+        assert!(
+            payout["description"]
+                .as_str()
+                .unwrap()
+                .contains("does not call a bank")
+        );
+        assert!(
+            payout["responses"]["409"]["content"]["application/json"]["examples"]
+                .as_object()
+                .unwrap()
+                .contains_key("policy_blocked")
+        );
     }
 }

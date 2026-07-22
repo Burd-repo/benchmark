@@ -38,6 +38,10 @@ BN-18 does not call a real Pix gateway. The API stores intents and allows an adm
 
 This keeps the ledger independent from payment providers. Replacing a Pix provider should change adapter code, not financial accounting.
 
+## API Error Contract
+
+BN-18 HTTP errors use the shared control-plane error envelope: `{ "error": { "code": "conflict", "message": "...", "request_id": "req_example", "retry_after_seconds": null, "details": {} } }`. OpenAPI documents the `Idempotency-Key` header only on endpoints that actually require it, and distinguishes `idempotency_conflict` from normal billing or payout `conflict` responses.
+
 ## Billing Settlement
 
 `POST /v1/billing/reservations/{reservation_id}/settle` requires:
