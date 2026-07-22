@@ -15,7 +15,7 @@ The backend path prefix is `/v1`. The existing local agent API under
 - Ed25519 is the first signing algorithm.
 - Canonical JSON uses `burd-json-c14n-v1` unless a later version is explicitly
   negotiated.
-- Mutating HTTP requests use `Idempotency-Key`.
+- Mutating HTTP requests use `Idempotency-Key`. The header is bounded to 1-128 visible ASCII characters without whitespace.
 - Successful mutating responses include a server `request_id` and an audit
   event reference when one is emitted.
 - Provider-sent freshness flags, scores, eligibility flags, and local online
@@ -34,10 +34,15 @@ The backend path prefix is `/v1`. The existing local agent API under
   enrolled provider key or a rotated active key.
 - Revoked keys, revoked devices, expired credentials, expired enrollment
   tokens, and expired challenges fail closed.
+- Bearer credentials are accepted only from `Authorization: Bearer ...`
+  headers. They are not accepted in URLs, query strings, request IDs, or
+  correlation IDs.
 
 ## Error Envelope
 
-All non-2xx responses use:
+All non-2xx responses use a redacted envelope. Database and internal failures
+must not echo raw connection strings, SQL errors, credentials, bearer tokens, or
+request payloads back to clients.
 
 ```json
 {
@@ -65,6 +70,7 @@ Stable error codes:
 - `signature_invalid`
 - `nonce_reused`
 - `policy_blocked`
+- `database_unavailable`
 - `internal`
 
 ## Provider State Machine
