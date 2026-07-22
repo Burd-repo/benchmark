@@ -605,7 +605,8 @@ pub fn document() -> serde_json::Value {
                 "post": {
                     "summary": "Append a non-settlement customer credit ledger entry",
                     "security": [{ "adminBearer": [] }],
-                    "responses": { "201": { "description": "credit ledger entry appended" } }
+                    "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$" } }],
+                    "responses": { "201": { "description": "credit ledger entry appended" }, "409": { "description": "idempotency conflict" } }
                 }
             },
             "/v1/customer/projects/{project_id}/reservations": {

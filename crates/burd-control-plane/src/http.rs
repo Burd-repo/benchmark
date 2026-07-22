@@ -1,6 +1,9 @@
 use crate::billing::{CreatePixPaymentIntentCommand, CreatePixPaymentIntentOutcome};
 use crate::config::ControlPlaneConfig;
-use crate::customer::{CreateReservationCommand, CreateReservationOutcome, CustomerApiKeyAuth};
+use crate::customer::{
+    CreateReservationCommand, CreateReservationOutcome, CustomerApiKeyAuth,
+    GrantCustomerCreditsCommand, GrantCustomerCreditsOutcome,
+};
 use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};
 use crate::enrollment::EnrollmentError;
 use crate::error::{ApiError, ErrorCode};
@@ -1524,12 +1527,31 @@ async fn grant_customer_credits(
 ) -> Result<Response, ApiError> {
     let request_id = new_request_id();
     authorize_admin(&headers, &state.config, &request_id)?;
-    let response = state
+    let idempotency_key = required_idempotency_key(&headers, &request_id)?;
+    let request_hash = hash_canonical(&payload)
+        .map_err(|error| ApiError::invalid_request(error, request_id.clone()))?;
+    let outcome = state
         .db
-        .grant_customer_credits(&request_id, &project_id, &payload)
+        .grant_customer_credits_idempotently(GrantCustomerCreditsCommand {
+            request_id: request_id.clone(),
+            scope: format!("POST /v1/customer/projects/{project_id}/credits"),
+            idempotency_key,
+            request_hash,
+            project_id,
+            request: payload,
+        })
         .await
         .map_err(|error| session_api_error(error, request_id.clone()))?;
-    Ok((StatusCode::CREATED, Json(response)).into_response())
+    match outcome {
+        GrantCustomerCreditsOutcome::Response(record) => {
+            let value = serde_json::from_str::<serde_json::Value>(&record.response_json).map_err(
+                |error| ApiError::invalid_request(error.to_string(), request_id.clone()),
+            )?;
+            let status = StatusCode::from_u16(record.status_code).unwrap_or(StatusCode::OK);
+            Ok((status, Json(value)).into_response())
+        }
+        GrantCustomerCreditsOutcome::Conflict => Err(ApiError::idempotency_conflict(request_id)),
+    }
 }
 
 async fn create_marketplace_reservation(

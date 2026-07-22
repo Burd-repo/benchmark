@@ -65,6 +65,22 @@ pub enum CreateReservationOutcome {
 }
 
 #[derive(Debug, Clone)]
+pub struct GrantCustomerCreditsCommand {
+    pub request_id: String,
+    pub scope: String,
+    pub idempotency_key: String,
+    pub request_hash: String,
+    pub project_id: String,
+    pub request: GrantCustomerCreditsRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GrantCustomerCreditsOutcome {
+    Response(IdempotencyRecord),
+    Conflict,
+}
+
+#[derive(Debug, Clone)]
 struct ProjectAccess {
     organization_id: String,
     project_id: String,
@@ -500,18 +516,40 @@ impl Database {
         })
     }
 
-    pub async fn grant_customer_credits(
+    pub async fn grant_customer_credits_idempotently(
         &self,
-        request_id: &str,
-        project_id: &str,
-        request: &GrantCustomerCreditsRequest,
-    ) -> Result<CustomerCreditLedgerResponse, SessionError> {
-        validate_id("project_id", project_id, 128)?;
-        validate_credit_request(request)?;
+        command: GrantCustomerCreditsCommand,
+    ) -> Result<GrantCustomerCreditsOutcome, SessionError> {
+        validate_id("project_id", &command.project_id, 128)?;
+        validate_credit_request(&command.request)?;
         let mut client = self.connect().await?;
         let transaction = client.transaction().await?;
-        let organization_id = require_active_project(&transaction, project_id).await?;
-        let entry_type = if request.amount_credits >= 0 {
+        let organization_id = require_active_project(&transaction, &command.project_id).await?;
+        let now = Utc::now().to_rfc3339();
+        let reserved = transaction
+            .execute(
+                "INSERT INTO idempotency_keys (scope, idempotency_key, request_hash, status_code, response_json, created_at) VALUES ($1, $2, $3, 0, '', $4) ON CONFLICT (scope, idempotency_key) DO NOTHING",
+                &[&command.scope, &command.idempotency_key, &command.request_hash, &now],
+            )
+            .await?
+            == 1;
+        if !reserved {
+            let row = transaction
+                .query_one(
+                    "SELECT request_hash, status_code, response_json FROM idempotency_keys WHERE scope = $1 AND idempotency_key = $2 FOR UPDATE",
+                    &[&command.scope, &command.idempotency_key],
+                )
+                .await?;
+            let record = idempotency_from_row(row);
+            transaction.commit().await?;
+            return if record.request_hash == command.request_hash {
+                Ok(GrantCustomerCreditsOutcome::Response(record))
+            } else {
+                Ok(GrantCustomerCreditsOutcome::Conflict)
+            };
+        }
+
+        let entry_type = if command.request.amount_credits >= 0 {
             "credit_grant"
         } else {
             "credit_adjustment"
@@ -519,18 +557,18 @@ impl Database {
         let entry = append_customer_credit_ledger_entry(
             &transaction,
             &organization_id,
-            project_id,
+            &command.project_id,
             entry_type,
-            request.amount_credits,
+            command.request.amount_credits,
             None,
-            &request.reason,
+            &command.request.reason,
         )
         .await?;
         insert_customer_audit_event(
             &transaction,
             NewCustomerAuditEvent {
                 organization_id: &organization_id,
-                project_id: Some(project_id.to_string()),
+                project_id: Some(command.project_id.clone()),
                 actor_type: "admin",
                 actor_id: None,
                 event_type: "customer_credits.granted",
@@ -544,24 +582,38 @@ impl Database {
         insert_audit_event(
             &transaction,
             NewAuditEvent {
-                request_id,
+                request_id: &command.request_id,
                 actor_type: "admin",
                 actor_id: None,
                 entity_type: "customer_credit_ledger_entry",
                 entity_id: &entry.credit_entry_id,
                 event_type: "customer_credits.granted",
-                idempotency_key: None,
+                idempotency_key: Some(command.idempotency_key.clone()),
                 summary: "customer credit ledger entry appended",
                 metadata_json: "{}",
             },
         )
         .await?;
-        transaction.commit().await?;
-        Ok(CustomerCreditLedgerResponse {
-            request_id: request_id.to_string(),
+        let response_json = serde_json::to_string(&CustomerCreditLedgerResponse {
+            request_id: command.request_id,
             entry,
         })
+        .map_err(|error| SessionError::Database(DbError::new(error.to_string())))?;
+        let status_code = 201_i32;
+        transaction
+            .execute(
+                "UPDATE idempotency_keys SET status_code = $1, response_json = $2 WHERE scope = $3 AND idempotency_key = $4",
+                &[&status_code, &response_json, &command.scope, &command.idempotency_key],
+            )
+            .await?;
+        transaction.commit().await?;
+        Ok(GrantCustomerCreditsOutcome::Response(IdempotencyRecord {
+            request_hash: command.request_hash,
+            status_code: status_code as u16,
+            response_json,
+        }))
     }
+
     pub async fn create_marketplace_reservation_idempotently(
         &self,
         command: CreateReservationCommand,
@@ -1063,13 +1115,26 @@ async fn expire_stale_reservations(
 ) -> Result<u64, SessionError> {
     let rows = transaction
         .query(
-            "UPDATE marketplace_reservations SET status = 'expired', updated_at = $1 WHERE status = 'reserved' AND expires_at <= $1 RETURNING listing_id",
+            "UPDATE marketplace_reservations SET status = 'expired', updated_at = $1 WHERE status = 'reserved' AND expires_at <= $1 RETURNING reservation_id, organization_id, project_id, listing_id",
             &[&now],
         )
         .await?;
     let expired_count = rows.len() as u64;
     let mut listing_ids = Vec::new();
     for row in rows {
+        let reservation_id: String = row.get("reservation_id");
+        let organization_id: String = row.get("organization_id");
+        let project_id: String = row.get("project_id");
+        append_customer_credit_ledger_entry(
+            transaction,
+            &organization_id,
+            &project_id,
+            "reservation_release",
+            0,
+            Some(&reservation_id),
+            "reservation hold expired without credit settlement in BN-17",
+        )
+        .await?;
         let listing_id: String = row.get("listing_id");
         if !listing_ids.contains(&listing_id) {
             listing_ids.push(listing_id);
@@ -1710,6 +1775,77 @@ mod tests {
             .await
             .unwrap();
 
+        let credit_request = GrantCustomerCreditsRequest {
+            amount_credits: 100,
+            reason: "admin_top_up".to_string(),
+        };
+        let credit = db
+            .grant_customer_credits_idempotently(GrantCustomerCreditsCommand {
+                request_id: "req_credit".to_string(),
+                scope: format!("POST /v1/customer/projects/{}/credits", project.project_id),
+                idempotency_key: "customer-credit-1".to_string(),
+                request_hash: "credit-hash-1".to_string(),
+                project_id: project.project_id.clone(),
+                request: credit_request.clone(),
+            })
+            .await
+            .unwrap();
+        let GrantCustomerCreditsOutcome::Response(credit) = credit else {
+            panic!("credit grant must create a response");
+        };
+        let credit_response: CustomerCreditLedgerResponse =
+            serde_json::from_str(&credit.response_json).unwrap();
+        assert_eq!(credit_response.entry.amount_credits, 100);
+
+        let duplicate_credit = db
+            .grant_customer_credits_idempotently(GrantCustomerCreditsCommand {
+                request_id: "req_credit_duplicate".to_string(),
+                scope: format!("POST /v1/customer/projects/{}/credits", project.project_id),
+                idempotency_key: "customer-credit-1".to_string(),
+                request_hash: "credit-hash-1".to_string(),
+                project_id: project.project_id.clone(),
+                request: credit_request.clone(),
+            })
+            .await
+            .unwrap();
+        let GrantCustomerCreditsOutcome::Response(duplicate_credit) = duplicate_credit else {
+            panic!("duplicate credit grant must replay the stored response");
+        };
+        let duplicate_credit_response: CustomerCreditLedgerResponse =
+            serde_json::from_str(&duplicate_credit.response_json).unwrap();
+        assert_eq!(
+            duplicate_credit_response.entry.credit_entry_id,
+            credit_response.entry.credit_entry_id
+        );
+
+        let conflicting_credit = db
+            .grant_customer_credits_idempotently(GrantCustomerCreditsCommand {
+                request_id: "req_credit_conflict".to_string(),
+                scope: format!("POST /v1/customer/projects/{}/credits", project.project_id),
+                idempotency_key: "customer-credit-1".to_string(),
+                request_hash: "credit-hash-2".to_string(),
+                project_id: project.project_id.clone(),
+                request: GrantCustomerCreditsRequest {
+                    amount_credits: 200,
+                    reason: "admin_top_up".to_string(),
+                },
+            })
+            .await
+            .unwrap();
+        assert_eq!(conflicting_credit, GrantCustomerCreditsOutcome::Conflict);
+
+        let client = db.connect().await.unwrap();
+        let credit_grant_count: i64 = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT FROM customer_credit_ledger_entries WHERE project_id = $1 AND entry_type = 'credit_grant'",
+                &[&project.project_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(credit_grant_count, 1);
+        drop(client);
+
         seed_reservable_listing(&db).await;
         let request = CreateReservationRequest {
             listing_id: "listing_customer_flow".to_string(),
@@ -1801,6 +1937,46 @@ mod tests {
         let second_response: MarketplaceReservationResponse =
             serde_json::from_str(&second.response_json).unwrap();
         assert_eq!(second_response.reservation.status, "reserved");
+
+        let client = db.connect().await.unwrap();
+        client
+            .execute(
+                "UPDATE marketplace_reservations SET expires_at = '2026-07-13T00:00:00Z' WHERE reservation_id = $1",
+                &[&second_response.reservation.reservation_id],
+            )
+            .await
+            .unwrap();
+        drop(client);
+
+        let usage = db
+            .customer_project_usage("req_usage_after_expiry", &auth, &project.project_id)
+            .await
+            .unwrap()
+            .usage;
+        assert_eq!(usage.active_reservations, 0);
+        assert_eq!(usage.expired_reservations, 1);
+        assert_eq!(usage.credit_balance, 100);
+
+        let client = db.connect().await.unwrap();
+        let release_count: i64 = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT FROM customer_credit_ledger_entries WHERE reservation_id = $1 AND entry_type = 'reservation_release'",
+                &[&second_response.reservation.reservation_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(release_count, 1);
+        let released_status: String = client
+            .query_one(
+                "SELECT current_status FROM marketplace_listings WHERE listing_id = 'listing_customer_flow'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(released_status, "available");
+        drop(client);
 
         db.drop_schema_for_test().await.unwrap();
     }

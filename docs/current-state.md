@@ -496,11 +496,11 @@ starting the API server or depending on host state:
 ## BN-17 - Customer Accounts And Reservations
 
 - `burd-protocol` defines customer users, organizations, memberships, projects, quotas, customer API keys, credit ledger entries, marketplace reservations, usage summaries, and customer audit records.
-- PostgreSQL migration `0016_customer_accounts_reservations` adds customer/account/project tables, hashed API keys, append-only customer credit ledger entries, marketplace reservations, and customer audit events.
-- The control plane exposes admin endpoints under `/v1/customer/...` to create users, organizations, projects, quotas, API keys, credit entries, and audit-log reads.
+- PostgreSQL migration `0016_customer_accounts_reservations` adds customer/account/project tables, hashed API keys, append-only customer credit ledger entries, marketplace reservations, and customer audit events. Hardening migration `0022_unique_customer_reservation_credit_entries` prevents duplicate reservation hold/release markers per reservation.
+- The control plane exposes admin endpoints under `/v1/customer/...` to create users, organizations, projects, quotas, API keys, idempotent credit entries, and audit-log reads.
 - Customer API keys authenticate project reservation creation/listing, usage views, and reservation cancellation. Keys are stored as hashes and returned in plaintext only once.
-- Reservation creation is idempotent, checks customer scope, project/organization status, project quota, listing status/current status, and optional workload-type binding. Active reservations are unique per marketplace listing.
-- Customer credits are non-settlement accounting entries in BN-17. Reservation hold/release entries use zero credit movement because listing pricing and billing are BN-18 work.
+- Reservation creation is idempotent, checks customer scope, project/organization status, project quota, listing status/current status, and optional workload-type binding. Active reservations are unique per marketplace listing, and reservation expiry records the same zero-value release ledger marker as cancellation.
+- Customer credits are non-settlement accounting entries in BN-17. Admin credit grants are idempotency-key protected. Reservation hold/release entries use zero credit movement because listing pricing and billing are BN-18 work.
 - BN-17 does not implement checkout, job submission from reservations, provider-side execution, provider-set pricing, billing, Pix, payouts, invoices, refunds, disputes, taxes, or financial settlement.
 
 ## BN-18 - Billing, Pix And Payouts
