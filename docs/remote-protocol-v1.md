@@ -917,7 +917,8 @@ Backend behavior:
 - derives project and provider balances from `financial_ledger_lines`;
 - creates invoices from BN-15 usage, BN-17 reservation state, active BN-18 listing price, and sufficient confirmed project balance;
 - requires provider payout accounts to carry hashed Pix key material plus KYC/tax status;
-- requires sufficient payable balance, minimum payout, KYC/tax verification, and payout hold policy before creating a payout.
+- requires sufficient payable balance, minimum payout, KYC/tax verification, and payout hold policy before creating a payout;
+- creates provider payouts only as `held` or `approved` in BN-18. `paid`, `failed`, and `cancelled` remain reserved states until a future adapter/admin transition API explicitly handles reconciliation and ledger effects.
 
 ### Customer Billing Endpoints
 
@@ -929,7 +930,7 @@ Customer endpoints use `Authorization: Bearer <customer_api_key>` and billing sc
 
 Pix payment-intent creation also requires `Idempotency-Key`. Creating the intent records the requested payment metadata but does not move funds. Ledger movement occurs only after backend confirmation.
 
-BN-18 does not call a real Pix gateway, verify webhook signatures, execute bank payouts, expose checkout UI, complete KYC/tax/legal workflows, or implement refund/dispute adjudication beyond schema placeholders.
+BN-18 does not call a real Pix gateway, verify webhook signatures, execute bank payouts, expose checkout UI, complete KYC/tax/legal workflows, or implement refund/dispute adjudication beyond schema placeholders. Refund/dispute/reconciliation placeholder rows are constrained at the database boundary but do not create customer-visible workflow authority.
 
 ## Observability And SRE API
 

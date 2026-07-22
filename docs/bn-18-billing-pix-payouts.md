@@ -72,11 +72,15 @@ Provider payout creation requires:
 - payable balance greater than or equal to requested amount;
 - amount greater than or equal to minimum payout.
 
-Payout hold days move the payout into `held` status while the ledger immediately reserves provider payable into payout clearing. Hardening migration `0023_provider_payout_reconciliation_integrity` enforces payout account status, payout status, positive amounts, currency format, held payout hold timestamps, paid payout reference requirements, and unique payout external references at the database boundary.
+Payout hold days move the payout into `held` status while the ledger immediately reserves provider payable into payout clearing. Zero-hold payouts are created as `approved`. Hardening migration `0023_provider_payout_reconciliation_integrity` enforces payout account status, payout status, positive amounts, currency format, held payout hold timestamps, paid payout reference requirements, and unique payout external references at the database boundary. BN-18 still does not expose paid, failed, or cancelled payout transition endpoints; those states are reserved for a future adapter/admin transition API that must handle reconciliation and any required compensating ledger movement explicitly.
+
+## Refund And Dispute Placeholders
+
+`billing_refunds` and `billing_disputes` remain schema placeholders. Hardening migration `0024_refund_dispute_placeholder_integrity` adds basic database constraints for positive amounts, uppercase currency, nonblank reasons, bounded placeholder statuses, and at most one open/under-review dispute per invoice. It does not add customer refund requests, dispute adjudication, balance reversals, payout holds, or operator workflow endpoints.
 
 ## Reconciliation Placeholder
 
-`billing_reconciliation_events` remains a schema placeholder for future payment and payout reconciliation ingestion. Migration `0023_provider_payout_reconciliation_integrity` only adds basic integrity constraints and lookup indexes; it does not add webhook ingestion, automatic matching, banking payout execution, or settlement release behavior.
+`billing_reconciliation_events` remains a schema placeholder for future payment and payout reconciliation ingestion. Migration `0023_provider_payout_reconciliation_integrity` adds basic reconciliation integrity constraints and lookup indexes. Migration `0024_refund_dispute_placeholder_integrity` bounds reconciliation placeholder statuses to `recorded`, `matched`, `ignored`, `conflict`, and `rejected`. Neither migration adds webhook ingestion, automatic matching, banking payout execution, or settlement release behavior.
 
 ## Not Implemented Yet
 

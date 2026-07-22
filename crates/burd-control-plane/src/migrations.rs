@@ -121,6 +121,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "provider_payout_reconciliation_integrity",
         sql: include_str!("../migrations/0023_provider_payout_reconciliation_integrity.sql"),
     },
+    Migration {
+        version: "0024",
+        name: "refund_dispute_placeholder_integrity",
+        sql: include_str!("../migrations/0024_refund_dispute_placeholder_integrity.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -356,6 +361,23 @@ mod tests {
             "billing_reconciliation_events_amount_positive",
             "idx_provider_payouts_external_reference",
             "idx_billing_reconciliation_reference",
+        ] {
+            assert!(sql.contains(needle));
+        }
+    }
+    #[test]
+    fn refund_dispute_placeholder_integrity_migration_hardens_placeholders() {
+        let sql = MIGRATIONS[23].sql;
+        for needle in [
+            "billing_refunds_amount_positive",
+            "billing_refunds_status_allowed",
+            "billing_refunds_reason_not_blank",
+            "billing_disputes_hold_amount_positive",
+            "billing_disputes_status_allowed",
+            "billing_disputes_reason_not_blank",
+            "billing_reconciliation_events_status_allowed",
+            "idx_billing_disputes_open_invoice",
+            "idx_billing_reconciliation_status",
         ] {
             assert!(sql.contains(needle));
         }

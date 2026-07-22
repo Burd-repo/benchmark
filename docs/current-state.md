@@ -458,7 +458,7 @@ starting the API server or depending on host state:
 
 - `burd-protocol` defines job artifacts, job records, create/list/next/accept/event/result/cancel contracts, and job-scoped data-plane grants.
 - PostgreSQL migration `0012_job_api_data_plane` adds `compute_jobs` and `job_events`.
-- The control plane exposes `POST /v1/jobs`, `GET /v1/jobs/{job_id}`, `GET /v1/providers/{provider_id}/jobs`, `POST /v1/jobs/{job_id}/cancel`, `GET /v1/sessions/{session_id}/jobs/next`, `POST /v1/sessions/{session_id}/jobs/{job_id}/accept`, `POST /v1/sessions/{session_id}/jobs/{job_id}/events`, and `POST /v1/sessions/{session_id}/jobs/{job_id}/result`.
+- The control plane exposes `POST /v1/jobs`, `GET /v1/jobs/{job_id}`, `GET /v1/providers/{provider_id}/jobs`, `POST /v1/jobs/{job_id}/cancel`, `GET /v1/sessions/{session_id}/jobs/next`, `POST /v1/sessions/{session_id}/jobs/{job_id}/accept`, `POST /v1/sessions/{session_id}/jobs/{job_id}/events`, and `POST /v1/sessions/{session_id}/jobs/{job_id}/result`. OpenAPI now includes request/response schemas for the implemented job contracts.
 - Job creation is admin-authorized, idempotent, scoped to one provider/device/session/GPU, and requires an online or degraded session plus backend workload eligibility of `eligible` or `limited`.
 - Jobs are limited to approved templates, CUDA backend, digest-pinned images, structured artifact manifests, and redacted JSON parameters/metadata.
 - Provider sessions pull a job over authenticated outbound session credentials and receive a job-scoped data-plane grant with separate credential material and scoped artifact paths. BN-14 now requires an offered scheduler lease before this pull can assign work.
@@ -466,7 +466,7 @@ starting the API server or depending on host state:
 
 ## BN-14 - Scheduler And Leases
 
-- `burd-protocol` defines job lease records, scheduler run requests/responses, scheduler decisions, and lease list responses.
+- `burd-protocol` defines job lease records, scheduler run requests/responses, scheduler decisions, and lease list responses. OpenAPI now documents the implemented scheduler request, scheduler response, and lease-list schemas.
 - PostgreSQL migration `0013_scheduler_leases` adds `job_leases` plus active-lease uniqueness for one job and one provider/device/GPU.
 - The control plane exposes `POST /v1/scheduler/run`, `GET /v1/jobs/{job_id}/leases`, and `GET /v1/providers/{provider_id}/leases` behind admin authorization.
 - Scheduler runs are bounded and admin-triggered. They expire stale offered leases, scan queued jobs, require active device plus online/degraded session, require backend workload eligibility of `eligible` or `limited`, and offer short-lived leases.
@@ -498,7 +498,7 @@ starting the API server or depending on host state:
 - `burd-protocol` defines customer users, organizations, memberships, projects, quotas, customer API keys, credit ledger entries, marketplace reservations, usage summaries, and customer audit records.
 - PostgreSQL migration `0016_customer_accounts_reservations` adds customer/account/project tables, hashed API keys, append-only customer credit ledger entries, marketplace reservations, and customer audit events. Hardening migration `0022_unique_customer_reservation_credit_entries` prevents duplicate reservation hold/release markers per reservation.
 - The control plane exposes admin endpoints under `/v1/customer/...` to create users, organizations, projects, quotas, API keys, idempotent credit entries, and audit-log reads.
-- Customer API keys authenticate project reservation creation/listing, usage views, and reservation cancellation. Keys are stored as hashes and returned in plaintext only once.
+- Customer API keys authenticate project reservation creation/listing, usage views, and reservation cancellation. Keys are stored as hashes and returned in plaintext only once. OpenAPI now documents the implemented reservation create/cancel/list response schemas.
 - Reservation creation is idempotent, checks customer scope, project/organization status, project quota, listing status/current status, and optional workload-type binding. Active reservations are unique per marketplace listing, and reservation expiry records the same zero-value release ledger marker as cancellation.
 - Customer credits are non-settlement accounting entries in BN-17. Admin credit grants are idempotency-key protected. Reservation hold/release entries use zero credit movement because listing pricing and billing are BN-18 work.
 - BN-17 does not implement checkout, job submission from reservations, provider-side execution, provider-set pricing, billing, Pix, payouts, invoices, refunds, disputes, taxes, or financial settlement.
@@ -506,12 +506,12 @@ starting the API server or depending on host state:
 ## BN-18 - Billing, Pix And Payouts
 
 - `burd-protocol` defines marketplace price records, Pix payment intents, financial ledger lines, billing invoices, balances, payout accounts, payouts, refunds, disputes, and reconciliation event contracts.
-- PostgreSQL migration `0017_billing_pix_payouts` adds marketplace price book, Pix intents, billing invoices, append-only `financial_ledger_lines`, provider payout accounts, provider payouts, refunds, disputes, and reconciliation events. Hardening migration `0021_unique_billing_usage_invoice` prevents one BN-15 usage ledger entry from being settled into multiple billing invoices. Hardening migration `0023_provider_payout_reconciliation_integrity` adds database constraints and indexes for financial ledger lines, payout accounts, payouts, and reconciliation placeholders.
+- PostgreSQL migration `0017_billing_pix_payouts` adds marketplace price book, Pix intents, billing invoices, append-only `financial_ledger_lines`, provider payout accounts, provider payouts, refunds, disputes, and reconciliation events. Hardening migration `0021_unique_billing_usage_invoice` prevents one BN-15 usage ledger entry from being settled into multiple billing invoices. Hardening migration `0023_provider_payout_reconciliation_integrity` adds database constraints and indexes for financial ledger lines, payout accounts, payouts, and reconciliation placeholders. Hardening migration `0024_refund_dispute_placeholder_integrity` bounds refund/dispute placeholder amounts, currencies, reasons, statuses, and duplicate open disputes.
 - The control plane exposes admin endpoints for listing price, billing settlement, invoice reads, provider balances/ledger, payout account upsert, and payout creation.
 - Customer API keys now support `billing:read` and `billing:write`; customer endpoints can create Pix payment intents and read project balances/ledger. BN-18 OpenAPI tests keep customer billing endpoints on `customerBearer` and admin billing/provider/payout endpoints on `adminBearer`.
 - Pix payment intents do not move money until confirmed by admin/adapter; first confirmation appends balanced ledger lines, exact duplicate confirmation is idempotent, and conflicting confirmation references are rejected.
 - Reservation billing settlement requires BN-15 usage, BN-17 reservation, matching provider/device/GPU binding, an active BN-18 listing price, and sufficient confirmed project balance. A usage ledger entry can back only one billing invoice; same-reservation retries return the existing invoice and cross-reservation rebilling conflicts.
-- Provider payouts require verified KYC/tax state, minimum payout, payable balance, and hold policy. The OpenAPI document now explicitly covers BN-18 error envelopes, idempotency conflicts, billing settlement conflicts, Pix confirmation conflicts, and payout policy conflicts without claiming bank execution.
+- Provider payouts require verified KYC/tax state, minimum payout, payable balance, and hold policy. The OpenAPI document now explicitly covers BN-18 error envelopes, idempotency conflicts, billing settlement conflicts, Pix confirmation conflicts, payout policy conflicts, and provider payout status vocabulary without claiming bank execution or paid/failed/cancelled transition endpoints.
 - BN-18 does not call a real Pix gateway, verify webhook signatures, execute bank payouts, provide checkout UI, or complete legal/KYC/tax workflows.
 
 ## BN-19 - Observability And SRE
