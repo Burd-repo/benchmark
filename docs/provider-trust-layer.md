@@ -41,8 +41,8 @@ policy decision.
 11. Provider Console trust UI.
 12. Documentation consolidation.
 
-PR 1 through PR 9 are implemented locally. The remaining PRs are future work
-and should stay small, deterministic, and independent from a real backend.
+PR 1 through PR 9 are implemented locally.
+The higher-numbered Burd Network BNs now live in the control-plane docs and cover backend registry, sessions, evidence, proof, policy, jobs, billing, observability, attestation, and multi-GPU inventory. This document stays focused on the local provider trust layer and its present local-only signals.
 
 ## PR 3 Summary
 

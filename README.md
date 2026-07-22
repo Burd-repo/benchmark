@@ -205,7 +205,7 @@ burd-agent remote-session status --json
 O agente mantem uma conexao WebSocket de saida autenticada, com heartbeat
 sequenciado, retomada e backoff. Veja
 [`docs/bn-03-remote-session.md`](docs/bn-03-remote-session.md).
-[docs/bn-04-gpu-telemetry.md](docs/bn-04-gpu-telemetry.md).
+O BN-04 adiciona telemetria GPU assinada no control plane; veja [`docs/bn-04-gpu-telemetry.md`](docs/bn-04-gpu-telemetry.md).
 O BN-05 adiciona registry remoto de evidencias assinadas no control plane; veja
 [`docs/bn-05-remote-evidence-registry.md`](docs/bn-05-remote-evidence-registry.md).
 O BN-06 adiciona protocolo backend-issued de Proof of Capability ativo no

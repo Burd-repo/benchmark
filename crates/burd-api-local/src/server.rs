@@ -493,13 +493,7 @@ fn auth_failure(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Option<(StatusCode, Json<serde_json::Value>)> {
-    let config = load_identity().ok();
-    let auth_enabled = config
-        .as_ref()
-        .map(|config| config.api_auth_enabled && config.api_token_hash.is_some())
-        .unwrap_or(false);
-
-    if !auth_enabled {
+    if !api_auth_required() {
         return None;
     }
 
@@ -527,27 +521,51 @@ fn auth_failure(
         ))
     }
 }
-
 fn ok_json(value: serde_json::Value) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::OK, Json(value))
 }
 
 fn api_auth_warning(host: &str) -> Option<String> {
-    let token_configured = load_identity()
-        .map(|config| config.api_auth_enabled && config.api_token_hash.is_some())
-        .unwrap_or(false);
-    if token_configured {
-        None
-    } else if host == "127.0.0.1" || host == "::1" || host == "localhost" {
-        Some("dev mode: local API token is not configured on loopback".to_string())
-    } else {
-        Some(
-            "strong warning: local API token is not configured while binding beyond loopback"
+    let config_path = burd_protocol::default_config_path();
+    if !config_path.exists() {
+        return if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+            Some("dev mode: local API token is not configured on loopback".to_string())
+        } else {
+            Some(
+                "strong warning: local API token is not configured while binding beyond loopback"
+                    .to_string(),
+            )
+        };
+    }
+
+    match load_identity() {
+        Ok(config) if config.api_auth_enabled && config.api_token_hash.is_some() => None,
+        Ok(_) => {
+            if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+                Some("dev mode: local API token is not configured on loopback".to_string())
+            } else {
+                Some(
+                    "strong warning: local API token is not configured while binding beyond loopback"
+                        .to_string(),
+                )
+            }
+        }
+        Err(_) => Some(
+            "strong warning: local API token configuration exists but could not be loaded; protected endpoints fail closed"
                 .to_string(),
-        )
+        ),
     }
 }
+fn api_auth_required() -> bool {
+    let config_path = burd_protocol::default_config_path();
+    if !config_path.exists() {
+        return false;
+    }
 
+    load_identity()
+        .map(|config| config.api_auth_enabled && config.api_token_hash.is_some())
+        .unwrap_or(true)
+}
 fn system_and_score(agent_version: &str) -> (burd_hardware::SystemReport, burd_bench::ScoreReport) {
     let specs = detect_specs();
     let system = build_system_report(&specs, agent_version);
@@ -773,6 +791,30 @@ mod tests {
         let serialized = serde_json::to_string(&valid_value).unwrap();
         assert!(!serialized.contains(&env.api_token));
         assert!(!serialized.contains(&env.api_token_hash));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn protected_endpoint_fails_closed_when_auth_config_is_corrupted() {
+        let _lock = env_lock().await;
+        let env = TestEnv::new(true);
+        env.write_auth_config();
+        fs::write(&env.config_path, "{ not valid json").unwrap();
+
+        let (status, value) = request_json(Method::GET, "/api/v1/config").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(value["status"], "unauthorized");
+        assert_eq!(value["error"], "missing or invalid API token");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn api_auth_warning_reports_corrupted_config() {
+        let _lock = env_lock().await;
+        let env = TestEnv::new(true);
+        env.write_auth_config();
+        fs::write(&env.config_path, "{ not valid json").unwrap();
+
+        let warning = api_auth_warning("127.0.0.1").unwrap();
+        assert!(warning.contains("could not be loaded"));
     }
 
     #[tokio::test(flavor = "current_thread")]
