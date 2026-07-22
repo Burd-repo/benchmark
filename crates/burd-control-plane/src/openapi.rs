@@ -1,5 +1,5 @@
 pub fn document() -> serde_json::Value {
-    serde_json::json!({
+    let mut document = serde_json::json!({
         "openapi": "3.1.0",
         "info": {
             "title": "Burd Control Plane API",
@@ -1039,7 +1039,622 @@ pub fn document() -> serde_json::Value {
                 }
             }
         }
-    })
+    });
+    add_jobs_scheduler_reservation_contracts(&mut document);
+    document
+}
+
+fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
+    let schemas = document["components"]["schemas"]
+        .as_object_mut()
+        .expect("OpenAPI schemas object");
+    schemas.insert(
+        "JobArtifact".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["artifact_id", "role", "object_key"],
+            "properties": {
+                "artifact_id": { "type": "string" },
+                "role": { "type": "string", "enum": ["input", "output", "model", "config", "log", "artifact"] },
+                "object_key": { "type": "string" },
+                "sha256": { "type": ["string", "null"] },
+                "size_bytes": { "type": ["integer", "null"], "minimum": 0 },
+                "content_type": { "type": ["string", "null"] }
+            }
+        }),
+    );
+    schemas.insert(
+        "CreateJobRequest".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["provider_id", "device_id", "session_id", "workload_type", "template_id", "image_ref", "gpu_uuid", "backend"],
+            "properties": {
+                "client_job_id": { "type": ["string", "null"] },
+                "provider_id": { "type": "string" },
+                "device_id": { "type": "string" },
+                "session_id": { "type": "string" },
+                "workload_type": { "type": "string" },
+                "template_id": { "type": "string", "enum": ["llm_inference", "embeddings", "image_generation", "transcription"] },
+                "image_ref": { "type": "string", "description": "Digest-pinned image reference; tag-only references are rejected by runtime validation." },
+                "gpu_uuid": { "type": "string" },
+                "backend": { "type": "string", "enum": ["cuda"] },
+                "parameters": { "type": "object", "additionalProperties": true },
+                "input_artifacts": { "type": "array", "items": { "$ref": "#/components/schemas/JobArtifact" } },
+                "expected_outputs": { "type": "array", "items": { "$ref": "#/components/schemas/JobArtifact" } },
+                "timeout_seconds": { "type": ["integer", "null"], "minimum": 1, "maximum": 86400 },
+                "policy_id": { "type": ["string", "null"] },
+                "policy_version": { "type": ["string", "null"] }
+            }
+        }),
+    );
+    schemas.insert(
+        "JobRecord".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["job_id", "provider_id", "device_id", "session_id", "schema_version", "workload_type", "template_id", "image_ref", "gpu_uuid", "backend", "status", "timeout_seconds", "created_at", "updated_at"],
+            "properties": {
+                "job_id": { "type": "string" },
+                "client_job_id": { "type": ["string", "null"] },
+                "provider_id": { "type": "string" },
+                "device_id": { "type": "string" },
+                "session_id": { "type": "string" },
+                "schema_version": { "type": "string", "const": "burd-job-v1" },
+                "workload_type": { "type": "string" },
+                "template_id": { "type": "string" },
+                "image_ref": { "type": "string" },
+                "gpu_uuid": { "type": "string" },
+                "backend": { "type": "string", "enum": ["cuda"] },
+                "parameters": { "type": "object", "additionalProperties": true },
+                "input_artifacts": { "type": "array", "items": { "$ref": "#/components/schemas/JobArtifact" } },
+                "expected_outputs": { "type": "array", "items": { "$ref": "#/components/schemas/JobArtifact" } },
+                "result_artifacts": { "type": "array", "items": { "$ref": "#/components/schemas/JobArtifact" } },
+                "policy_id": { "type": ["string", "null"] },
+                "policy_version": { "type": ["string", "null"] },
+                "status": { "type": "string", "enum": ["queued", "assigned", "accepted", "provisioning", "running", "uploading", "succeeded", "failed", "cancelled"] },
+                "progress_percent": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                "status_message": { "type": ["string", "null"] },
+                "error_code": { "type": ["string", "null"] },
+                "error_message": { "type": ["string", "null"] },
+                "cancellation_reason": { "type": ["string", "null"] },
+                "timeout_seconds": { "type": "integer", "minimum": 1 },
+                "created_at": { "type": "string", "format": "date-time" },
+                "assigned_at": { "type": ["string", "null"], "format": "date-time" },
+                "accepted_at": { "type": ["string", "null"], "format": "date-time" },
+                "started_at": { "type": ["string", "null"], "format": "date-time" },
+                "completed_at": { "type": ["string", "null"], "format": "date-time" },
+                "updated_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "CreateJobResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "job", "duplicate"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "job": { "$ref": "#/components/schemas/JobRecord" },
+                "duplicate": { "type": "boolean" }
+            }
+        }),
+    );
+    schemas.insert(
+        "JobResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "job"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "job": { "$ref": "#/components/schemas/JobRecord" }
+            }
+        }),
+    );
+    schemas.insert(
+        "ListJobsResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "jobs"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "jobs": { "type": "array", "items": { "$ref": "#/components/schemas/JobRecord" } }
+            }
+        }),
+    );
+    schemas.insert(
+        "JobDataPlaneUrl".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["artifact_id", "method", "url", "expires_at"],
+            "properties": {
+                "artifact_id": { "type": "string" },
+                "method": { "type": "string", "enum": ["GET", "PUT"] },
+                "url": { "type": "string" },
+                "expires_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "JobDataPlaneGrant".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["schema_version", "job_id", "credential", "credential_expires_at", "download_urls", "upload_urls"],
+            "properties": {
+                "schema_version": { "type": "string", "const": "burd-job-data-plane-grant-v1" },
+                "job_id": { "type": "string" },
+                "credential": { "type": "string", "description": "Returned once to the authorized provider session; clients must redact it from logs." },
+                "credential_expires_at": { "type": "string", "format": "date-time" },
+                "download_urls": { "type": "array", "items": { "$ref": "#/components/schemas/JobDataPlaneUrl" } },
+                "upload_urls": { "type": "array", "items": { "$ref": "#/components/schemas/JobDataPlaneUrl" } }
+            }
+        }),
+    );
+    schemas.insert(
+        "NextJobResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "job": { "oneOf": [{ "$ref": "#/components/schemas/JobRecord" }, { "type": "null" }] },
+                "data_plane": { "oneOf": [{ "$ref": "#/components/schemas/JobDataPlaneGrant" }, { "type": "null" }] },
+                "lease": { "oneOf": [{ "$ref": "#/components/schemas/JobLeaseRecord" }, { "type": "null" }] }
+            }
+        }),
+    );
+    schemas.insert(
+        "AcceptJobRequest".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "properties": { "status_message": { "type": ["string", "null"] } }
+        }),
+    );
+    schemas.insert(
+        "JobEventRequest".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["sequence", "event_type"],
+            "properties": {
+                "sequence": { "type": "integer", "minimum": 1 },
+                "event_type": { "type": "string", "enum": ["provisioning", "started", "running", "uploading", "progress"] },
+                "progress_percent": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                "message": { "type": ["string", "null"] },
+                "metadata": { "type": "object", "additionalProperties": true },
+                "occurred_at": { "type": ["string", "null"], "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "JobEventRecord".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["event_id", "job_id", "provider_id", "device_id", "session_id", "sequence", "schema_version", "event_type", "metadata", "occurred_at", "server_received_at"],
+            "properties": {
+                "event_id": { "type": "string" },
+                "job_id": { "type": "string" },
+                "provider_id": { "type": "string" },
+                "device_id": { "type": "string" },
+                "session_id": { "type": "string" },
+                "sequence": { "type": "integer", "minimum": 1 },
+                "schema_version": { "type": "string", "const": "burd-job-event-v1" },
+                "event_type": { "type": "string" },
+                "progress_percent": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                "message": { "type": ["string", "null"] },
+                "metadata": { "type": "object", "additionalProperties": true },
+                "occurred_at": { "type": "string", "format": "date-time" },
+                "server_received_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "JobEventResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "event", "job"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "event": { "$ref": "#/components/schemas/JobEventRecord" },
+                "job": { "$ref": "#/components/schemas/JobRecord" }
+            }
+        }),
+    );
+    schemas.insert(
+        "SubmitJobResultRequest".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["status"],
+            "properties": {
+                "status": { "type": "string", "enum": ["succeeded", "failed"] },
+                "result_artifacts": { "type": "array", "items": { "$ref": "#/components/schemas/JobArtifact" } },
+                "metrics": { "type": "object", "additionalProperties": true },
+                "error_code": { "type": ["string", "null"] },
+                "error_message": { "type": ["string", "null"] },
+                "completed_at": { "type": ["string", "null"], "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "SubmitJobResultResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "job"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "job": { "$ref": "#/components/schemas/JobRecord" }
+            }
+        }),
+    );
+    schemas.insert(
+        "CancelJobRequest".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "properties": { "reason": { "type": ["string", "null"] } }
+        }),
+    );
+    schemas.insert(
+        "JobLeaseRecord".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["lease_id", "job_id", "provider_id", "device_id", "session_id", "schema_version", "workload_type", "gpu_uuid", "status", "reason_codes", "offered_at", "expires_at", "created_at", "updated_at"],
+            "properties": {
+                "lease_id": { "type": "string" },
+                "job_id": { "type": "string" },
+                "provider_id": { "type": "string" },
+                "device_id": { "type": "string" },
+                "session_id": { "type": "string" },
+                "schema_version": { "type": "string", "const": "burd-job-lease-v1" },
+                "workload_type": { "type": "string" },
+                "gpu_uuid": { "type": "string" },
+                "policy_id": { "type": ["string", "null"] },
+                "policy_version": { "type": ["string", "null"] },
+                "status": { "type": "string", "enum": ["offered", "accepted", "provisioning", "active", "completed", "failed", "expired"] },
+                "reason_codes": { "type": "array", "items": { "type": "string" } },
+                "offered_at": { "type": "string", "format": "date-time" },
+                "expires_at": { "type": "string", "format": "date-time" },
+                "accepted_at": { "type": ["string", "null"], "format": "date-time" },
+                "provisioning_at": { "type": ["string", "null"], "format": "date-time" },
+                "active_at": { "type": ["string", "null"], "format": "date-time" },
+                "completed_at": { "type": ["string", "null"], "format": "date-time" },
+                "failure_reason": { "type": ["string", "null"] },
+                "created_at": { "type": "string", "format": "date-time" },
+                "updated_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "RunSchedulerRequest".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "limit": { "type": ["integer", "null"], "minimum": 1, "maximum": 200 },
+                "lease_ttl_seconds": { "type": ["integer", "null"], "minimum": 1, "maximum": 900 },
+                "reason": { "type": ["string", "null"] }
+            }
+        }),
+    );
+    schemas.insert(
+        "SchedulerDecisionRecord".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["job_id", "provider_id", "device_id", "session_id", "gpu_uuid", "decision", "reason_codes"],
+            "properties": {
+                "job_id": { "type": "string" },
+                "lease_id": { "type": ["string", "null"] },
+                "provider_id": { "type": "string" },
+                "device_id": { "type": "string" },
+                "session_id": { "type": "string" },
+                "gpu_uuid": { "type": "string" },
+                "decision": { "type": "string", "enum": ["offered", "skipped", "expired"] },
+                "reason_codes": { "type": "array", "items": { "type": "string" } }
+            }
+        }),
+    );
+    schemas.insert(
+        "RunSchedulerResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "evaluated", "offered", "expired", "skipped", "decisions"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "evaluated": { "type": "integer", "minimum": 0 },
+                "offered": { "type": "integer", "minimum": 0 },
+                "expired": { "type": "integer", "minimum": 0 },
+                "skipped": { "type": "integer", "minimum": 0 },
+                "decisions": { "type": "array", "items": { "$ref": "#/components/schemas/SchedulerDecisionRecord" } }
+            }
+        }),
+    );
+    schemas.insert(
+        "ListJobLeasesResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "leases"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "leases": { "type": "array", "items": { "$ref": "#/components/schemas/JobLeaseRecord" } }
+            }
+        }),
+    );
+    schemas.insert(
+        "CreateReservationRequest".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["listing_id", "duration_seconds"],
+            "properties": {
+                "listing_id": { "type": "string" },
+                "duration_seconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+                "starts_at": { "type": ["string", "null"], "format": "date-time" },
+                "workload_type": { "type": ["string", "null"] }
+            }
+        }),
+    );
+    schemas.insert(
+        "CancelReservationRequest".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "properties": { "reason": { "type": ["string", "null"] } }
+        }),
+    );
+    schemas.insert(
+        "MarketplaceReservationRecord".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["reservation_id", "organization_id", "project_id", "listing_id", "provider_id", "device_id", "schema_version", "workload_type", "status", "starts_at", "expires_at", "reserved_gpu_seconds", "reason_codes", "created_at", "updated_at"],
+            "properties": {
+                "reservation_id": { "type": "string" },
+                "organization_id": { "type": "string" },
+                "project_id": { "type": "string" },
+                "listing_id": { "type": "string" },
+                "provider_id": { "type": "string" },
+                "device_id": { "type": "string" },
+                "session_id": { "type": ["string", "null"] },
+                "schema_version": { "type": "string", "const": "burd-marketplace-reservation-v1" },
+                "workload_type": { "type": "string" },
+                "gpu_uuid": { "type": ["string", "null"] },
+                "status": { "type": "string", "enum": ["reserved", "cancelled", "expired"] },
+                "starts_at": { "type": "string", "format": "date-time" },
+                "expires_at": { "type": "string", "format": "date-time" },
+                "cancelled_at": { "type": ["string", "null"], "format": "date-time" },
+                "reserved_gpu_seconds": { "type": "integer", "minimum": 1 },
+                "reason_codes": { "type": "array", "items": { "type": "string" } },
+                "created_at": { "type": "string", "format": "date-time" },
+                "updated_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "MarketplaceReservationResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "reservation", "duplicate"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "reservation": { "$ref": "#/components/schemas/MarketplaceReservationRecord" },
+                "duplicate": { "type": "boolean" }
+            }
+        }),
+    );
+    schemas.insert(
+        "ListMarketplaceReservationsResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "reservations"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "reservations": { "type": "array", "items": { "$ref": "#/components/schemas/MarketplaceReservationRecord" } }
+            }
+        }),
+    );
+    schemas.insert(
+        "ProviderPayoutRecord".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["payout_id", "provider_id", "payout_account_id", "schema_version", "status", "amount_micros", "currency", "created_at", "updated_at"],
+            "properties": {
+                "payout_id": { "type": "string" },
+                "provider_id": { "type": "string" },
+                "payout_account_id": { "type": "string" },
+                "schema_version": { "type": "string", "const": "burd-provider-payout-v1" },
+                "status": { "type": "string", "enum": ["held", "approved", "paid", "failed", "cancelled"], "description": "Current API creates held or approved payouts only. paid, failed, and cancelled are reserved for future adapter/admin transition APIs." },
+                "amount_micros": { "type": "integer", "minimum": 1 },
+                "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+                "hold_until": { "type": ["string", "null"], "format": "date-time" },
+                "external_reference": { "type": ["string", "null"] },
+                "paid_at": { "type": ["string", "null"], "format": "date-time" },
+                "created_at": { "type": "string", "format": "date-time" },
+                "updated_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "ProviderPayoutResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "payout"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "payout": { "$ref": "#/components/schemas/ProviderPayoutRecord" }
+            }
+        }),
+    );
+
+    set_request_body(document, "/v1/jobs", "post", "CreateJobRequest");
+    set_json_response(document, "/v1/jobs", "post", "201", "CreateJobResponse");
+    set_json_response(document, "/v1/jobs/{job_id}", "get", "200", "JobResponse");
+    set_request_body(
+        document,
+        "/v1/jobs/{job_id}/cancel",
+        "post",
+        "CancelJobRequest",
+    );
+    set_json_response(
+        document,
+        "/v1/jobs/{job_id}/cancel",
+        "post",
+        "200",
+        "JobResponse",
+    );
+    set_json_response(
+        document,
+        "/v1/providers/{provider_id}/jobs",
+        "get",
+        "200",
+        "ListJobsResponse",
+    );
+    set_request_body(document, "/v1/scheduler/run", "post", "RunSchedulerRequest");
+    set_json_response(
+        document,
+        "/v1/scheduler/run",
+        "post",
+        "202",
+        "RunSchedulerResponse",
+    );
+    set_json_response(
+        document,
+        "/v1/jobs/{job_id}/leases",
+        "get",
+        "200",
+        "ListJobLeasesResponse",
+    );
+    set_json_response(
+        document,
+        "/v1/providers/{provider_id}/leases",
+        "get",
+        "200",
+        "ListJobLeasesResponse",
+    );
+    set_json_response(
+        document,
+        "/v1/sessions/{session_id}/jobs/next",
+        "get",
+        "200",
+        "NextJobResponse",
+    );
+    set_request_body(
+        document,
+        "/v1/sessions/{session_id}/jobs/{job_id}/accept",
+        "post",
+        "AcceptJobRequest",
+    );
+    set_json_response(
+        document,
+        "/v1/sessions/{session_id}/jobs/{job_id}/accept",
+        "post",
+        "200",
+        "JobResponse",
+    );
+    set_request_body(
+        document,
+        "/v1/sessions/{session_id}/jobs/{job_id}/events",
+        "post",
+        "JobEventRequest",
+    );
+    set_json_response(
+        document,
+        "/v1/sessions/{session_id}/jobs/{job_id}/events",
+        "post",
+        "201",
+        "JobEventResponse",
+    );
+    set_request_body(
+        document,
+        "/v1/sessions/{session_id}/jobs/{job_id}/result",
+        "post",
+        "SubmitJobResultRequest",
+    );
+    set_json_response(
+        document,
+        "/v1/sessions/{session_id}/jobs/{job_id}/result",
+        "post",
+        "200",
+        "SubmitJobResultResponse",
+    );
+    set_json_response(
+        document,
+        "/v1/customer/projects/{project_id}/reservations",
+        "get",
+        "200",
+        "ListMarketplaceReservationsResponse",
+    );
+    set_request_body(
+        document,
+        "/v1/customer/projects/{project_id}/reservations",
+        "post",
+        "CreateReservationRequest",
+    );
+    set_json_response(
+        document,
+        "/v1/customer/projects/{project_id}/reservations",
+        "post",
+        "201",
+        "MarketplaceReservationResponse",
+    );
+    set_request_body(
+        document,
+        "/v1/customer/reservations/{reservation_id}/cancel",
+        "post",
+        "CancelReservationRequest",
+    );
+    set_json_response(
+        document,
+        "/v1/customer/reservations/{reservation_id}/cancel",
+        "post",
+        "200",
+        "MarketplaceReservationResponse",
+    );
+    set_json_response(
+        document,
+        "/v1/billing/providers/{provider_id}/payouts",
+        "post",
+        "201",
+        "ProviderPayoutResponse",
+    );
+}
+
+fn set_request_body(document: &mut serde_json::Value, path: &str, method: &str, schema: &str) {
+    operation_object_mut(document, path, method).insert(
+        "requestBody".to_string(),
+        serde_json::json!({
+            "required": true,
+            "content": { "application/json": { "schema": { "$ref": format!("#/components/schemas/{schema}") } } }
+        }),
+    );
+}
+
+fn set_json_response(
+    document: &mut serde_json::Value,
+    path: &str,
+    method: &str,
+    status: &str,
+    schema: &str,
+) {
+    let operation = operation_object_mut(document, path, method);
+    let responses = operation
+        .get_mut("responses")
+        .and_then(|value| value.as_object_mut())
+        .expect("OpenAPI operation responses object");
+    let response = responses
+        .get_mut(status)
+        .and_then(|value| value.as_object_mut())
+        .expect("OpenAPI response object");
+    response.insert(
+        "content".to_string(),
+        serde_json::json!({
+            "application/json": { "schema": { "$ref": format!("#/components/schemas/{schema}") } }
+        }),
+    );
+}
+
+fn operation_object_mut<'a>(
+    document: &'a mut serde_json::Value,
+    path: &str,
+    method: &str,
+) -> &'a mut serde_json::Map<String, serde_json::Value> {
+    document
+        .get_mut("paths")
+        .and_then(|value| value.get_mut(path))
+        .and_then(|value| value.get_mut(method))
+        .and_then(|value| value.as_object_mut())
+        .expect("OpenAPI operation object")
 }
 
 #[cfg(test)]
@@ -1285,6 +1900,163 @@ mod tests {
             );
             assert_no_idempotency_header(operation);
         }
+    }
+    #[test]
+    fn openapi_documents_job_scheduler_reservation_schemas() {
+        fn request_schema_ref<'a>(
+            paths: &'a serde_json::Map<String, serde_json::Value>,
+            path: &str,
+            method: &str,
+        ) -> &'a str {
+            paths[path][method]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+                .as_str()
+                .expect("request schema ref")
+        }
+
+        fn response_schema_ref<'a>(
+            paths: &'a serde_json::Map<String, serde_json::Value>,
+            path: &str,
+            method: &str,
+            status: &str,
+        ) -> &'a str {
+            paths[path][method]["responses"][status]["content"]["application/json"]["schema"]["$ref"]
+                .as_str()
+                .expect("response schema ref")
+        }
+
+        let document = document();
+        let schemas = document["components"]["schemas"].as_object().unwrap();
+        for schema in [
+            "JobArtifact",
+            "CreateJobRequest",
+            "JobRecord",
+            "CreateJobResponse",
+            "JobResponse",
+            "ListJobsResponse",
+            "JobDataPlaneGrant",
+            "NextJobResponse",
+            "JobEventRequest",
+            "JobEventResponse",
+            "SubmitJobResultRequest",
+            "SubmitJobResultResponse",
+            "CancelJobRequest",
+            "JobLeaseRecord",
+            "RunSchedulerRequest",
+            "RunSchedulerResponse",
+            "ListJobLeasesResponse",
+            "CreateReservationRequest",
+            "CancelReservationRequest",
+            "MarketplaceReservationRecord",
+            "MarketplaceReservationResponse",
+            "ListMarketplaceReservationsResponse",
+        ] {
+            assert!(schemas.contains_key(schema), "missing schema {schema}");
+        }
+
+        let paths = document["paths"].as_object().unwrap();
+        assert_eq!(
+            request_schema_ref(paths, "/v1/jobs", "post"),
+            "#/components/schemas/CreateJobRequest"
+        );
+        assert_eq!(
+            response_schema_ref(paths, "/v1/jobs", "post", "201"),
+            "#/components/schemas/CreateJobResponse"
+        );
+        assert_eq!(
+            response_schema_ref(paths, "/v1/providers/{provider_id}/jobs", "get", "200"),
+            "#/components/schemas/ListJobsResponse"
+        );
+        assert_eq!(
+            request_schema_ref(paths, "/v1/scheduler/run", "post"),
+            "#/components/schemas/RunSchedulerRequest"
+        );
+        assert_eq!(
+            response_schema_ref(paths, "/v1/scheduler/run", "post", "202"),
+            "#/components/schemas/RunSchedulerResponse"
+        );
+        assert_eq!(
+            response_schema_ref(paths, "/v1/jobs/{job_id}/leases", "get", "200"),
+            "#/components/schemas/ListJobLeasesResponse"
+        );
+        assert_eq!(
+            request_schema_ref(
+                paths,
+                "/v1/sessions/{session_id}/jobs/{job_id}/events",
+                "post"
+            ),
+            "#/components/schemas/JobEventRequest"
+        );
+        assert_eq!(
+            response_schema_ref(
+                paths,
+                "/v1/sessions/{session_id}/jobs/{job_id}/result",
+                "post",
+                "200",
+            ),
+            "#/components/schemas/SubmitJobResultResponse"
+        );
+        assert_eq!(
+            request_schema_ref(
+                paths,
+                "/v1/customer/projects/{project_id}/reservations",
+                "post"
+            ),
+            "#/components/schemas/CreateReservationRequest"
+        );
+        assert_eq!(
+            response_schema_ref(
+                paths,
+                "/v1/customer/projects/{project_id}/reservations",
+                "get",
+                "200",
+            ),
+            "#/components/schemas/ListMarketplaceReservationsResponse"
+        );
+        assert_eq!(
+            request_schema_ref(
+                paths,
+                "/v1/customer/reservations/{reservation_id}/cancel",
+                "post"
+            ),
+            "#/components/schemas/CancelReservationRequest"
+        );
+    }
+
+    #[test]
+    fn openapi_documents_payout_status_without_transition_endpoints() {
+        let document = document();
+        let schemas = document["components"]["schemas"].as_object().unwrap();
+        let payout_status = schemas["ProviderPayoutRecord"]["properties"]["status"]["enum"]
+            .as_array()
+            .unwrap();
+        for status in ["held", "approved", "paid", "failed", "cancelled"] {
+            assert!(
+                payout_status.iter().any(|value| value == status),
+                "missing payout status {status}"
+            );
+        }
+        assert!(
+            schemas["ProviderPayoutRecord"]["properties"]["status"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("reserved for future")
+        );
+        let paths = document["paths"].as_object().unwrap();
+        for path in [
+            "/v1/billing/providers/{provider_id}/payouts/{payout_id}/paid",
+            "/v1/billing/providers/{provider_id}/payouts/{payout_id}/failed",
+            "/v1/billing/providers/{provider_id}/payouts/{payout_id}/cancel",
+        ] {
+            assert!(
+                !paths.contains_key(path),
+                "unimplemented payout transition endpoint must not be documented"
+            );
+        }
+        assert_eq!(
+            paths["/v1/billing/providers/{provider_id}/payouts"]["post"]["responses"]["201"]["content"]
+                ["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ProviderPayoutResponse"
+        );
     }
     #[test]
     fn openapi_documents_bn18_billing_error_contracts() {

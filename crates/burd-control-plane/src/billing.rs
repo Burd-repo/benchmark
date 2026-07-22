@@ -1989,8 +1989,51 @@ mod tests {
             )
             .await;
         assert!(invalid_reconciliation_event.is_err());
+        let invalid_refund = client
+            .execute(
+                "INSERT INTO billing_refunds (refund_id, invoice_id, organization_id, project_id, schema_version, status, amount_micros, currency, reason, created_at) VALUES ('refund_invalid_zero', $1, 'org_billing', 'project_billing', 'burd-billing-refund-v1', 'requested', 0, 'BRL', 'operator note', '2026-07-13T00:20:00Z')",
+                &[&invoice.invoice.invoice_id],
+            )
+            .await;
+        assert!(invalid_refund.is_err());
+        let invalid_dispute = client
+            .execute(
+                "INSERT INTO billing_disputes (dispute_id, invoice_id, organization_id, project_id, schema_version, status, reason, hold_amount_micros, currency, created_at, updated_at) VALUES ('dispute_invalid_zero', $1, 'org_billing', 'project_billing', 'burd-billing-dispute-v1', 'opened', 'customer reported issue', 0, 'BRL', '2026-07-13T00:20:00Z', '2026-07-13T00:20:00Z')",
+                &[&invoice.invoice.invoice_id],
+            )
+            .await;
+        assert!(invalid_dispute.is_err());
+        let valid_refund = client
+            .execute(
+                "INSERT INTO billing_refunds (refund_id, invoice_id, organization_id, project_id, schema_version, status, amount_micros, currency, reason, created_at) VALUES ('refund_requested', $1, 'org_billing', 'project_billing', 'burd-billing-refund-v1', 'requested', 1000, 'BRL', 'operator review placeholder', '2026-07-13T00:20:00Z')",
+                &[&invoice.invoice.invoice_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(valid_refund, 1);
+        let valid_open_dispute = client
+            .execute(
+                "INSERT INTO billing_disputes (dispute_id, invoice_id, organization_id, project_id, schema_version, status, reason, hold_amount_micros, currency, created_at, updated_at) VALUES ('dispute_open', $1, 'org_billing', 'project_billing', 'burd-billing-dispute-v1', 'opened', 'customer reported issue', 1000, 'BRL', '2026-07-13T00:20:00Z', '2026-07-13T00:20:00Z')",
+                &[&invoice.invoice.invoice_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(valid_open_dispute, 1);
+        let duplicate_open_dispute = client
+            .execute(
+                "INSERT INTO billing_disputes (dispute_id, invoice_id, organization_id, project_id, schema_version, status, reason, hold_amount_micros, currency, created_at, updated_at) VALUES ('dispute_under_review_duplicate', $1, 'org_billing', 'project_billing', 'burd-billing-dispute-v1', 'under_review', 'second open dispute', 1000, 'BRL', '2026-07-13T00:21:00Z', '2026-07-13T00:21:00Z')",
+                &[&invoice.invoice.invoice_id],
+            )
+            .await;
+        assert!(duplicate_open_dispute.is_err());
+        let invalid_reconciliation_status = client
+            .execute(
+                "INSERT INTO billing_reconciliation_events (reconciliation_event_id, schema_version, provider, external_reference, amount_micros, currency, event_type, status, created_at) VALUES ('recon_invalid_status', 'burd-billing-reconciliation-v1', 'manual_pix', 'recon_ref_invalid_status', 1000, 'BRL', 'payout_reported', 'pending', '2026-07-13T00:20:00Z')",
+                &[],
+            )
+            .await;
+        assert!(invalid_reconciliation_status.is_err());
         drop(client);
-
         let held_payout = db
             .create_provider_payout(
                 "req_payout_held",
