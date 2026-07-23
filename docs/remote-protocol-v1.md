@@ -21,6 +21,8 @@ The backend path prefix is `/v1`. The existing local agent API under
 - Provider-sent freshness flags, scores, eligibility flags, and local online
   flags are never authoritative.
 - Backend receipt time is authoritative over provider wall-clock time.
+- `GET /openapi.json` exposes structural component schema refs for implemented BN-01 through BN-11 request and response envelopes. Deep nested field details remain governed by the Rust serde contracts until generated schemas are introduced.
+- BN-12 secure runtime planning is agent-local and intentionally has no remote runtime execution endpoint in the control-plane protocol.
 
 ## Authentication
 
