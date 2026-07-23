@@ -1,0 +1,12 @@
+{
+  "request_id": "req_example_session_start",
+  "session_id": "session_example_001",
+  "resume_token": "burd_session_resume_token_example_redacted",
+  "status": "pending_connection",
+  "expires_at": "2026-07-23T01:20:00Z",
+  "heartbeat_interval_seconds": 15,
+  "missed_heartbeat_limit": 3,
+  "sequence_start": 0,
+  "telemetry_sequence_start": 0,
+  "control_url": "wss://control.example.test/v1/sessions/session_example_001/control"
+}

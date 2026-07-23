@@ -1,0 +1,36 @@
+{
+  "payload": {
+    "schema_version": "burd-proof-capability-response-v1",
+    "challenge_id": "challenge_example_001",
+    "nonce": "nonce_challenge_example_001",
+    "provider_id": "provider_example_001",
+    "device_id": "device_example_001",
+    "session_id": "session_example_001",
+    "profile_version": "poc.cuda.llm.short.v1",
+    "hardware_fingerprint": "sha256:example-fingerprint",
+    "gpu_uuid": "GPU-example-001",
+    "backend": "cuda",
+    "model_artifact_hash": "sha256:example-model-artifact-hash",
+    "prompt_seed": "prompt-seed-example-001",
+    "driver_version": "576.80",
+    "cuda_driver_version": "12.9",
+    "cuda_runtime_version": "12.8",
+    "metrics": {
+      "tokens_per_second": 42.5,
+      "ttft_ms": 620,
+      "vram_allocated_mib": 8192,
+      "vram_resident_mib": 8192,
+      "gemm_gflops": 62500.0,
+      "cuda_runtime_detected": true,
+      "backend_proof": "cuda-device-query-example",
+      "contention_detected": false
+    },
+    "telemetry_window_hash": "sha256:example-telemetry-window-hash",
+    "started_at": "2026-07-23T01:00:30Z",
+    "completed_at": "2026-07-23T01:01:15Z"
+  },
+  "response_hash": "sha256:example-proof-response-hash",
+  "public_key_id": "public_key_example_001",
+  "signature": "proof_response_signature_example_redacted",
+  "canonicalization_version": "burd-json-c14n-v1"
+}

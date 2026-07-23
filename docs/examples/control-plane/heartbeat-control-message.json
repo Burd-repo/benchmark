@@ -1,0 +1,14 @@
+{
+  "session_id": "session_example_001",
+  "device_id": "device_example_001",
+  "sequence": 1,
+  "sent_at": "2026-07-23T01:00:10Z",
+  "type": "heartbeat",
+  "payload": {
+    "hardware_fingerprint": "sha256:example-fingerprint",
+    "local_status": {
+      "agent_state": "ready_locally",
+      "job_running": false
+    }
+  }
+}

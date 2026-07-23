@@ -1,0 +1,60 @@
+{
+  "evidence_type": "signed_report",
+  "session_id": "session_example_001",
+  "subject_id": "provider_example_001",
+  "metadata": {
+    "source": "agent-report",
+    "redacted": true
+  },
+  "signed_report": {
+    "provider_id": "provider_example_001",
+    "machine_id": "machine-example-001",
+    "report": {
+      "identity": null,
+      "evidence": null,
+      "hardware_fingerprint": "sha256:example-fingerprint",
+      "marketplace_policy": null,
+      "system": {
+        "primary_gpu_name": "NVIDIA GeForce RTX 4090",
+        "backend_detected": "CUDA"
+      },
+      "fit": null,
+      "llm_benchmark": null,
+      "stability": null,
+      "network": null,
+      "network_score": null,
+      "disk": null,
+      "reliability": null,
+      "ai_performance": null,
+      "score": {
+        "burd_compute_score": 86.7,
+        "tier": "Burd Pro",
+        "eligible": true
+      },
+      "timestamp": "2026-07-23T01:00:00Z",
+      "agent_version": "0.1.0",
+      "benchmark_version": "2026.06-mvp",
+      "benchmark_profile": "profile_24gb",
+      "challenge": null,
+      "signature": {
+        "algorithm": "ed25519",
+        "value": "report_signature_example_redacted",
+        "status": "signed"
+      }
+    },
+    "report_hash": "sha256:example-report-hash",
+    "signature": "signed_report_signature_example_redacted",
+    "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    "key_algorithm": "ed25519",
+    "signed_at": "2026-07-23T01:00:00Z",
+    "evidence": {
+      "issued_at": "2026-07-23T01:00:00Z",
+      "expires_at": "2026-07-30T01:00:00Z",
+      "is_expired": false,
+      "age_seconds": 0,
+      "ttl_seconds": 604800
+    },
+    "signature_valid_locally": true,
+    "canonicalization_version": "burd-json-c14n-v1"
+  }
+}

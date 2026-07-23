@@ -1,0 +1,21 @@
+{
+  "enrollment_token": "burd_enrollment_token_example_redacted",
+  "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "key_algorithm": "ed25519",
+  "local_provider_id": "local-provider-example",
+  "machine_id": "machine-example-001",
+  "registration_payload": {
+    "schema_version": "burd.registration-payload.v1",
+    "provider_id": "local-provider-example",
+    "machine_id": "machine-example-001",
+    "hardware_fingerprint": "sha256:example-fingerprint",
+    "secrets_included": false,
+    "capabilities": {
+      "backend": "cuda",
+      "gpu_count": 1
+    }
+  },
+  "hardware_fingerprint": "sha256:example-fingerprint",
+  "agent_version": "0.1.0",
+  "benchmark_version": "2026.06-mvp"
+}

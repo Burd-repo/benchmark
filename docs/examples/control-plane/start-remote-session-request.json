@@ -1,0 +1,13 @@
+{
+  "provider_id": "provider_example_001",
+  "device_id": "device_example_001",
+  "hardware_fingerprint": "sha256:example-fingerprint",
+  "agent_version": "0.1.0",
+  "capabilities": {
+    "backend": "cuda",
+    "gpu_uuids": ["GPU-example-001"],
+    "telemetry": true
+  },
+  "latest_report_hash": "sha256:example-report-hash",
+  "latest_challenge_id": "challenge_example_previous"
+}
