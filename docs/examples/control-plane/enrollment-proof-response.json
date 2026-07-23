@@ -1,0 +1,9 @@
+{
+  "request_id": "req_example_enrollment_proof",
+  "provider_id": "provider_example_001",
+  "device_id": "device_example_001",
+  "public_key_id": "public_key_example_001",
+  "credential": "burd_device_credential_example_redacted",
+  "credential_expires_at": "2026-07-23T01:20:00Z",
+  "status": "active"
+}

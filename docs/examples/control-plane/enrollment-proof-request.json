@@ -1,0 +1,6 @@
+{
+  "nonce": "nonce_example_001",
+  "signature": "ed25519_signature_example_redacted",
+  "public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "hardware_fingerprint": "sha256:example-fingerprint"
+}

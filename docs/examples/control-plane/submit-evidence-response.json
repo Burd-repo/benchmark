@@ -1,0 +1,47 @@
+{
+  "request_id": "req_example_evidence_submit",
+  "duplicate": false,
+  "evidence": {
+    "evidence_id": "evidence_example_001",
+    "provider_id": "provider_example_001",
+    "device_id": "device_example_001",
+    "session_id": "session_example_001",
+    "evidence_type": "signed_report",
+    "subject_id": "provider_example_001",
+    "canonicalization_version": "burd-json-c14n-v1",
+    "evidence_hash": "sha256:example-evidence-hash",
+    "report_hash": "sha256:example-report-hash",
+    "hardware_fingerprint": "sha256:example-fingerprint",
+    "public_key_id": "public_key_example_001",
+    "object_key": "evidence/provider_example_001/evidence_example_001.json",
+    "status": "valid",
+    "server_received_at": "2026-07-23T01:00:12Z",
+    "issued_at": "2026-07-23T01:00:00Z",
+    "expires_at": "2026-07-30T01:00:00Z",
+    "revoked_at": null,
+    "revocation_reason": null,
+    "verification": {
+      "schema_version": "burd.evidence-registry.v1",
+      "checked_at": "2026-07-23T01:00:12Z",
+      "report_hash_valid": true,
+      "evidence_hash_valid": true,
+      "signature_valid": true,
+      "active_key_bound": true,
+      "provider_bound": true,
+      "device_bound": true,
+      "fingerprint_bound": true,
+      "expired_by_server": false,
+      "server_freshness": {
+        "issued_at": "2026-07-23T01:00:00+00:00",
+        "expires_at": "2026-07-30T01:00:00+00:00",
+        "is_expired": false,
+        "age_seconds": 12,
+        "ttl_seconds": 604800
+      },
+      "agent_envelope_claimed_expired": false,
+      "agent_report_claimed_expired": null,
+      "warnings": [],
+      "errors": []
+    }
+  }
+}

@@ -1,3 +1,31 @@
+const START_ENROLLMENT_REQUEST_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/start-enrollment-request.json");
+const START_ENROLLMENT_RESPONSE_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/start-enrollment-response.json");
+const ENROLLMENT_PROOF_REQUEST_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/enrollment-proof-request.json");
+const ENROLLMENT_PROOF_RESPONSE_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/enrollment-proof-response.json");
+const START_REMOTE_SESSION_REQUEST_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/start-remote-session-request.json");
+const START_REMOTE_SESSION_RESPONSE_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/start-remote-session-response.json");
+const HEARTBEAT_CONTROL_MESSAGE_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/heartbeat-control-message.json");
+const HEARTBEAT_RECEIPT_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/heartbeat-receipt.json");
+const SUBMIT_EVIDENCE_REQUEST_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/submit-evidence-request.json");
+const SUBMIT_EVIDENCE_RESPONSE_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/submit-evidence-response.json");
+const ISSUE_PROOF_CHALLENGE_REQUEST_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/issue-proof-challenge-request.json");
+const ISSUE_PROOF_CHALLENGE_RESPONSE_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/issue-proof-challenge-response.json");
+const SIGNED_PROOF_CAPABILITY_RESPONSE_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/signed-proof-capability-response.json");
+const SUBMIT_PROOF_CHALLENGE_RESPONSE_EXAMPLE_JSON: &str =
+    include_str!("../../../docs/examples/control-plane/submit-proof-challenge-response.json");
 pub fn document() -> serde_json::Value {
     let mut document = serde_json::json!({
         "openapi": "3.1.0",
@@ -1045,6 +1073,7 @@ pub fn document() -> serde_json::Value {
     });
     add_bn01_bn11_contracts(&mut document);
     add_jobs_scheduler_reservation_contracts(&mut document);
+    add_control_plane_protocol_examples(&mut document);
     document
 }
 
@@ -2175,6 +2204,193 @@ fn add_bn01_bn11_contracts(document: &mut serde_json::Value) {
     }
 }
 
+fn add_control_plane_protocol_examples(document: &mut serde_json::Value) {
+    {
+        let examples = document["components"]["examples"]
+            .as_object_mut()
+            .expect("OpenAPI examples object");
+        for (name, raw) in [
+            (
+                "StartEnrollmentRequestExample",
+                START_ENROLLMENT_REQUEST_EXAMPLE_JSON,
+            ),
+            (
+                "StartEnrollmentResponseExample",
+                START_ENROLLMENT_RESPONSE_EXAMPLE_JSON,
+            ),
+            (
+                "EnrollmentProofRequestExample",
+                ENROLLMENT_PROOF_REQUEST_EXAMPLE_JSON,
+            ),
+            (
+                "EnrollmentProofResponseExample",
+                ENROLLMENT_PROOF_RESPONSE_EXAMPLE_JSON,
+            ),
+            (
+                "StartRemoteSessionRequestExample",
+                START_REMOTE_SESSION_REQUEST_EXAMPLE_JSON,
+            ),
+            (
+                "StartRemoteSessionResponseExample",
+                START_REMOTE_SESSION_RESPONSE_EXAMPLE_JSON,
+            ),
+            (
+                "HeartbeatControlMessageExample",
+                HEARTBEAT_CONTROL_MESSAGE_EXAMPLE_JSON,
+            ),
+            ("HeartbeatReceiptExample", HEARTBEAT_RECEIPT_EXAMPLE_JSON),
+            (
+                "SubmitEvidenceRequestExample",
+                SUBMIT_EVIDENCE_REQUEST_EXAMPLE_JSON,
+            ),
+            (
+                "SubmitEvidenceResponseExample",
+                SUBMIT_EVIDENCE_RESPONSE_EXAMPLE_JSON,
+            ),
+            (
+                "IssueProofChallengeRequestExample",
+                ISSUE_PROOF_CHALLENGE_REQUEST_EXAMPLE_JSON,
+            ),
+            (
+                "IssueProofChallengeResponseExample",
+                ISSUE_PROOF_CHALLENGE_RESPONSE_EXAMPLE_JSON,
+            ),
+            (
+                "SignedProofCapabilityResponseExample",
+                SIGNED_PROOF_CAPABILITY_RESPONSE_EXAMPLE_JSON,
+            ),
+            (
+                "SubmitProofChallengeResponseExample",
+                SUBMIT_PROOF_CHALLENGE_RESPONSE_EXAMPLE_JSON,
+            ),
+        ] {
+            examples.insert(
+                name.to_string(),
+                serde_json::json!({ "value": control_plane_protocol_example_value(name, raw) }),
+            );
+        }
+    }
+
+    for (path, method, example_key, component_example) in [
+        (
+            "/v1/enrollments",
+            "post",
+            "start_enrollment",
+            "StartEnrollmentRequestExample",
+        ),
+        (
+            "/v1/enrollments/{enrollment_id}/proof",
+            "post",
+            "enrollment_proof",
+            "EnrollmentProofRequestExample",
+        ),
+        (
+            "/v1/sessions",
+            "post",
+            "start_remote_session",
+            "StartRemoteSessionRequestExample",
+        ),
+        (
+            "/v1/sessions/{session_id}/heartbeats",
+            "post",
+            "heartbeat",
+            "HeartbeatControlMessageExample",
+        ),
+        (
+            "/v1/sessions/{session_id}/evidence-records",
+            "post",
+            "submit_evidence",
+            "SubmitEvidenceRequestExample",
+        ),
+        (
+            "/v1/challenges",
+            "post",
+            "issue_proof_challenge",
+            "IssueProofChallengeRequestExample",
+        ),
+        (
+            "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
+            "post",
+            "signed_proof_response",
+            "SignedProofCapabilityResponseExample",
+        ),
+    ] {
+        set_json_request_example(document, path, method, example_key, component_example);
+    }
+
+    for (path, method, status, example_key, component_example) in [
+        (
+            "/v1/enrollments",
+            "post",
+            "202",
+            "start_enrollment",
+            "StartEnrollmentResponseExample",
+        ),
+        (
+            "/v1/enrollments/{enrollment_id}/proof",
+            "post",
+            "201",
+            "enrollment_proof",
+            "EnrollmentProofResponseExample",
+        ),
+        (
+            "/v1/sessions",
+            "post",
+            "201",
+            "start_remote_session",
+            "StartRemoteSessionResponseExample",
+        ),
+        (
+            "/v1/sessions/{session_id}/heartbeats",
+            "post",
+            "200",
+            "heartbeat",
+            "HeartbeatReceiptExample",
+        ),
+        (
+            "/v1/sessions/{session_id}/evidence-records",
+            "post",
+            "201",
+            "submit_evidence",
+            "SubmitEvidenceResponseExample",
+        ),
+        (
+            "/v1/sessions/{session_id}/evidence-records",
+            "post",
+            "200",
+            "submit_evidence_duplicate",
+            "SubmitEvidenceResponseExample",
+        ),
+        (
+            "/v1/challenges",
+            "post",
+            "201",
+            "issue_proof_challenge",
+            "IssueProofChallengeResponseExample",
+        ),
+        (
+            "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
+            "post",
+            "200",
+            "signed_proof_response",
+            "SubmitProofChallengeResponseExample",
+        ),
+    ] {
+        set_json_response_example(
+            document,
+            path,
+            method,
+            status,
+            example_key,
+            component_example,
+        );
+    }
+}
+
+fn control_plane_protocol_example_value(name: &str, raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw)
+        .unwrap_or_else(|error| panic!("invalid OpenAPI example fixture {name}: {error}"))
+}
 fn insert_structural_schemas(
     schemas: &mut serde_json::Map<String, serde_json::Value>,
     definitions: &[(&str, &[&str])],
@@ -2806,6 +3022,57 @@ fn set_json_response(
     );
 }
 
+fn set_json_request_example(
+    document: &mut serde_json::Value,
+    path: &str,
+    method: &str,
+    example_key: &str,
+    component_example: &str,
+) {
+    let operation = operation_object_mut(document, path, method);
+    let json_content = operation
+        .get_mut("requestBody")
+        .and_then(|value| value.get_mut("content"))
+        .and_then(|value| value.get_mut("application/json"))
+        .and_then(|value| value.as_object_mut())
+        .expect("OpenAPI JSON request content object");
+    let examples = json_content
+        .entry("examples".to_string())
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .expect("OpenAPI JSON request examples object");
+    examples.insert(
+        example_key.to_string(),
+        serde_json::json!({ "$ref": format!("#/components/examples/{component_example}") }),
+    );
+}
+
+fn set_json_response_example(
+    document: &mut serde_json::Value,
+    path: &str,
+    method: &str,
+    status: &str,
+    example_key: &str,
+    component_example: &str,
+) {
+    let operation = operation_object_mut(document, path, method);
+    let json_content = operation
+        .get_mut("responses")
+        .and_then(|value| value.get_mut(status))
+        .and_then(|value| value.get_mut("content"))
+        .and_then(|value| value.get_mut("application/json"))
+        .and_then(|value| value.as_object_mut())
+        .expect("OpenAPI JSON response content object");
+    let examples = json_content
+        .entry("examples".to_string())
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .expect("OpenAPI JSON response examples object");
+    examples.insert(
+        example_key.to_string(),
+        serde_json::json!({ "$ref": format!("#/components/examples/{component_example}") }),
+    );
+}
 fn operation_object_mut<'a>(
     document: &'a mut serde_json::Value,
     path: &str,
@@ -3478,6 +3745,229 @@ mod tests {
             .as_array()
             .unwrap();
         assert!(session_required.iter().any(|value| value == "resume_token"));
+    }
+    #[test]
+    fn openapi_protocol_examples_parse_into_burd_protocol_contracts() {
+        fn example_value(document: &serde_json::Value, name: &str) -> serde_json::Value {
+            document["components"]["examples"][name]["value"].clone()
+        }
+
+        let document = document();
+        let start_enrollment: burd_protocol::StartEnrollmentRequest =
+            serde_json::from_value(example_value(&document, "StartEnrollmentRequestExample"))
+                .unwrap();
+        assert_eq!(start_enrollment.key_algorithm, "ed25519");
+        assert_eq!(
+            start_enrollment.registration_payload["secrets_included"],
+            false
+        );
+        let _: burd_protocol::StartEnrollmentResponse =
+            serde_json::from_value(example_value(&document, "StartEnrollmentResponseExample"))
+                .unwrap();
+        let _: burd_protocol::EnrollmentProofRequest =
+            serde_json::from_value(example_value(&document, "EnrollmentProofRequestExample"))
+                .unwrap();
+        let _: burd_protocol::EnrollmentProofResponse =
+            serde_json::from_value(example_value(&document, "EnrollmentProofResponseExample"))
+                .unwrap();
+
+        let start_session: burd_protocol::StartRemoteSessionRequest =
+            serde_json::from_value(example_value(&document, "StartRemoteSessionRequestExample"))
+                .unwrap();
+        assert_eq!(start_session.provider_id, "provider_example_001");
+        let _: burd_protocol::StartRemoteSessionResponse = serde_json::from_value(example_value(
+            &document,
+            "StartRemoteSessionResponseExample",
+        ))
+        .unwrap();
+        let heartbeat: burd_protocol::ClientControlMessage =
+            serde_json::from_value(example_value(&document, "HeartbeatControlMessageExample"))
+                .unwrap();
+        assert_eq!(heartbeat.message_type, "heartbeat");
+        let heartbeat_payload: burd_protocol::HeartbeatPayload =
+            serde_json::from_value(heartbeat.payload).unwrap();
+        assert_eq!(
+            heartbeat_payload.hardware_fingerprint,
+            "sha256:example-fingerprint"
+        );
+        let _: burd_protocol::HeartbeatReceipt =
+            serde_json::from_value(example_value(&document, "HeartbeatReceiptExample")).unwrap();
+
+        let evidence: burd_protocol::SubmitEvidenceRequest =
+            serde_json::from_value(example_value(&document, "SubmitEvidenceRequestExample"))
+                .unwrap();
+        assert_eq!(evidence.signed_report.key_algorithm, "ed25519");
+        let _: burd_protocol::SubmitEvidenceResponse =
+            serde_json::from_value(example_value(&document, "SubmitEvidenceResponseExample"))
+                .unwrap();
+
+        let issue: burd_protocol::IssueProofChallengeRequest = serde_json::from_value(
+            example_value(&document, "IssueProofChallengeRequestExample"),
+        )
+        .unwrap();
+        assert_eq!(issue.required_backend, "cuda");
+        let _: burd_protocol::IssueProofChallengeResponse = serde_json::from_value(example_value(
+            &document,
+            "IssueProofChallengeResponseExample",
+        ))
+        .unwrap();
+        let signed: burd_protocol::SignedProofCapabilityResponse = serde_json::from_value(
+            example_value(&document, "SignedProofCapabilityResponseExample"),
+        )
+        .unwrap();
+        assert_eq!(signed.payload.backend, "cuda");
+        let _: burd_protocol::SubmitProofChallengeResponse = serde_json::from_value(example_value(
+            &document,
+            "SubmitProofChallengeResponseExample",
+        ))
+        .unwrap();
+
+        let serialized = document["components"]["examples"].to_string();
+        for forbidden in ["private_key", "password", "postgres://"] {
+            assert!(
+                !serialized.contains(forbidden),
+                "protocol examples must not contain {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn openapi_wires_protocol_examples_to_high_risk_request_and_response_contracts() {
+        fn request_example_ref<'a>(
+            paths: &'a serde_json::Map<String, serde_json::Value>,
+            path: &str,
+            method: &str,
+            example_key: &str,
+        ) -> &'a str {
+            paths[path][method]["requestBody"]["content"]["application/json"]["examples"]
+                [example_key]["$ref"]
+                .as_str()
+                .expect("request example ref")
+        }
+
+        fn response_example_ref<'a>(
+            paths: &'a serde_json::Map<String, serde_json::Value>,
+            path: &str,
+            method: &str,
+            status: &str,
+            example_key: &str,
+        ) -> &'a str {
+            paths[path][method]["responses"][status]["content"]["application/json"]["examples"]
+                [example_key]["$ref"]
+                .as_str()
+                .expect("response example ref")
+        }
+
+        let document = document();
+        let paths = document["paths"].as_object().unwrap();
+        for (path, method, example_key, component_example) in [
+            (
+                "/v1/enrollments",
+                "post",
+                "start_enrollment",
+                "StartEnrollmentRequestExample",
+            ),
+            (
+                "/v1/enrollments/{enrollment_id}/proof",
+                "post",
+                "enrollment_proof",
+                "EnrollmentProofRequestExample",
+            ),
+            (
+                "/v1/sessions",
+                "post",
+                "start_remote_session",
+                "StartRemoteSessionRequestExample",
+            ),
+            (
+                "/v1/sessions/{session_id}/heartbeats",
+                "post",
+                "heartbeat",
+                "HeartbeatControlMessageExample",
+            ),
+            (
+                "/v1/sessions/{session_id}/evidence-records",
+                "post",
+                "submit_evidence",
+                "SubmitEvidenceRequestExample",
+            ),
+            (
+                "/v1/challenges",
+                "post",
+                "issue_proof_challenge",
+                "IssueProofChallengeRequestExample",
+            ),
+            (
+                "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
+                "post",
+                "signed_proof_response",
+                "SignedProofCapabilityResponseExample",
+            ),
+        ] {
+            assert_eq!(
+                request_example_ref(paths, path, method, example_key),
+                format!("#/components/examples/{component_example}"),
+                "wrong request example for {method} {path}"
+            );
+        }
+
+        for (path, method, status, example_key, component_example) in [
+            (
+                "/v1/enrollments",
+                "post",
+                "202",
+                "start_enrollment",
+                "StartEnrollmentResponseExample",
+            ),
+            (
+                "/v1/enrollments/{enrollment_id}/proof",
+                "post",
+                "201",
+                "enrollment_proof",
+                "EnrollmentProofResponseExample",
+            ),
+            (
+                "/v1/sessions",
+                "post",
+                "201",
+                "start_remote_session",
+                "StartRemoteSessionResponseExample",
+            ),
+            (
+                "/v1/sessions/{session_id}/heartbeats",
+                "post",
+                "200",
+                "heartbeat",
+                "HeartbeatReceiptExample",
+            ),
+            (
+                "/v1/sessions/{session_id}/evidence-records",
+                "post",
+                "201",
+                "submit_evidence",
+                "SubmitEvidenceResponseExample",
+            ),
+            (
+                "/v1/challenges",
+                "post",
+                "201",
+                "issue_proof_challenge",
+                "IssueProofChallengeResponseExample",
+            ),
+            (
+                "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
+                "post",
+                "200",
+                "signed_proof_response",
+                "SubmitProofChallengeResponseExample",
+            ),
+        ] {
+            assert_eq!(
+                response_example_ref(paths, path, method, status, example_key),
+                format!("#/components/examples/{component_example}"),
+                "wrong {status} response example for {method} {path}"
+            );
+        }
     }
     #[test]
     fn openapi_documents_job_scheduler_reservation_schemas() {

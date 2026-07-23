@@ -1,0 +1,7 @@
+{
+  "request_id": "req_example_enrollment_start",
+  "enrollment_id": "enrollment_example_001",
+  "provider_id": "provider_example_001",
+  "nonce": "nonce_example_001",
+  "expires_at": "2026-07-23T01:05:00Z"
+}

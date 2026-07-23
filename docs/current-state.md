@@ -123,6 +123,7 @@ after the June 2026 reliability pass.
 - The control plane can create customer users, organizations, projects, quotas, hashed customer API keys, credit ledger entries, marketplace reservations, usage summaries, and customer audit events. Reservations are scoped to backend-published marketplace listings and project quotas.
 - The control plane exposes operational observability with correlation IDs, structured JSON logs, Prometheus metrics, admin snapshots, background task error counters, and configurable HTTP SLO status.
 - `GET /openapi.json` now attaches structural request/response schema refs for the implemented BN-01 through BN-11 control-plane endpoints. Nested and optional fields continue to follow the Rust serde contracts in `burd-protocol` and `burd-control-plane`.
+- OpenAPI now includes fixture-backed request/response examples for high-risk enrollment, remote session heartbeat, evidence submission, and proof challenge flows; those examples are parsed against `burd-protocol` in tests.
 - Live Axum/router contract tests now exercise implemented BN-01 through BN-11 control-plane paths, protected-route error envelopes, idempotency header validation, and the absence of remote BN-12 runtime execution endpoints.
 - Multi-GPU inventory persists one immutable row per GPU per signed snapshot, deduplicates repeated snapshot rows by `(inventory_hash, gpu_index)`, and gates jobs/scheduler decisions on the latest GPU inventory status.
 - Network benchmark includes latency aliases, request counts, status code,
@@ -299,7 +300,7 @@ starting the API server or depending on host state:
 - PostgreSQL stores only token and credential hashes, never raw values.
 - Credential refresh, device listing, key rotation, and cascading device
   revocation are implemented.
-- OpenAPI documents enrollment token, enrollment proof, device credential, key rotation, device list, and revocation schemas.
+- OpenAPI documents enrollment token, enrollment proof, device credential, key rotation, device list, and revocation schemas, with fixture-backed examples for enrollment start/proof request and response envelopes.
 - `burd-agent enrollment enroll`, `status`, and `refresh-credential` implement
   the agent side without exposing credentials in status or action logs.
 - PostgreSQL integration tests cover enrollment, replay rejection, credential
@@ -323,7 +324,7 @@ starting the API server or depending on host state:
   refresh and reconnect backoff. `remote-session status` reads backend state.
 - PostgreSQL integration coverage exercises start, duplicate rejection,
   heartbeat, degradation, resume, and revocation.
-- OpenAPI documents remote session start, session record, heartbeat control-message receipt, and revocation schemas.
+- OpenAPI documents remote session start, session record, heartbeat control-message receipt, and revocation schemas, with fixture-backed examples for session start and heartbeat HTTP fallback.
 - BN-03 does not implement GPU telemetry, backend-issued challenges, Proof of
   Capability, trust policy, jobs, scheduler, marketplace, billing, Pix, or
   payouts.
@@ -366,7 +367,7 @@ starting the API server or depending on host state:
   the existing record with `duplicate=true`.
 - Admin endpoints list, read, and revoke evidence records. Revocation updates
   metadata and audit history without deleting the stored envelope.
-- OpenAPI documents evidence submit, verification, record/list, and revocation request/response schemas.
+- OpenAPI documents evidence submit, verification, record/list, and revocation request/response schemas, with fixture-backed examples for signed evidence submission and receipt.
 - Accepted signed reports also create hardware snapshot rows for later policy,
   trust, and antifraud consumers.
 - BN-05 does not implement active Proof of Capability, recurring verification,
@@ -395,7 +396,7 @@ starting the API server or depending on host state:
   VRAM, GEMM, LLM metric, contention, and telemetry-window proof fields.
 - Audit events cover challenge issuance, acknowledgement, verification failure,
   verification success, and expiration-by-server-clock.
-- OpenAPI documents proof challenge issuance, challenge retrieval/next-pickup, signed response submission, and verification response schemas.
+- OpenAPI documents proof challenge issuance, challenge retrieval/next-pickup, signed response submission, and verification response schemas, with fixture-backed examples for challenge issuance and signed proof response submission.
 - BN-06 does not implement the agent-side CUDA/VRAM/GEMM/LLM workload runner,
   recurring verification policy state, global trust/antifraud scoring, jobs,
   scheduler, marketplace, billing, Pix, or payouts. BN-07 adds the recurring

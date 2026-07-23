@@ -1,0 +1,26 @@
+{
+  "request_id": "req_example_challenge_submit",
+  "challenge_id": "challenge_example_001",
+  "status": "verified",
+  "response_hash": "sha256:example-proof-response-hash",
+  "server_received_at": "2026-07-23T01:01:16Z",
+  "verification": {
+    "schema_version": "burd-proof-capability-response-v1",
+    "challenge_id": "challenge_example_001",
+    "checked_at": "2026-07-23T01:01:16Z",
+    "response_hash_valid": true,
+    "signature_valid": true,
+    "provider_bound": true,
+    "device_bound": true,
+    "session_bound": true,
+    "fingerprint_bound": true,
+    "gpu_bound": true,
+    "backend_bound": true,
+    "artifact_bound": true,
+    "prompt_bound": true,
+    "metrics_satisfied": true,
+    "expired_by_server": false,
+    "warnings": [],
+    "errors": []
+  }
+}

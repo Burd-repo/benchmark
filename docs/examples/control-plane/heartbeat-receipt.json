@@ -1,0 +1,8 @@
+{
+  "request_id": "req_example_heartbeat",
+  "session_id": "session_example_001",
+  "sequence_ack": 1,
+  "status": "online",
+  "server_time": "2026-07-23T01:00:11Z",
+  "next_heartbeat_seconds": 15
+}

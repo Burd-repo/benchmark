@@ -1,0 +1,22 @@
+{
+  "request_id": "req_example_challenge_issue",
+  "challenge": {
+    "schema_version": "burd-proof-capability-challenge-v1",
+    "challenge_id": "challenge_example_001",
+    "nonce": "nonce_challenge_example_001",
+    "provider_id": "provider_example_001",
+    "device_id": "device_example_001",
+    "session_id": "session_example_001",
+    "profile_version": "poc.cuda.llm.short.v1",
+    "required_fingerprint": "sha256:example-fingerprint",
+    "required_gpu_uuid": "GPU-example-001",
+    "required_backend": "cuda",
+    "model_artifact_hash": "sha256:example-model-artifact-hash",
+    "prompt_seed": "prompt-seed-example-001",
+    "required_proofs": ["cuda_runtime", "vram_residency", "gemm", "llm_short_inference"],
+    "min_tokens_per_second": 35.0,
+    "max_ttft_ms": 1500,
+    "issued_at": "2026-07-23T01:00:20Z",
+    "expires_at": "2026-07-23T01:10:20Z"
+  }
+}
