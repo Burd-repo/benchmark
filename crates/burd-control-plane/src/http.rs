@@ -2807,6 +2807,527 @@ mod tests {
         }
     }
 
+    fn test_app(database_url: &str) -> Router {
+        let config = test_config(database_url);
+        let db = Database::new(config.database_url.clone(), None).unwrap();
+        router(Arc::new(AppState::new(config, db)))
+    }
+
+    async fn send_request(
+        app: Router,
+        method: Method,
+        uri: &str,
+        body: Option<&str>,
+        headers: &[(&str, &str)],
+    ) -> axum::response::Response {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        app.oneshot(
+            builder
+                .body(Body::from(body.unwrap_or_default().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn response_json(response: axum::response::Response) -> serde_json::Value {
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    fn assert_error_envelope(value: &serde_json::Value, code: &str) {
+        assert_eq!(value["error"]["code"], code);
+        assert!(value["error"]["message"].as_str().unwrap().len() > 2);
+        assert!(
+            value["error"]["request_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("req_")
+        );
+        assert!(value["error"]["details"].is_object());
+    }
+
+    #[tokio::test]
+    async fn live_router_serves_bn01_bn11_contract_paths_and_keeps_bn12_runtime_absent() {
+        let app = test_app("postgres://localhost/unavailable");
+        let openapi = send_request(app.clone(), Method::GET, "/openapi.json", None, &[]).await;
+        assert_eq!(openapi.status(), StatusCode::OK);
+        let document = response_json(openapi).await;
+
+        for (method, live_uri, openapi_path, body) in [
+            (Method::GET, "/health", "/health", None),
+            (Method::GET, "/ready", "/ready", None),
+            (Method::GET, "/openapi.json", "/openapi.json", None),
+            (Method::GET, "/metrics", "/metrics", None),
+            (
+                Method::POST,
+                "/v1/providers",
+                "/v1/providers",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::GET,
+                "/v1/providers/provider_live",
+                "/v1/providers/{provider_id}",
+                None,
+            ),
+            (
+                Method::POST,
+                "/v1/providers/provider_live/enrollment-tokens",
+                "/v1/providers/{provider_id}/enrollment-tokens",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::GET,
+                "/v1/providers/provider_live/devices",
+                "/v1/providers/{provider_id}/devices",
+                None,
+            ),
+            (
+                Method::POST,
+                "/v1/enrollments",
+                "/v1/enrollments",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::POST,
+                "/v1/enrollments/enrollment_live/proof",
+                "/v1/enrollments/{enrollment_id}/proof",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::POST,
+                "/v1/devices/device_live/credentials",
+                "/v1/devices/{device_id}/credentials",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::POST,
+                "/v1/devices/device_live/key-rotations",
+                "/v1/devices/{device_id}/key-rotations",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::POST,
+                "/v1/devices/device_live/key-rotations/rotation_live/proof",
+                "/v1/devices/{device_id}/key-rotations/{rotation_id}/proof",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::POST,
+                "/v1/devices/device_live/revoke",
+                "/v1/devices/{device_id}/revoke",
+                Some(r#"{}"#),
+            ),
+            (Method::POST, "/v1/sessions", "/v1/sessions", Some(r#"{}"#)),
+            (
+                Method::GET,
+                "/v1/sessions/session_live",
+                "/v1/sessions/{session_id}",
+                None,
+            ),
+            (
+                Method::GET,
+                "/v1/sessions/session_live/control",
+                "/v1/sessions/{session_id}/control",
+                None,
+            ),
+            (
+                Method::POST,
+                "/v1/sessions/session_live/heartbeats",
+                "/v1/sessions/{session_id}/heartbeats",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::POST,
+                "/v1/sessions/session_live/revoke",
+                "/v1/sessions/{session_id}/revoke",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::POST,
+                "/v1/sessions/session_live/telemetry-batches",
+                "/v1/sessions/{session_id}/telemetry-batches",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::GET,
+                "/v1/sessions/session_live/telemetry/latest",
+                "/v1/sessions/{session_id}/telemetry/latest",
+                None,
+            ),
+            (
+                Method::POST,
+                "/v1/sessions/session_live/evidence-records",
+                "/v1/sessions/{session_id}/evidence-records",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::GET,
+                "/v1/providers/provider_live/evidence-records",
+                "/v1/providers/{provider_id}/evidence-records",
+                None,
+            ),
+            (
+                Method::GET,
+                "/v1/evidence-records/evidence_live",
+                "/v1/evidence-records/{evidence_id}",
+                None,
+            ),
+            (
+                Method::POST,
+                "/v1/evidence-records/evidence_live/revoke",
+                "/v1/evidence-records/{evidence_id}/revoke",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::POST,
+                "/v1/challenges",
+                "/v1/challenges",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::GET,
+                "/v1/challenges/challenge_live",
+                "/v1/challenges/{challenge_id}",
+                None,
+            ),
+            (
+                Method::GET,
+                "/v1/sessions/session_live/challenges/next",
+                "/v1/sessions/{session_id}/challenges/next",
+                None,
+            ),
+            (
+                Method::POST,
+                "/v1/sessions/session_live/challenges/challenge_live/response",
+                "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::POST,
+                "/v1/verification/sweep",
+                "/v1/verification/sweep",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::GET,
+                "/v1/providers/provider_live/verification-states",
+                "/v1/providers/{provider_id}/verification-states",
+                None,
+            ),
+            (
+                Method::POST,
+                "/v1/network-probes/observations",
+                "/v1/network-probes/observations",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::GET,
+                "/v1/providers/provider_live/network-probes",
+                "/v1/providers/{provider_id}/network-probes",
+                None,
+            ),
+            (
+                Method::GET,
+                "/v1/providers/provider_live/network-state",
+                "/v1/providers/{provider_id}/network-state",
+                None,
+            ),
+            (
+                Method::POST,
+                "/v1/trust/sweep",
+                "/v1/trust/sweep",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::GET,
+                "/v1/providers/provider_live/trust-states",
+                "/v1/providers/{provider_id}/trust-states",
+                None,
+            ),
+            (
+                Method::GET,
+                "/v1/providers/provider_live/antifraud-events",
+                "/v1/providers/{provider_id}/antifraud-events",
+                None,
+            ),
+            (
+                Method::GET,
+                "/v1/benchmark-profiles",
+                "/v1/benchmark-profiles",
+                None,
+            ),
+            (
+                Method::POST,
+                "/v1/benchmark-profiles",
+                "/v1/benchmark-profiles",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::POST,
+                "/v1/sessions/session_live/benchmark-results",
+                "/v1/sessions/{session_id}/benchmark-results",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::GET,
+                "/v1/providers/provider_live/benchmark-results",
+                "/v1/providers/{provider_id}/benchmark-results",
+                None,
+            ),
+            (
+                Method::GET,
+                "/v1/workload-policies",
+                "/v1/workload-policies",
+                None,
+            ),
+            (
+                Method::POST,
+                "/v1/workload-policies",
+                "/v1/workload-policies",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::POST,
+                "/v1/workload-eligibility/sweep",
+                "/v1/workload-eligibility/sweep",
+                Some(r#"{}"#),
+            ),
+            (
+                Method::GET,
+                "/v1/providers/provider_live/workload-eligibility",
+                "/v1/providers/{provider_id}/workload-eligibility",
+                None,
+            ),
+        ] {
+            let method_key = method.as_str().to_ascii_lowercase();
+            assert!(
+                document["paths"][openapi_path][method_key.as_str()].is_object(),
+                "OpenAPI is missing {method_key} {openapi_path}"
+            );
+            let method_label = method.as_str().to_string();
+            let response = send_request(app.clone(), method, live_uri, body, &[]).await;
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "router returned 404 for {method_label} {live_uri}"
+            );
+            assert_ne!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "router returned 405 for {method_label} {live_uri}"
+            );
+        }
+
+        for path in [
+            "/v1/runtime",
+            "/v1/runtime/jobs",
+            "/v1/provider-runtime/jobs",
+            "/v1/sessions/session_live/runtime/execute",
+        ] {
+            assert!(
+                document["paths"].get(path).is_none(),
+                "BN-12 runtime execution endpoint must not be documented: {path}"
+            );
+            let response = send_request(app.clone(), Method::POST, path, Some(r#"{}"#), &[]).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "BN-12 runtime execution endpoint must not be routed: {path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn live_protected_routes_return_redacted_error_envelopes_before_database_access() {
+        let app = test_app("postgres://burd:secret-password@localhost/unavailable");
+        for (method, uri) in [
+            (Method::GET, "/v1/security/policy"),
+            (Method::GET, "/v1/observability/snapshot"),
+            (Method::GET, "/v1/providers/provider_live/devices"),
+            (Method::GET, "/v1/sessions/session_live"),
+            (Method::GET, "/v1/sessions/session_live/telemetry/latest"),
+            (Method::GET, "/v1/sessions/session_live/challenges/next"),
+            (Method::GET, "/v1/providers/provider_live/evidence-records"),
+            (Method::GET, "/v1/providers/provider_live/network-state"),
+            (Method::GET, "/v1/providers/provider_live/trust-states"),
+            (Method::GET, "/v1/benchmark-profiles"),
+            (Method::GET, "/v1/workload-policies"),
+            (
+                Method::GET,
+                "/v1/customer/projects/project_live/reservations",
+            ),
+            (Method::GET, "/v1/billing/projects/project_live/balance"),
+        ] {
+            let response = send_request(app.clone(), method.clone(), uri, None, &[]).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "expected 401 for {} {}",
+                method.as_str(),
+                uri
+            );
+            let value = response_json(response).await;
+            assert_error_envelope(&value, "unauthorized");
+            let serialized = value.to_string();
+            assert!(!serialized.contains("secret-password"));
+            assert!(!serialized.contains("postgres://"));
+            assert!(!serialized.contains("test-admin"));
+        }
+    }
+
+    #[tokio::test]
+    async fn live_mutating_admin_routes_require_bounded_idempotency_keys_after_auth() {
+        let app = test_app("postgres://burd:secret-password@localhost/unavailable");
+        let provider_body = r#"{"display_name":"Provider"}"#;
+
+        let response = send_request(
+            app.clone(),
+            Method::POST,
+            "/v1/providers",
+            Some(provider_body),
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let value = response_json(response).await;
+        assert_error_envelope(&value, "invalid_request");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Idempotency-Key")
+        );
+
+        let long_key = "a".repeat(MAX_IDEMPOTENCY_KEY_LENGTH + 1);
+        let response = send_request(
+            app.clone(),
+            Method::POST,
+            "/v1/providers",
+            Some(provider_body),
+            &[
+                ("authorization", "Bearer test-admin"),
+                ("idempotency-key", long_key.as_str()),
+            ],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let value = response_json(response).await;
+        assert_error_envelope(&value, "invalid_request");
+
+        let response = send_request(
+            app,
+            Method::POST,
+            "/v1/providers",
+            Some(provider_body),
+            &[
+                ("authorization", "Bearer test-admin"),
+                ("idempotency-key", "provider-live-db-unavailable"),
+            ],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let value = response_json(response).await;
+        assert_error_envelope(&value, "database_unavailable");
+        assert_eq!(value["error"]["details"]["reason"], "database_unavailable");
+        let serialized = value.to_string();
+        assert!(!serialized.contains("secret-password"));
+        assert!(!serialized.contains("postgres://"));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_provider_registry_http_contract_persists_idempotency_and_readiness() {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
+            .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
+        let schema = format!("burd_http_contract_{}", Uuid::new_v4().simple());
+        let mut config = test_config(&url);
+        config.database_schema = Some(schema.clone());
+        config.object_storage_dir = format!("target/test-control-objects/{schema}");
+        let db = Database::new(url, Some(schema)).unwrap();
+        db.migrate().await.unwrap();
+        let app = router(Arc::new(AppState::new(config, db.clone())));
+
+        let ready = send_request(app.clone(), Method::GET, "/ready", None, &[]).await;
+        assert_eq!(ready.status(), StatusCode::OK);
+        let ready = response_json(ready).await;
+        assert_eq!(ready["status"], "ready");
+        assert_eq!(ready["database"], "ok");
+        assert_eq!(
+            ready["migrations_applied"].as_array().unwrap().len(),
+            crate::migrations::MIGRATIONS.len()
+        );
+
+        let body = r#"{"display_name":"Live Provider"}"#;
+        let first = send_request(
+            app.clone(),
+            Method::POST,
+            "/v1/providers",
+            Some(body),
+            &[
+                ("authorization", "Bearer test-admin"),
+                ("idempotency-key", "provider-live-http-1"),
+            ],
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::CREATED);
+        let first = response_json(first).await;
+        assert!(first["request_id"].as_str().unwrap().starts_with("req_"));
+        let provider_id = first["provider"]["provider_id"].as_str().unwrap();
+        assert_eq!(first["provider"]["display_name"], "Live Provider");
+        assert_eq!(first["provider"]["status"], "unregistered");
+
+        let replay = send_request(
+            app.clone(),
+            Method::POST,
+            "/v1/providers",
+            Some(body),
+            &[
+                ("authorization", "Bearer test-admin"),
+                ("idempotency-key", "provider-live-http-1"),
+            ],
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::CREATED);
+        let replay = response_json(replay).await;
+        assert_eq!(replay["provider"]["provider_id"], provider_id);
+
+        let conflict = send_request(
+            app.clone(),
+            Method::POST,
+            "/v1/providers",
+            Some(r#"{"display_name":"Different Provider"}"#),
+            &[
+                ("authorization", "Bearer test-admin"),
+                ("idempotency-key", "provider-live-http-1"),
+            ],
+        )
+        .await;
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        let conflict = response_json(conflict).await;
+        assert_error_envelope(&conflict, "idempotency_conflict");
+
+        let loaded = send_request(
+            app,
+            Method::GET,
+            &format!("/v1/providers/{provider_id}"),
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(loaded.status(), StatusCode::OK);
+        let loaded = response_json(loaded).await;
+        assert_eq!(loaded["provider"]["provider_id"], provider_id);
+
+        db.drop_schema_for_test().await.unwrap();
+    }
     #[tokio::test]
     async fn health_endpoint_does_not_require_database_connection() {
         let config = test_config("postgres://localhost/unavailable");

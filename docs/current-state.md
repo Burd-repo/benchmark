@@ -123,6 +123,7 @@ after the June 2026 reliability pass.
 - The control plane can create customer users, organizations, projects, quotas, hashed customer API keys, credit ledger entries, marketplace reservations, usage summaries, and customer audit events. Reservations are scoped to backend-published marketplace listings and project quotas.
 - The control plane exposes operational observability with correlation IDs, structured JSON logs, Prometheus metrics, admin snapshots, background task error counters, and configurable HTTP SLO status.
 - `GET /openapi.json` now attaches structural request/response schema refs for the implemented BN-01 through BN-11 control-plane endpoints. Nested and optional fields continue to follow the Rust serde contracts in `burd-protocol` and `burd-control-plane`.
+- Live Axum/router contract tests now exercise implemented BN-01 through BN-11 control-plane paths, protected-route error envelopes, idempotency header validation, and the absence of remote BN-12 runtime execution endpoints.
 - Multi-GPU inventory persists one immutable row per GPU per signed snapshot, deduplicates repeated snapshot rows by `(inventory_hash, gpu_index)`, and gates jobs/scheduler decisions on the latest GPU inventory status.
 - Network benchmark includes latency aliases, request counts, status code,
   DNS timing, duration, jitter, and warnings.
@@ -278,9 +279,9 @@ starting the API server or depending on host state:
 - Mutating provider creation requires `Idempotency-Key` and uses the BN-00 error
   envelope for failures.
 - A lightweight in-memory rate limiter protects the HTTP surface.
-- Unit tests cover config parsing, error codes, migrations, OpenAPI, rate
-  limiting, request hashing, and health routing. The PostgreSQL persistence test
-  is isolated by schema and ignored unless a test database URL is provided.
+- Unit tests cover config parsing, error codes, migrations, OpenAPI, live router contract paths, rate
+  limiting, request hashing, and health routing. PostgreSQL persistence and live HTTP provider-registry tests
+  are isolated by schema and ignored unless a test database URL is provided.
 - BN-01 does not implement remote enrollment, device credentials, control
   channel, backend-issued challenges, telemetry ingestion, trust policy,
   scheduler, jobs, marketplace, billing, Pix, or payouts.
