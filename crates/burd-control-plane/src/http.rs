@@ -3328,6 +3328,258 @@ mod tests {
 
         db.drop_schema_for_test().await.unwrap();
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_enrollment_and_remote_session_http_flow_persists_authoritative_state() {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
+            .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
+        let schema = format!("burd_http_enrollment_session_{}", Uuid::new_v4().simple());
+        let mut config = test_config(&url);
+        config.database_schema = Some(schema.clone());
+        config.object_storage_dir = format!("target/test-control-objects/{schema}");
+        let db = Database::new(url, Some(schema)).unwrap();
+        db.migrate().await.unwrap();
+        let app = router(Arc::new(AppState::new(config, db.clone())));
+
+        let provider = send_request(
+            app.clone(),
+            Method::POST,
+            "/v1/providers",
+            Some(r#"{"display_name":"Live Enrollment Session Provider"}"#),
+            &[
+                ("authorization", "Bearer test-admin"),
+                ("idempotency-key", "provider-live-enrollment-session"),
+            ],
+        )
+        .await;
+        assert_eq!(provider.status(), StatusCode::CREATED);
+        let provider = response_json(provider).await;
+        let provider_id = provider["provider"]["provider_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let token = send_request(
+            app.clone(),
+            Method::POST,
+            &format!("/v1/providers/{provider_id}/enrollment-tokens"),
+            Some(r#"{}"#),
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(token.status(), StatusCode::CREATED);
+        let token = response_json(token).await;
+        let enrollment_token = token["enrollment_token"].as_str().unwrap().to_string();
+        assert!(!enrollment_token.contains("test-admin"));
+
+        let keys = burd_protocol::generate_keypair().unwrap();
+        let public_key = keys.public_key_base64.clone();
+        let machine_id = "machine-live-http";
+        let local_provider_id = "local-provider-live-http";
+        let hardware_fingerprint = "sha256:live-http-fingerprint";
+        let start_body = serde_json::to_string(&serde_json::json!({
+            "enrollment_token": enrollment_token,
+            "public_key": &public_key,
+            "key_algorithm": burd_protocol::KEY_ALGORITHM,
+            "local_provider_id": local_provider_id,
+            "machine_id": machine_id,
+            "registration_payload": {
+                "provider_id": local_provider_id,
+                "machine_id": machine_id,
+                "hardware_fingerprint": hardware_fingerprint,
+                "public_key": &public_key,
+                "secrets_included": false
+            },
+            "hardware_fingerprint": hardware_fingerprint,
+            "agent_version": "burd-agent-test/0.1.0",
+            "benchmark_version": "burd-bench-test/0.1.0"
+        }))
+        .unwrap();
+        let started = send_request(
+            app.clone(),
+            Method::POST,
+            "/v1/enrollments",
+            Some(&start_body),
+            &[],
+        )
+        .await;
+        assert_eq!(started.status(), StatusCode::ACCEPTED);
+        let started = response_json(started).await;
+        assert_eq!(started["provider_id"], provider_id);
+        let enrollment_id = started["enrollment_id"].as_str().unwrap().to_string();
+        let nonce = started["nonce"].as_str().unwrap().to_string();
+        let enrollment_expires_at = started["expires_at"].as_str().unwrap().to_string();
+
+        let proof_message = burd_protocol::enrollment_proof_message(
+            &enrollment_id,
+            &provider_id,
+            machine_id,
+            &nonce,
+            &public_key,
+            hardware_fingerprint,
+            &enrollment_expires_at,
+        )
+        .unwrap();
+        let signature =
+            burd_protocol::sign_message(&keys.secret_key_base64, proof_message.as_bytes()).unwrap();
+        let proof_body = serde_json::to_string(&serde_json::json!({
+            "nonce": nonce,
+            "signature": signature,
+            "public_key": &public_key,
+            "hardware_fingerprint": hardware_fingerprint
+        }))
+        .unwrap();
+        let enrolled = send_request(
+            app.clone(),
+            Method::POST,
+            &format!("/v1/enrollments/{enrollment_id}/proof"),
+            Some(&proof_body),
+            &[],
+        )
+        .await;
+        assert_eq!(enrolled.status(), StatusCode::CREATED);
+        let enrolled = response_json(enrolled).await;
+        assert_eq!(enrolled["provider_id"], provider_id);
+        assert_eq!(enrolled["status"], "pending_verification");
+        let device_id = enrolled["device_id"].as_str().unwrap().to_string();
+        let credential = enrolled["credential"].as_str().unwrap().to_string();
+        let credential_authorization = format!("Bearer {credential}");
+
+        let listed_devices = send_request(
+            app.clone(),
+            Method::GET,
+            &format!("/v1/providers/{provider_id}/devices"),
+            None,
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(listed_devices.status(), StatusCode::OK);
+        let listed_devices = response_json(listed_devices).await;
+        assert_eq!(listed_devices["devices"].as_array().unwrap().len(), 1);
+        assert_eq!(listed_devices["devices"][0]["device_id"], device_id);
+        assert_eq!(listed_devices["devices"][0]["status"], "active");
+
+        let session_body = serde_json::to_string(&serde_json::json!({
+            "provider_id": &provider_id,
+            "device_id": &device_id,
+            "hardware_fingerprint": hardware_fingerprint,
+            "agent_version": "burd-agent-test/0.1.0",
+            "capabilities": {"backend": "cuda", "proof": "live-http-contract"},
+            "latest_report_hash": null,
+            "latest_challenge_id": null
+        }))
+        .unwrap();
+        let started_session = send_request(
+            app.clone(),
+            Method::POST,
+            "/v1/sessions",
+            Some(&session_body),
+            &[("authorization", credential_authorization.as_str())],
+        )
+        .await;
+        assert_eq!(started_session.status(), StatusCode::CREATED);
+        let started_session = response_json(started_session).await;
+        assert_eq!(started_session["status"], "pending_connection");
+        assert_eq!(started_session["sequence_start"], 0);
+        let session_id = started_session["session_id"].as_str().unwrap().to_string();
+        let resume_token = started_session["resume_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            started_session["control_url"]
+                .as_str()
+                .unwrap()
+                .contains(&session_id)
+        );
+
+        let heartbeat_body = serde_json::to_string(&serde_json::json!({
+            "session_id": &session_id,
+            "device_id": &device_id,
+            "sequence": 1,
+            "sent_at": chrono::Utc::now().to_rfc3339(),
+            "type": "heartbeat",
+            "payload": {
+                "hardware_fingerprint": hardware_fingerprint,
+                "local_status": {"agent": "running", "source": "live-http-contract"}
+            }
+        }))
+        .unwrap();
+        let heartbeat = send_request(
+            app.clone(),
+            Method::POST,
+            &format!("/v1/sessions/{session_id}/heartbeats"),
+            Some(&heartbeat_body),
+            &[
+                ("authorization", credential_authorization.as_str()),
+                ("x-burd-session-token", resume_token.as_str()),
+                ("x-burd-device-id", device_id.as_str()),
+            ],
+        )
+        .await;
+        assert_eq!(heartbeat.status(), StatusCode::OK);
+        let heartbeat = response_json(heartbeat).await;
+        assert_eq!(heartbeat["session_id"], session_id);
+        assert_eq!(heartbeat["sequence_ack"], 1);
+        assert_eq!(heartbeat["status"], "online");
+        assert_eq!(heartbeat["next_heartbeat_seconds"], 15);
+
+        let replay = send_request(
+            app.clone(),
+            Method::POST,
+            &format!("/v1/sessions/{session_id}/heartbeats"),
+            Some(&heartbeat_body),
+            &[
+                ("authorization", credential_authorization.as_str()),
+                ("x-burd-session-token", resume_token.as_str()),
+                ("x-burd-device-id", device_id.as_str()),
+            ],
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::CONFLICT);
+        let replay = response_json(replay).await;
+        assert_error_envelope(&replay, "conflict");
+
+        let loaded_session = send_request(
+            app.clone(),
+            Method::GET,
+            &format!("/v1/sessions/{session_id}"),
+            None,
+            &[
+                ("authorization", credential_authorization.as_str()),
+                ("x-burd-session-token", resume_token.as_str()),
+                ("x-burd-device-id", device_id.as_str()),
+            ],
+        )
+        .await;
+        assert_eq!(loaded_session.status(), StatusCode::OK);
+        let loaded_session = response_json(loaded_session).await;
+        assert_eq!(loaded_session["provider_id"], provider_id);
+        assert_eq!(loaded_session["device_id"], device_id);
+        assert_eq!(loaded_session["status"], "online");
+        assert_eq!(loaded_session["sequence_last"], 1);
+        assert!(loaded_session["last_seen_at"].is_string());
+
+        let client = db.connect().await.unwrap();
+        let persisted = client
+            .query_one(
+                "SELECT p.status AS provider_status, d.status AS device_status, s.status AS session_status, s.sequence_last, COUNT(h.heartbeat_id)::BIGINT AS heartbeat_count FROM providers p JOIN devices d ON d.provider_id = p.provider_id JOIN provider_sessions s ON s.provider_id = p.provider_id AND s.device_id = d.device_id LEFT JOIN session_heartbeats h ON h.session_id = s.session_id WHERE p.provider_id = $1 AND d.device_id = $2 AND s.session_id = $3 GROUP BY p.status, d.status, s.status, s.sequence_last",
+                &[&provider_id, &device_id, &session_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            persisted.get::<_, String>("provider_status"),
+            "pending_verification"
+        );
+        assert_eq!(persisted.get::<_, String>("device_status"), "active");
+        assert_eq!(persisted.get::<_, String>("session_status"), "online");
+        assert_eq!(persisted.get::<_, i64>("sequence_last"), 1);
+        assert_eq!(persisted.get::<_, i64>("heartbeat_count"), 1);
+
+        db.drop_schema_for_test().await.unwrap();
+    }
     #[tokio::test]
     async fn health_endpoint_does_not_require_database_connection() {
         let config = test_config("postgres://localhost/unavailable");
