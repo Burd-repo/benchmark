@@ -3329,27 +3329,65 @@ mod tests {
         db.drop_schema_for_test().await.unwrap();
     }
 
-    #[tokio::test]
-    #[ignore]
-    async fn live_enrollment_and_remote_session_http_flow_persists_authoritative_state() {
+    struct LiveHttpFixture {
+        app: Router,
+        db: Database,
+        object_storage_dir: String,
+        provider_id: String,
+        device_id: String,
+        session_id: String,
+        resume_token: String,
+        credential_authorization: String,
+        public_key_id: String,
+        keys: burd_protocol::KeyMaterial,
+        local_provider_id: String,
+        machine_id: String,
+        hardware_fingerprint: String,
+    }
+
+    impl LiveHttpFixture {
+        fn session_headers(&self) -> Vec<(&'static str, &str)> {
+            vec![
+                ("authorization", self.credential_authorization.as_str()),
+                ("x-burd-session-token", self.resume_token.as_str()),
+                ("x-burd-device-id", self.device_id.as_str()),
+            ]
+        }
+
+        async fn cleanup(self) {
+            self.db.drop_schema_for_test().await.unwrap();
+            let _ = std::fs::remove_dir_all(&self.object_storage_dir);
+        }
+    }
+
+    async fn live_enrolled_session_fixture(
+        schema_label: &str,
+        display_name: &str,
+        idempotency_key: &str,
+    ) -> LiveHttpFixture {
         let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
             .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
-        let schema = format!("burd_http_enrollment_session_{}", Uuid::new_v4().simple());
+        let schema = format!("burd_http_{schema_label}_{}", Uuid::new_v4().simple());
+        let object_storage_dir = format!("target/test-control-objects/{schema}");
         let mut config = test_config(&url);
         config.database_schema = Some(schema.clone());
-        config.object_storage_dir = format!("target/test-control-objects/{schema}");
+        config.object_storage_dir = object_storage_dir.clone();
         let db = Database::new(url, Some(schema)).unwrap();
         db.migrate().await.unwrap();
         let app = router(Arc::new(AppState::new(config, db.clone())));
 
+        let provider_body = serde_json::to_string(&serde_json::json!({
+            "display_name": display_name
+        }))
+        .unwrap();
         let provider = send_request(
             app.clone(),
             Method::POST,
             "/v1/providers",
-            Some(r#"{"display_name":"Live Enrollment Session Provider"}"#),
+            Some(&provider_body),
             &[
                 ("authorization", "Bearer test-admin"),
-                ("idempotency-key", "provider-live-enrollment-session"),
+                ("idempotency-key", idempotency_key),
             ],
         )
         .await;
@@ -3375,23 +3413,23 @@ mod tests {
 
         let keys = burd_protocol::generate_keypair().unwrap();
         let public_key = keys.public_key_base64.clone();
-        let machine_id = "machine-live-http";
-        let local_provider_id = "local-provider-live-http";
-        let hardware_fingerprint = "sha256:live-http-fingerprint";
+        let machine_id = format!("machine-{schema_label}");
+        let local_provider_id = format!("local-provider-{schema_label}");
+        let hardware_fingerprint = format!("sha256:{schema_label}-fingerprint");
         let start_body = serde_json::to_string(&serde_json::json!({
             "enrollment_token": enrollment_token,
             "public_key": &public_key,
             "key_algorithm": burd_protocol::KEY_ALGORITHM,
-            "local_provider_id": local_provider_id,
-            "machine_id": machine_id,
+            "local_provider_id": &local_provider_id,
+            "machine_id": &machine_id,
             "registration_payload": {
-                "provider_id": local_provider_id,
-                "machine_id": machine_id,
-                "hardware_fingerprint": hardware_fingerprint,
+                "provider_id": &local_provider_id,
+                "machine_id": &machine_id,
+                "hardware_fingerprint": &hardware_fingerprint,
                 "public_key": &public_key,
                 "secrets_included": false
             },
-            "hardware_fingerprint": hardware_fingerprint,
+            "hardware_fingerprint": &hardware_fingerprint,
             "agent_version": "burd-agent-test/0.1.0",
             "benchmark_version": "burd-bench-test/0.1.0"
         }))
@@ -3414,10 +3452,10 @@ mod tests {
         let proof_message = burd_protocol::enrollment_proof_message(
             &enrollment_id,
             &provider_id,
-            machine_id,
+            &machine_id,
             &nonce,
             &public_key,
-            hardware_fingerprint,
+            &hardware_fingerprint,
             &enrollment_expires_at,
         )
         .unwrap();
@@ -3427,7 +3465,7 @@ mod tests {
             "nonce": nonce,
             "signature": signature,
             "public_key": &public_key,
-            "hardware_fingerprint": hardware_fingerprint
+            "hardware_fingerprint": &hardware_fingerprint
         }))
         .unwrap();
         let enrolled = send_request(
@@ -3443,6 +3481,7 @@ mod tests {
         assert_eq!(enrolled["provider_id"], provider_id);
         assert_eq!(enrolled["status"], "pending_verification");
         let device_id = enrolled["device_id"].as_str().unwrap().to_string();
+        let public_key_id = enrolled["public_key_id"].as_str().unwrap().to_string();
         let credential = enrolled["credential"].as_str().unwrap().to_string();
         let credential_authorization = format!("Bearer {credential}");
 
@@ -3463,7 +3502,7 @@ mod tests {
         let session_body = serde_json::to_string(&serde_json::json!({
             "provider_id": &provider_id,
             "device_id": &device_id,
-            "hardware_fingerprint": hardware_fingerprint,
+            "hardware_fingerprint": &hardware_fingerprint,
             "agent_version": "burd-agent-test/0.1.0",
             "capabilities": {"backend": "cuda", "proof": "live-http-contract"},
             "latest_report_hash": null,
@@ -3494,78 +3533,216 @@ mod tests {
                 .contains(&session_id)
         );
 
-        let heartbeat_body = serde_json::to_string(&serde_json::json!({
-            "session_id": &session_id,
-            "device_id": &device_id,
-            "sequence": 1,
-            "sent_at": chrono::Utc::now().to_rfc3339(),
-            "type": "heartbeat",
-            "payload": {
-                "hardware_fingerprint": hardware_fingerprint,
-                "local_status": {"agent": "running", "source": "live-http-contract"}
-            }
-        }))
-        .unwrap();
+        let fixture = LiveHttpFixture {
+            app,
+            db,
+            object_storage_dir,
+            provider_id,
+            device_id,
+            session_id,
+            resume_token,
+            credential_authorization,
+            public_key_id,
+            keys,
+            local_provider_id,
+            machine_id,
+            hardware_fingerprint,
+        };
+        let heartbeat_body = heartbeat_body(&fixture, 1);
+        let headers = fixture.session_headers();
         let heartbeat = send_request(
-            app.clone(),
+            fixture.app.clone(),
             Method::POST,
-            &format!("/v1/sessions/{session_id}/heartbeats"),
+            &format!("/v1/sessions/{}/heartbeats", fixture.session_id),
             Some(&heartbeat_body),
-            &[
-                ("authorization", credential_authorization.as_str()),
-                ("x-burd-session-token", resume_token.as_str()),
-                ("x-burd-device-id", device_id.as_str()),
-            ],
+            &headers,
         )
         .await;
         assert_eq!(heartbeat.status(), StatusCode::OK);
         let heartbeat = response_json(heartbeat).await;
-        assert_eq!(heartbeat["session_id"], session_id);
+        assert_eq!(heartbeat["session_id"], fixture.session_id);
         assert_eq!(heartbeat["sequence_ack"], 1);
         assert_eq!(heartbeat["status"], "online");
         assert_eq!(heartbeat["next_heartbeat_seconds"], 15);
 
+        fixture
+    }
+
+    fn heartbeat_body(fixture: &LiveHttpFixture, sequence: u64) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "session_id": &fixture.session_id,
+            "device_id": &fixture.device_id,
+            "sequence": sequence,
+            "sent_at": chrono::Utc::now().to_rfc3339(),
+            "type": "heartbeat",
+            "payload": {
+                "hardware_fingerprint": &fixture.hardware_fingerprint,
+                "local_status": {"agent": "running", "source": "live-http-contract"}
+            }
+        }))
+        .unwrap()
+    }
+
+    fn signed_report_for_fixture(fixture: &LiveHttpFixture) -> burd_protocol::SignedReport {
+        let signed_at = chrono::Utc::now().to_rfc3339();
+        let freshness =
+            burd_protocol::evidence_freshness(&signed_at, burd_protocol::SIGNED_REPORT_TTL_SECONDS)
+                .unwrap();
+        let report = burd_protocol::FullReport {
+            identity: None,
+            evidence: Some(freshness.clone()),
+            hardware_fingerprint: Some(fixture.hardware_fingerprint.clone()),
+            marketplace_policy: None,
+            system: serde_json::json!({
+                "os": "linux",
+                "machine_id": fixture.machine_id,
+                "source": "live-http-contract"
+            }),
+            fit: None,
+            llm_benchmark: None,
+            stability: None,
+            network: None,
+            network_score: None,
+            disk: None,
+            reliability: None,
+            ai_performance: None,
+            score: serde_json::json!({"burd_compute_score": 0}),
+            timestamp: signed_at.clone(),
+            agent_version: "burd-agent-test/0.1.0".to_string(),
+            benchmark_version: "burd-bench-test/0.1.0".to_string(),
+            benchmark_profile: "live-http-contract".to_string(),
+            challenge: None,
+            signature: burd_protocol::ReportSignature {
+                algorithm: burd_protocol::KEY_ALGORITHM.to_string(),
+                value: "signed-report-envelope".to_string(),
+                status: "signed".to_string(),
+            },
+        };
+        let report_hash = burd_protocol::hash_canonical(&report).unwrap();
+        let signature =
+            burd_protocol::sign_message(&fixture.keys.secret_key_base64, report_hash.as_bytes())
+                .unwrap();
+        burd_protocol::SignedReport {
+            provider_id: fixture.local_provider_id.clone(),
+            machine_id: fixture.machine_id.clone(),
+            report,
+            report_hash,
+            signature,
+            public_key: fixture.keys.public_key_base64.clone(),
+            key_algorithm: burd_protocol::KEY_ALGORITHM.to_string(),
+            signed_at,
+            evidence: Some(freshness),
+            signature_valid_locally: true,
+            canonicalization_version: burd_protocol::EVIDENCE_CANONICALIZATION_VERSION.to_string(),
+        }
+    }
+
+    fn signed_proof_response_for_challenge(
+        fixture: &LiveHttpFixture,
+        challenge: &burd_protocol::ProofCapabilityChallenge,
+    ) -> burd_protocol::SignedProofCapabilityResponse {
+        let now = chrono::Utc::now().to_rfc3339();
+        let payload = burd_protocol::ProofCapabilityResponsePayload {
+            schema_version: burd_protocol::PROOF_CHALLENGE_RESPONSE_SCHEMA_VERSION.to_string(),
+            challenge_id: challenge.challenge_id.clone(),
+            nonce: challenge.nonce.clone(),
+            provider_id: fixture.provider_id.clone(),
+            device_id: fixture.device_id.clone(),
+            session_id: fixture.session_id.clone(),
+            profile_version: challenge.profile_version.clone(),
+            hardware_fingerprint: fixture.hardware_fingerprint.clone(),
+            gpu_uuid: challenge
+                .required_gpu_uuid
+                .clone()
+                .unwrap_or_else(|| "GPU-live-http".to_string()),
+            backend: challenge.required_backend.clone(),
+            model_artifact_hash: challenge.model_artifact_hash.clone(),
+            prompt_seed: challenge.prompt_seed.clone(),
+            driver_version: "576.80".to_string(),
+            cuda_driver_version: Some("12.9".to_string()),
+            cuda_runtime_version: Some("12.9".to_string()),
+            metrics: burd_protocol::ProofCapabilityMetrics {
+                tokens_per_second: Some(48.0),
+                ttft_ms: Some(120),
+                vram_allocated_mib: Some(1024),
+                vram_resident_mib: Some(768),
+                gemm_gflops: Some(125.0),
+                cuda_runtime_detected: true,
+                backend_proof: "cuda_runtime_detected".to_string(),
+                contention_detected: false,
+            },
+            telemetry_window_hash: Some("telemetry_window_hash_live_http".to_string()),
+            started_at: now.clone(),
+            completed_at: now,
+        };
+        let response_hash = burd_protocol::proof_capability_response_hash(&payload).unwrap();
+        let signature_message = burd_protocol::proof_capability_response_signature_message(
+            &payload,
+            &response_hash,
+            &fixture.public_key_id,
+        )
+        .unwrap();
+        let signature = burd_protocol::sign_message(
+            &fixture.keys.secret_key_base64,
+            signature_message.as_bytes(),
+        )
+        .unwrap();
+        burd_protocol::SignedProofCapabilityResponse {
+            payload,
+            response_hash,
+            public_key_id: fixture.public_key_id.clone(),
+            signature,
+            canonicalization_version: burd_protocol::PROOF_CHALLENGE_CANONICALIZATION_VERSION
+                .to_string(),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_enrollment_and_remote_session_http_flow_persists_authoritative_state() {
+        let fixture = live_enrolled_session_fixture(
+            "enrollment_session",
+            "Live Enrollment Session Provider",
+            "provider-live-enrollment-session",
+        )
+        .await;
+
+        let replay_body = heartbeat_body(&fixture, 1);
+        let headers = fixture.session_headers();
         let replay = send_request(
-            app.clone(),
+            fixture.app.clone(),
             Method::POST,
-            &format!("/v1/sessions/{session_id}/heartbeats"),
-            Some(&heartbeat_body),
-            &[
-                ("authorization", credential_authorization.as_str()),
-                ("x-burd-session-token", resume_token.as_str()),
-                ("x-burd-device-id", device_id.as_str()),
-            ],
+            &format!("/v1/sessions/{}/heartbeats", fixture.session_id),
+            Some(&replay_body),
+            &headers,
         )
         .await;
         assert_eq!(replay.status(), StatusCode::CONFLICT);
         let replay = response_json(replay).await;
         assert_error_envelope(&replay, "conflict");
 
+        let headers = fixture.session_headers();
         let loaded_session = send_request(
-            app.clone(),
+            fixture.app.clone(),
             Method::GET,
-            &format!("/v1/sessions/{session_id}"),
+            &format!("/v1/sessions/{}", fixture.session_id),
             None,
-            &[
-                ("authorization", credential_authorization.as_str()),
-                ("x-burd-session-token", resume_token.as_str()),
-                ("x-burd-device-id", device_id.as_str()),
-            ],
+            &headers,
         )
         .await;
         assert_eq!(loaded_session.status(), StatusCode::OK);
         let loaded_session = response_json(loaded_session).await;
-        assert_eq!(loaded_session["provider_id"], provider_id);
-        assert_eq!(loaded_session["device_id"], device_id);
+        assert_eq!(loaded_session["provider_id"], fixture.provider_id);
+        assert_eq!(loaded_session["device_id"], fixture.device_id);
         assert_eq!(loaded_session["status"], "online");
         assert_eq!(loaded_session["sequence_last"], 1);
         assert!(loaded_session["last_seen_at"].is_string());
 
-        let client = db.connect().await.unwrap();
+        let client = fixture.db.connect().await.unwrap();
         let persisted = client
             .query_one(
                 "SELECT p.status AS provider_status, d.status AS device_status, s.status AS session_status, s.sequence_last, COUNT(h.heartbeat_id)::BIGINT AS heartbeat_count FROM providers p JOIN devices d ON d.provider_id = p.provider_id JOIN provider_sessions s ON s.provider_id = p.provider_id AND s.device_id = d.device_id LEFT JOIN session_heartbeats h ON h.session_id = s.session_id WHERE p.provider_id = $1 AND d.device_id = $2 AND s.session_id = $3 GROUP BY p.status, d.status, s.status, s.sequence_last",
-                &[&provider_id, &device_id, &session_id],
+                &[&fixture.provider_id, &fixture.device_id, &fixture.session_id],
             )
             .await
             .unwrap();
@@ -3578,7 +3755,266 @@ mod tests {
         assert_eq!(persisted.get::<_, i64>("sequence_last"), 1);
         assert_eq!(persisted.get::<_, i64>("heartbeat_count"), 1);
 
-        db.drop_schema_for_test().await.unwrap();
+        fixture.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_evidence_registry_http_flow_persists_valid_evidence_and_deduplicates() {
+        let fixture = live_enrolled_session_fixture(
+            "evidence_flow",
+            "Live Evidence Provider",
+            "provider-live-evidence-flow",
+        )
+        .await;
+        let signed_report = signed_report_for_fixture(&fixture);
+        let evidence_body = serde_json::to_string(&serde_json::json!({
+            "evidence_type": "signed_report",
+            "session_id": &fixture.session_id,
+            "subject_id": "live-evidence-flow",
+            "metadata": {"source": "live-http-contract"},
+            "signed_report": signed_report
+        }))
+        .unwrap();
+        let headers = fixture.session_headers();
+        let submitted = send_request(
+            fixture.app.clone(),
+            Method::POST,
+            &format!("/v1/sessions/{}/evidence-records", fixture.session_id),
+            Some(&evidence_body),
+            &headers,
+        )
+        .await;
+        assert_eq!(submitted.status(), StatusCode::CREATED);
+        let submitted = response_json(submitted).await;
+        assert_eq!(submitted["duplicate"], false);
+        assert_eq!(submitted["evidence"]["provider_id"], fixture.provider_id);
+        assert_eq!(submitted["evidence"]["device_id"], fixture.device_id);
+        assert_eq!(submitted["evidence"]["session_id"], fixture.session_id);
+        assert_eq!(submitted["evidence"]["status"], "valid");
+        assert_eq!(
+            submitted["evidence"]["verification"]["signature_valid"],
+            true
+        );
+        assert_eq!(
+            submitted["evidence"]["verification"]["active_key_bound"],
+            true
+        );
+        assert_eq!(
+            submitted["evidence"]["verification"]["provider_bound"],
+            true
+        );
+        assert_eq!(submitted["evidence"]["verification"]["device_bound"], true);
+        assert_eq!(
+            submitted["evidence"]["verification"]["fingerprint_bound"],
+            true
+        );
+        assert_eq!(
+            submitted["evidence"]["verification"]["expired_by_server"],
+            false
+        );
+        assert!(
+            submitted["evidence"]["object_key"]
+                .as_str()
+                .unwrap()
+                .starts_with("evidence/")
+        );
+        let evidence_id = submitted["evidence"]["evidence_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let evidence_hash = submitted["evidence"]["evidence_hash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let headers = fixture.session_headers();
+        let duplicate = send_request(
+            fixture.app.clone(),
+            Method::POST,
+            &format!("/v1/sessions/{}/evidence-records", fixture.session_id),
+            Some(&evidence_body),
+            &headers,
+        )
+        .await;
+        assert_eq!(duplicate.status(), StatusCode::OK);
+        let duplicate = response_json(duplicate).await;
+        assert_eq!(duplicate["duplicate"], true);
+        assert_eq!(duplicate["evidence"]["evidence_id"], evidence_id);
+        assert_eq!(duplicate["evidence"]["evidence_hash"], evidence_hash);
+
+        let listed = send_request(
+            fixture.app.clone(),
+            Method::GET,
+            &format!("/v1/providers/{}/evidence-records", fixture.provider_id),
+            None,
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(listed.status(), StatusCode::OK);
+        let listed = response_json(listed).await;
+        assert_eq!(listed["records"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["records"][0]["evidence_id"], evidence_id);
+
+        let loaded = send_request(
+            fixture.app.clone(),
+            Method::GET,
+            &format!("/v1/evidence-records/{evidence_id}"),
+            None,
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(loaded.status(), StatusCode::OK);
+        let loaded = response_json(loaded).await;
+        assert_eq!(loaded["evidence_id"], evidence_id);
+        assert_eq!(loaded["evidence_hash"], evidence_hash);
+
+        let client = fixture.db.connect().await.unwrap();
+        let persisted = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT AS evidence_count, (SELECT COUNT(*)::BIGINT FROM hardware_snapshots WHERE provider_id = $1 AND device_id = $2) AS snapshot_count FROM evidence_records WHERE provider_id = $1 AND device_id = $2 AND session_id = $3",
+                &[&fixture.provider_id, &fixture.device_id, &fixture.session_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(persisted.get::<_, i64>("evidence_count"), 1);
+        assert_eq!(persisted.get::<_, i64>("snapshot_count"), 1);
+
+        fixture.cleanup().await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_proof_challenge_http_flow_verifies_signed_response() {
+        let fixture = live_enrolled_session_fixture(
+            "proof_flow",
+            "Live Proof Challenge Provider",
+            "provider-live-proof-flow",
+        )
+        .await;
+        let issue_body = serde_json::to_string(&serde_json::json!({
+            "provider_id": &fixture.provider_id,
+            "device_id": &fixture.device_id,
+            "session_id": &fixture.session_id,
+            "profile_version": "live-proof-v1",
+            "required_fingerprint": &fixture.hardware_fingerprint,
+            "required_gpu_uuid": "GPU-live-http",
+            "required_backend": "cuda",
+            "model_artifact_hash": "sha256:live-proof-model-artifact",
+            "prompt_seed": "prompt_seed_live_http",
+            "required_proofs": [
+                "cuda_runtime",
+                "vram_allocation_residency",
+                "tensor_gemm_microbenchmark",
+                "llm_short_inference",
+                "contention_detection",
+                "telemetry_window"
+            ],
+            "min_tokens_per_second": 1.0,
+            "max_ttft_ms": 500,
+            "expires_in_seconds": 300
+        }))
+        .unwrap();
+        let issued = send_request(
+            fixture.app.clone(),
+            Method::POST,
+            "/v1/challenges",
+            Some(&issue_body),
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(issued.status(), StatusCode::CREATED);
+        let issued = response_json(issued).await;
+        let challenge: burd_protocol::ProofCapabilityChallenge =
+            serde_json::from_value(issued["challenge"].clone()).unwrap();
+        assert_eq!(challenge.provider_id, fixture.provider_id);
+        assert_eq!(challenge.device_id, fixture.device_id);
+        assert_eq!(challenge.session_id, fixture.session_id);
+
+        let headers = fixture.session_headers();
+        let next = send_request(
+            fixture.app.clone(),
+            Method::GET,
+            &format!("/v1/sessions/{}/challenges/next", fixture.session_id),
+            None,
+            &headers,
+        )
+        .await;
+        assert_eq!(next.status(), StatusCode::OK);
+        let next = response_json(next).await;
+        assert_eq!(next["challenge"]["challenge_id"], challenge.challenge_id);
+
+        let signed = signed_proof_response_for_challenge(&fixture, &challenge);
+        let signed_body = serde_json::to_string(&signed).unwrap();
+        let headers = fixture.session_headers();
+        let submitted = send_request(
+            fixture.app.clone(),
+            Method::POST,
+            &format!(
+                "/v1/sessions/{}/challenges/{}/response",
+                fixture.session_id, challenge.challenge_id
+            ),
+            Some(&signed_body),
+            &headers,
+        )
+        .await;
+        assert_eq!(submitted.status(), StatusCode::OK);
+        let submitted = response_json(submitted).await;
+        assert_eq!(submitted["challenge_id"], challenge.challenge_id);
+        assert_eq!(submitted["status"], "verified");
+        assert_eq!(submitted["response_hash"], signed.response_hash);
+        assert_eq!(submitted["verification"]["signature_valid"], true);
+        assert_eq!(submitted["verification"]["metrics_satisfied"], true);
+        assert_eq!(submitted["verification"]["provider_bound"], true);
+        assert_eq!(submitted["verification"]["device_bound"], true);
+        assert_eq!(submitted["verification"]["session_bound"], true);
+        assert_eq!(submitted["verification"]["fingerprint_bound"], true);
+        assert!(
+            submitted["verification"]["errors"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        let loaded = send_request(
+            fixture.app.clone(),
+            Method::GET,
+            &format!("/v1/challenges/{}", challenge.challenge_id),
+            None,
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(loaded.status(), StatusCode::OK);
+        let loaded = response_json(loaded).await;
+        assert_eq!(loaded["status"], "verified");
+        assert_eq!(loaded["response_hash"], signed.response_hash);
+        assert_eq!(loaded["public_key_id"], fixture.public_key_id);
+        assert_eq!(loaded["verification"]["response_hash_valid"], true);
+
+        let client = fixture.db.connect().await.unwrap();
+        let persisted = client
+            .query_one(
+                "SELECT pc.status, pc.response_hash, pc.public_key_id, vs.status AS verification_status, vs.success_count FROM proof_challenges pc LEFT JOIN provider_verification_states vs ON vs.last_verified_challenge_id = pc.challenge_id WHERE pc.challenge_id = $1",
+                &[&challenge.challenge_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(persisted.get::<_, String>("status"), "verified");
+        assert_eq!(
+            persisted.get::<_, Option<String>>("response_hash"),
+            Some(signed.response_hash)
+        );
+        assert_eq!(
+            persisted.get::<_, Option<String>>("public_key_id"),
+            Some(fixture.public_key_id.clone())
+        );
+        assert_eq!(
+            persisted.get::<_, Option<String>>("verification_status"),
+            Some("verified".to_string())
+        );
+        assert_eq!(persisted.get::<_, Option<i32>>("success_count"), Some(1));
+
+        fixture.cleanup().await;
     }
     #[tokio::test]
     async fn health_endpoint_does_not_require_database_connection() {
