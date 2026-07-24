@@ -322,7 +322,12 @@ Reserved server message types for BN-06 and later:
 ### `POST /v1/sessions/{session_id}/heartbeats`
 
 HTTP fallback for one heartbeat when the stream is unavailable. It follows the
-same sequence and server-time rules as the control channel.
+same sequence and server-time rules as the control channel and uses the
+authenticated remote-session headers:
+
+- `Authorization: Bearer <device credential>`;
+- `X-Burd-Session-Token`;
+- `X-Burd-Device-Id`.
 
 ## Evidence API
 

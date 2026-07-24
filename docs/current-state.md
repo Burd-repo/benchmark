@@ -124,7 +124,7 @@ after the June 2026 reliability pass.
 - The control plane exposes operational observability with correlation IDs, structured JSON logs, Prometheus metrics, admin snapshots, background task error counters, and configurable HTTP SLO status.
 - `GET /openapi.json` now attaches structural request/response schema refs for the implemented BN-01 through BN-11 control-plane endpoints. Nested and optional fields continue to follow the Rust serde contracts in `burd-protocol` and `burd-control-plane`.
 - OpenAPI now includes fixture-backed request/response examples for high-risk enrollment, remote session heartbeat, evidence submission, and proof challenge flows; those examples are parsed against `burd-protocol` in tests.
-- Live Axum/router contract tests now exercise implemented BN-01 through BN-11 control-plane paths, protected-route error envelopes, idempotency header validation, and the absence of remote BN-12 runtime execution endpoints.
+- Live Axum/router contract tests now exercise implemented BN-01 through BN-11 control-plane paths, protected-route error envelopes, idempotency header validation, a PostgreSQL-backed provider enrollment to remote session heartbeat flow, and the absence of remote BN-12 runtime execution endpoints.
 - Multi-GPU inventory persists one immutable row per GPU per signed snapshot, deduplicates repeated snapshot rows by `(inventory_hash, gpu_index)`, and gates jobs/scheduler decisions on the latest GPU inventory status.
 - Network benchmark includes latency aliases, request counts, status code,
   DNS timing, duration, jitter, and warnings.
