@@ -12,7 +12,12 @@ Implemented:
 - session-authenticated challenge pickup by the enrolled device;
 - signed proof response contracts in `burd-protocol`;
 - canonical response hash and Ed25519 signature verification against the active backend device key;
-- backend validation for provider, device, session, fingerprint, GPU UUID, backend, model artifact hash, prompt seed, timestamps, CUDA runtime proof, VRAM residency proof, GEMM metric, LLM short inference metrics, contention flag, and telemetry window hash;
+- backend validation for provider, device, session, fingerprint, GPU UUID, backend,
+  model artifact hash, prompt seed, timestamps, CUDA runtime proof, VRAM
+  residency proof, GEMM metric, LLM short inference metrics, contention flag,
+  and telemetry window hash; when `telemetry_window` is required, the hash must
+  reference an accepted BN-04 telemetry batch for the same provider, device,
+  session, fingerprint, and proof GPU UUID;
 - PostgreSQL `proof_challenges` registry with status, response hash, public key ID, response object key, and verification JSON;
 - filesystem-backed object storage for full signed proof response envelopes;
 - audit events for issued, acknowledged, verified, failed, and expired proof challenges.
@@ -20,6 +25,8 @@ Implemented:
 Not implemented:
 
 - agent-side execution of the CUDA/VRAM/GEMM/LLM proof workload;
+- agent-side automatic capture/orchestration of a telemetry window during proof
+  execution;
 - agent-side/background automation for recurring challenge execution;
 - trust score or antifraud score recalculation;
 - scheduler enforcement, leases, jobs, billing, Pix, payouts, or marketplace listings.
@@ -69,7 +76,9 @@ The signed payload binds:
 - hardware fingerprint and GPU UUID;
 - backend and CUDA proof data;
 - model artifact hash and prompt seed;
-- metrics and telemetry window hash;
+- metrics and telemetry window hash; if `telemetry_window` is required, this
+  hash must be the `batch_hash` of a backend-accepted telemetry batch for the
+  same session and GPU;
 - execution start and completion timestamps.
 
 The signature message uses the `burd.proof-capability-response.v1` domain and the `burd-json-c14n-v1` canonicalization version.
@@ -92,6 +101,7 @@ The backend is authoritative for:
 - provider/device/session binding;
 - fingerprint/GPU/backend/artifact/prompt checks;
 - threshold checks;
+- telemetry-window linkage to server-accepted BN-04 telemetry batches;
 - final `verified`, `failed`, or `expired` status.
 
 The backend does not trust any provider-sent expiry flag, local capability score, or local eligibility decision.

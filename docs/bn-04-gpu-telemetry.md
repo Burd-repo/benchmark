@@ -101,5 +101,7 @@ reports telemetry as unavailable in structured stderr logs.
 ## Deferred
 
 DCGM cluster metrics, runtime-attested container/job association, remote
-network probes, challenge telemetry windows, and trust/antifraud scoring remain
-deferred to later BN phases.
+network probes, agent-orchestrated challenge telemetry capture, and
+trust/antifraud scoring remain deferred to later BN phases. BN-06 proof
+verification can already require a `telemetry_window_hash` to reference a
+server-accepted BN-04 batch for the same session and GPU.
