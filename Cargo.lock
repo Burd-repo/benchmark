@@ -260,10 +260,12 @@ dependencies = [
  "axum",
  "burd-protocol",
  "chrono",
+ "futures-util",
  "serde",
  "serde_json",
  "tokio",
  "tokio-postgres",
+ "tokio-tungstenite",
  "tower",
  "uuid",
 ]

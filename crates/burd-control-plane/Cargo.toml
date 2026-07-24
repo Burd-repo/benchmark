@@ -20,4 +20,6 @@ tokio-postgres.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
 tower.workspace = true
