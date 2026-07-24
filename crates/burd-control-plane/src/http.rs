@@ -2758,6 +2758,9 @@ mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
     use axum::http::{HeaderValue, Method, Request};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tower::ServiceExt;
 
     fn test_config(database_url: &str) -> ControlPlaneConfig {
@@ -3365,6 +3368,35 @@ mod tests {
         display_name: &str,
         idempotency_key: &str,
     ) -> LiveHttpFixture {
+        live_enrolled_session_fixture_with_initial_heartbeat(
+            schema_label,
+            display_name,
+            idempotency_key,
+            true,
+        )
+        .await
+    }
+
+    async fn live_pending_session_fixture(
+        schema_label: &str,
+        display_name: &str,
+        idempotency_key: &str,
+    ) -> LiveHttpFixture {
+        live_enrolled_session_fixture_with_initial_heartbeat(
+            schema_label,
+            display_name,
+            idempotency_key,
+            false,
+        )
+        .await
+    }
+
+    async fn live_enrolled_session_fixture_with_initial_heartbeat(
+        schema_label: &str,
+        display_name: &str,
+        idempotency_key: &str,
+        record_initial_heartbeat: bool,
+    ) -> LiveHttpFixture {
         let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
             .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
         let schema = format!("burd_http_{schema_label}_{}", Uuid::new_v4().simple());
@@ -3548,22 +3580,24 @@ mod tests {
             machine_id,
             hardware_fingerprint,
         };
-        let heartbeat_body = heartbeat_body(&fixture, 1);
-        let headers = fixture.session_headers();
-        let heartbeat = send_request(
-            fixture.app.clone(),
-            Method::POST,
-            &format!("/v1/sessions/{}/heartbeats", fixture.session_id),
-            Some(&heartbeat_body),
-            &headers,
-        )
-        .await;
-        assert_eq!(heartbeat.status(), StatusCode::OK);
-        let heartbeat = response_json(heartbeat).await;
-        assert_eq!(heartbeat["session_id"], fixture.session_id);
-        assert_eq!(heartbeat["sequence_ack"], 1);
-        assert_eq!(heartbeat["status"], "online");
-        assert_eq!(heartbeat["next_heartbeat_seconds"], 15);
+        if record_initial_heartbeat {
+            let heartbeat_body = heartbeat_body(&fixture, 1);
+            let headers = fixture.session_headers();
+            let heartbeat = send_request(
+                fixture.app.clone(),
+                Method::POST,
+                &format!("/v1/sessions/{}/heartbeats", fixture.session_id),
+                Some(&heartbeat_body),
+                &headers,
+            )
+            .await;
+            assert_eq!(heartbeat.status(), StatusCode::OK);
+            let heartbeat = response_json(heartbeat).await;
+            assert_eq!(heartbeat["session_id"], fixture.session_id);
+            assert_eq!(heartbeat["sequence_ack"], 1);
+            assert_eq!(heartbeat["status"], "online");
+            assert_eq!(heartbeat["next_heartbeat_seconds"], 15);
+        }
 
         fixture
     }
@@ -3583,6 +3617,57 @@ mod tests {
         .unwrap()
     }
 
+    fn live_control_channel_request(
+        fixture: &LiveHttpFixture,
+        addr: std::net::SocketAddr,
+    ) -> tokio_tungstenite::tungstenite::http::Request<()> {
+        let mut request = format!("ws://{addr}/v1/sessions/{}/control", fixture.session_id)
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            "authorization",
+            fixture.credential_authorization.parse().unwrap(),
+        );
+        request.headers_mut().insert(
+            "x-burd-session-token",
+            fixture.resume_token.parse().unwrap(),
+        );
+        request
+            .headers_mut()
+            .insert("x-burd-device-id", fixture.device_id.parse().unwrap());
+        request
+    }
+
+    fn live_server_control_message(message: TungsteniteMessage) -> ServerControlMessage {
+        match message {
+            TungsteniteMessage::Text(text) => {
+                let text = text.to_string();
+                serde_json::from_str(&text).unwrap()
+            }
+            other => panic!("expected text control message, got {other:?}"),
+        }
+    }
+
+    async fn spawn_live_http_server(
+        app: Router,
+    ) -> (
+        std::net::SocketAddr,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        (addr, shutdown_tx, handle)
+    }
     fn signed_report_for_fixture(fixture: &LiveHttpFixture) -> burd_protocol::SignedReport {
         let signed_at = chrono::Utc::now().to_rfc3339();
         let freshness =
@@ -3697,6 +3782,85 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[ignore]
+    async fn live_control_channel_websocket_flow_acknowledges_duplicate_and_revocation() {
+        let fixture = live_pending_session_fixture(
+            "control_ws",
+            "Live Control Channel Provider",
+            "provider-live-control-ws",
+        )
+        .await;
+        let (addr, shutdown, server) = spawn_live_http_server(fixture.app.clone()).await;
+
+        let (mut socket, response) =
+            tokio_tungstenite::connect_async(live_control_channel_request(&fixture, addr))
+                .await
+                .unwrap();
+        assert_eq!(response.status().as_u16(), 101);
+
+        let ready = live_server_control_message(socket.next().await.unwrap().unwrap());
+        assert_eq!(ready.session_id, fixture.session_id);
+        assert_eq!(ready.message_type, "session_ready");
+        assert_eq!(ready.sequence_ack, 0);
+        assert_eq!(ready.payload["heartbeat_interval_seconds"], 15);
+        assert_eq!(ready.payload["missed_heartbeat_limit"], 3);
+
+        let headers = fixture.session_headers();
+        let connected = send_request(
+            fixture.app.clone(),
+            Method::GET,
+            &format!("/v1/sessions/{}", fixture.session_id),
+            None,
+            &headers,
+        )
+        .await;
+        assert_eq!(connected.status(), StatusCode::OK);
+        let connected = response_json(connected).await;
+        assert_eq!(connected["status"], "online");
+        assert_eq!(connected["sequence_last"], 0);
+        assert!(connected["connected_at"].is_string());
+
+        let duplicate =
+            tokio_tungstenite::connect_async(live_control_channel_request(&fixture, addr)).await;
+        assert!(
+            duplicate.is_err(),
+            "a second live control channel for the same session must not upgrade"
+        );
+
+        socket
+            .send(TungsteniteMessage::Text(heartbeat_body(&fixture, 1).into()))
+            .await
+            .unwrap();
+        let ack = live_server_control_message(socket.next().await.unwrap().unwrap());
+        assert_eq!(ack.session_id, fixture.session_id);
+        assert_eq!(ack.message_type, "heartbeat_ack");
+        assert_eq!(ack.sequence_ack, 1);
+        assert_eq!(ack.payload["status"], "online");
+        assert_eq!(ack.payload["sequence_ack"], 1);
+
+        let revoked = send_request(
+            fixture.app.clone(),
+            Method::POST,
+            &format!("/v1/sessions/{}/revoke", fixture.session_id),
+            None,
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(revoked.status(), StatusCode::OK);
+        let revoked = response_json(revoked).await;
+        assert_eq!(revoked["status"], "revoked");
+
+        let revocation = live_server_control_message(socket.next().await.unwrap().unwrap());
+        assert_eq!(revocation.session_id, fixture.session_id);
+        assert_eq!(revocation.message_type, "session_revoked");
+        assert_eq!(revocation.payload["reason"], "revoked_by_admin");
+
+        drop(socket);
+        let _ = shutdown.send(());
+        server.await.unwrap();
+        fixture.cleanup().await;
+    }
     #[tokio::test]
     #[ignore]
     async fn live_enrollment_and_remote_session_http_flow_persists_authoritative_state() {
