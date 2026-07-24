@@ -346,8 +346,10 @@ starting the API server or depending on host state:
 - Server-time retention removes old batches and cascades their samples.
 - `burd-agent remote-session connect --telemetry` enables collection without
   making telemetry a replacement for heartbeat liveness.
-- BN-04 does not implement DCGM, challenge-bound telemetry windows, regional
-  probes, global trust/antifraud, jobs, scheduler, marketplace, or billing.
+- BN-04 does not implement DCGM, agent-orchestrated challenge telemetry
+  capture, regional probes, global trust/antifraud, jobs, scheduler,
+  marketplace, or billing. BN-06 can now verify proof `telemetry_window_hash`
+  values against accepted BN-04 batches for the same session and GPU.
 
 ## BN-05 - Remote Evidence Registry
 
@@ -393,14 +395,18 @@ starting the API server or depending on host state:
 - Backend verification recalculates response hash, verifies Ed25519 against the
   active backend device key, checks server-side expiry, binds provider/device/
   session/fingerprint/GPU/backend/artifact/prompt, and evaluates initial CUDA,
-  VRAM, GEMM, LLM metric, contention, and telemetry-window proof fields.
+  VRAM, GEMM, LLM metric, contention, and telemetry-window proof fields. When
+  `telemetry_window` is required, the hash must reference an accepted BN-04
+  telemetry batch bound to the same provider, device, session, fingerprint, and
+  proof GPU UUID.
 - Audit events cover challenge issuance, acknowledgement, verification failure,
   verification success, and expiration-by-server-clock.
 - OpenAPI documents proof challenge issuance, challenge retrieval/next-pickup, signed response submission, and verification response schemas, with fixture-backed examples for challenge issuance and signed proof response submission.
 - BN-06 does not implement the agent-side CUDA/VRAM/GEMM/LLM workload runner,
-  recurring verification policy state, global trust/antifraud scoring, jobs,
-  scheduler, marketplace, billing, Pix, or payouts. BN-07 adds the recurring
-  verification state and admin sweep around BN-06.
+  agent-side automatic telemetry capture during proof execution, recurring
+  verification policy state, global trust/antifraud scoring, jobs, scheduler,
+  marketplace, billing, Pix, or payouts. BN-07 adds the recurring verification
+  state and admin sweep around BN-06.
 
 ## BN-07 - Recurring And Risk-Based Verification
 

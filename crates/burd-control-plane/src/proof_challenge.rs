@@ -315,7 +315,7 @@ impl Database {
             )
             .await?;
         let public_key: Option<String> = key.map(|row| row.get("public_key"));
-        let verification = build_proof_verification(
+        let mut verification = build_proof_verification(
             &challenge,
             signed,
             public_key.as_deref(),
@@ -323,6 +323,16 @@ impl Database {
             now,
             policy,
         );
+        if !validate_telemetry_window_link(
+            &transaction,
+            &challenge,
+            signed,
+            &mut verification.errors,
+        )
+        .await?
+        {
+            verification.metrics_satisfied = false;
+        }
         let accepted = verification.errors.is_empty();
         let next_status = if accepted { "verified" } else { "failed" };
         let response_object_key = write_proof_response_object(
@@ -672,6 +682,55 @@ fn build_proof_verification(
     }
 }
 
+async fn validate_telemetry_window_link(
+    transaction: &Transaction<'_>,
+    challenge: &ProofCapabilityChallenge,
+    signed: &SignedProofCapabilityResponse,
+    errors: &mut Vec<String>,
+) -> Result<bool, SessionError> {
+    if !challenge
+        .required_proofs
+        .iter()
+        .any(|proof| proof == "telemetry_window")
+    {
+        return Ok(true);
+    }
+    let payload = &signed.payload;
+    let Some(window_hash) = payload
+        .telemetry_window_hash
+        .as_deref()
+        .filter(|value| is_bounded_ascii(value, 160))
+    else {
+        return Ok(false);
+    };
+    let row = transaction
+        .query_opt(
+            "SELECT tb.batch_id, EXISTS(SELECT 1 FROM gpu_telemetry_samples sample WHERE sample.batch_id = tb.batch_id AND sample.gpu_uuid = $6) AS gpu_observed FROM telemetry_batches tb WHERE tb.batch_hash = $1 AND tb.provider_id = $2 AND tb.device_id = $3 AND tb.session_id = $4 AND tb.hardware_fingerprint = $5",
+            &[
+                &window_hash,
+                &challenge.provider_id,
+                &challenge.device_id,
+                &challenge.session_id,
+                &challenge.required_fingerprint,
+                &payload.gpu_uuid,
+            ],
+        )
+        .await?;
+    let Some(row) = row else {
+        errors.push(
+            "proof response telemetry window hash is not a verified telemetry batch for this session"
+                .to_string(),
+        );
+        return Ok(false);
+    };
+    if !row.get::<_, bool>("gpu_observed") {
+        errors.push(
+            "proof response telemetry window does not include the proof GPU UUID".to_string(),
+        );
+        return Ok(false);
+    }
+    Ok(true)
+}
 fn validate_response_timestamps(
     challenge: &ProofCapabilityChallenge,
     payload: &burd_protocol::ProofCapabilityResponsePayload,

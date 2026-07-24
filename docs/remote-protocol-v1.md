@@ -442,7 +442,10 @@ The signed payload contains:
 - `driver_version`
 - optional CUDA driver/runtime versions
 - `metrics`
-- optional `telemetry_window_hash`
+- optional `telemetry_window_hash`; required when the challenge includes
+  `telemetry_window`, and then it must match a backend-accepted BN-04 telemetry
+  `batch_hash` for the same provider, device, session, fingerprint, and GPU
+  UUID
 - `started_at`
 - `completed_at`
 
@@ -468,6 +471,8 @@ Backend behavior:
 - checks execution timestamps against challenge issue/expiry and server clock;
 - evaluates initial CUDA runtime, VRAM residency, GEMM, short LLM inference,
   contention, and telemetry-window proof fields;
+- verifies required telemetry-window hashes against accepted BN-04 telemetry
+  batches for the same provider, device, session, fingerprint, and proof GPU;
 - stores the complete signed response in object storage;
 - stores response metadata and verification JSON in PostgreSQL;
 - sets challenge state to `verified`, `failed`, or `expired`.

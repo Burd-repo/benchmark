@@ -3617,6 +3617,143 @@ mod tests {
         .unwrap()
     }
 
+    fn signed_telemetry_batch_for_fixture(
+        fixture: &LiveHttpFixture,
+        control_sequence: u64,
+        sample_sequence: u64,
+        gpu_uuid: &str,
+    ) -> burd_protocol::SignedTelemetryBatch {
+        let now = chrono::Utc::now().to_rfc3339();
+        let payload = burd_protocol::TelemetryBatchPayload {
+            schema_version: burd_protocol::TELEMETRY_SCHEMA_VERSION.to_string(),
+            provider_id: fixture.provider_id.clone(),
+            device_id: fixture.device_id.clone(),
+            session_id: fixture.session_id.clone(),
+            control_sequence,
+            sample_sequence_start: sample_sequence,
+            sample_sequence_end: sample_sequence,
+            hardware_fingerprint: fixture.hardware_fingerprint.clone(),
+            collector: "live-http-telemetry-contract".to_string(),
+            collected_at_start: now.clone(),
+            collected_at_end: now.clone(),
+            samples: vec![burd_protocol::GpuTelemetrySample {
+                sample_sequence,
+                observed_at: now,
+                gpu_uuid: gpu_uuid.to_string(),
+                gpu_name: "NVIDIA RTX Live Test".to_string(),
+                pci_bus_id: "00000000:01:00.0".to_string(),
+                pci_vendor_id: Some("10de".to_string()),
+                pci_device_id: Some("2684".to_string()),
+                compute_capability: Some("8.9".to_string()),
+                driver_version: "576.80".to_string(),
+                cuda_driver_version: Some("12.9".to_string()),
+                cuda_runtime_version: Some("12.9".to_string()),
+                vram_total_mib: 24_576,
+                vram_used_mib: Some(2_048),
+                vram_free_mib: Some(22_528),
+                gpu_utilization_percent: Some(63.0),
+                memory_utilization_percent: Some(42.0),
+                temperature_celsius: Some(64.0),
+                power_draw_watts: Some(220.0),
+                power_limit_watts: Some(320.0),
+                graphics_clock_mhz: Some(1_800),
+                sm_clock_mhz: Some(1_800),
+                memory_clock_mhz: Some(10_500),
+                performance_state: Some("P2".to_string()),
+                throttle_reasons: Vec::new(),
+                ecc_corrected_errors: None,
+                ecc_uncorrected_errors: None,
+                processes: vec![burd_protocol::GpuProcessTelemetry {
+                    pid: 4242,
+                    process_name: "burd-runtime".to_string(),
+                    used_gpu_memory_mib: Some(1_024),
+                    process_kind: "compute".to_string(),
+                }],
+                container_id: Some("container-live-telemetry".to_string()),
+                job_id: None,
+            }],
+        };
+        let batch_hash = burd_protocol::telemetry_batch_hash(&payload).unwrap();
+        let signature_message = burd_protocol::telemetry_batch_signature_message(
+            &payload,
+            &batch_hash,
+            &fixture.public_key_id,
+        )
+        .unwrap();
+        let signature = burd_protocol::sign_message(
+            &fixture.keys.secret_key_base64,
+            signature_message.as_bytes(),
+        )
+        .unwrap();
+        burd_protocol::SignedTelemetryBatch {
+            payload,
+            batch_hash,
+            public_key_id: fixture.public_key_id.clone(),
+            signature,
+            canonicalization_version: burd_protocol::TELEMETRY_CANONICALIZATION_VERSION.to_string(),
+        }
+    }
+
+    fn telemetry_batch_body(
+        fixture: &LiveHttpFixture,
+        control_sequence: u64,
+        signed: &burd_protocol::SignedTelemetryBatch,
+    ) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "session_id": &fixture.session_id,
+            "device_id": &fixture.device_id,
+            "sequence": control_sequence,
+            "sent_at": chrono::Utc::now().to_rfc3339(),
+            "type": "telemetry_batch",
+            "payload": signed
+        }))
+        .unwrap()
+    }
+
+    async fn submit_live_telemetry_batch(
+        fixture: &LiveHttpFixture,
+        control_sequence: u64,
+        sample_sequence: u64,
+        gpu_uuid: &str,
+    ) -> burd_protocol::TelemetryBatchReceipt {
+        let signed = signed_telemetry_batch_for_fixture(
+            fixture,
+            control_sequence,
+            sample_sequence,
+            gpu_uuid,
+        );
+        let body = telemetry_batch_body(fixture, control_sequence, &signed);
+        let headers = fixture.session_headers();
+        let submitted = send_request(
+            fixture.app.clone(),
+            Method::POST,
+            &format!("/v1/sessions/{}/telemetry-batches", fixture.session_id),
+            Some(&body),
+            &headers,
+        )
+        .await;
+        assert_eq!(submitted.status(), StatusCode::OK);
+        let receipt: burd_protocol::TelemetryBatchReceipt =
+            serde_json::from_value(response_json(submitted).await).unwrap();
+        assert_eq!(receipt.batch_hash, signed.batch_hash);
+        assert_eq!(receipt.control_sequence_ack, control_sequence);
+        assert_eq!(receipt.sample_sequence_end, sample_sequence);
+
+        let headers = fixture.session_headers();
+        let latest = send_request(
+            fixture.app.clone(),
+            Method::GET,
+            &format!("/v1/sessions/{}/telemetry/latest", fixture.session_id),
+            None,
+            &headers,
+        )
+        .await;
+        assert_eq!(latest.status(), StatusCode::OK);
+        let latest = response_json(latest).await;
+        assert_eq!(latest["batch_hash"], receipt.batch_hash);
+        assert_eq!(latest["samples"][0]["gpu_uuid"], gpu_uuid);
+        receipt
+    }
     fn live_control_channel_request(
         fixture: &LiveHttpFixture,
         addr: std::net::SocketAddr,
@@ -3725,6 +3862,7 @@ mod tests {
     fn signed_proof_response_for_challenge(
         fixture: &LiveHttpFixture,
         challenge: &burd_protocol::ProofCapabilityChallenge,
+        telemetry_window_hash: Option<String>,
     ) -> burd_protocol::SignedProofCapabilityResponse {
         let now = chrono::Utc::now().to_rfc3339();
         let payload = burd_protocol::ProofCapabilityResponsePayload {
@@ -3756,7 +3894,7 @@ mod tests {
                 backend_proof: "cuda_runtime_detected".to_string(),
                 contention_detected: false,
             },
-            telemetry_window_hash: Some("telemetry_window_hash_live_http".to_string()),
+            telemetry_window_hash,
             started_at: now.clone(),
             completed_at: now,
         };
@@ -3782,6 +3920,51 @@ mod tests {
         }
     }
 
+    async fn issue_live_proof_challenge(
+        fixture: &LiveHttpFixture,
+        profile_version: &str,
+        prompt_seed: &str,
+    ) -> burd_protocol::ProofCapabilityChallenge {
+        let issue_body = serde_json::to_string(&serde_json::json!({
+            "provider_id": &fixture.provider_id,
+            "device_id": &fixture.device_id,
+            "session_id": &fixture.session_id,
+            "profile_version": profile_version,
+            "required_fingerprint": &fixture.hardware_fingerprint,
+            "required_gpu_uuid": "GPU-live-http",
+            "required_backend": "cuda",
+            "model_artifact_hash": "sha256:live-proof-model-artifact",
+            "prompt_seed": prompt_seed,
+            "required_proofs": [
+                "cuda_runtime",
+                "vram_allocation_residency",
+                "tensor_gemm_microbenchmark",
+                "llm_short_inference",
+                "contention_detection",
+                "telemetry_window"
+            ],
+            "min_tokens_per_second": 1.0,
+            "max_ttft_ms": 500,
+            "expires_in_seconds": 300
+        }))
+        .unwrap();
+        let issued = send_request(
+            fixture.app.clone(),
+            Method::POST,
+            "/v1/challenges",
+            Some(&issue_body),
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(issued.status(), StatusCode::CREATED);
+        let issued = response_json(issued).await;
+        let challenge: burd_protocol::ProofCapabilityChallenge =
+            serde_json::from_value(issued["challenge"].clone()).unwrap();
+        assert_eq!(challenge.provider_id, fixture.provider_id);
+        assert_eq!(challenge.device_id, fixture.device_id);
+        assert_eq!(challenge.session_id, fixture.session_id);
+        challenge
+    }
     #[tokio::test]
     #[ignore]
     async fn live_control_channel_websocket_flow_acknowledges_duplicate_and_revocation() {
@@ -4056,44 +4239,9 @@ mod tests {
             "provider-live-proof-flow",
         )
         .await;
-        let issue_body = serde_json::to_string(&serde_json::json!({
-            "provider_id": &fixture.provider_id,
-            "device_id": &fixture.device_id,
-            "session_id": &fixture.session_id,
-            "profile_version": "live-proof-v1",
-            "required_fingerprint": &fixture.hardware_fingerprint,
-            "required_gpu_uuid": "GPU-live-http",
-            "required_backend": "cuda",
-            "model_artifact_hash": "sha256:live-proof-model-artifact",
-            "prompt_seed": "prompt_seed_live_http",
-            "required_proofs": [
-                "cuda_runtime",
-                "vram_allocation_residency",
-                "tensor_gemm_microbenchmark",
-                "llm_short_inference",
-                "contention_detection",
-                "telemetry_window"
-            ],
-            "min_tokens_per_second": 1.0,
-            "max_ttft_ms": 500,
-            "expires_in_seconds": 300
-        }))
-        .unwrap();
-        let issued = send_request(
-            fixture.app.clone(),
-            Method::POST,
-            "/v1/challenges",
-            Some(&issue_body),
-            &[("authorization", "Bearer test-admin")],
-        )
-        .await;
-        assert_eq!(issued.status(), StatusCode::CREATED);
-        let issued = response_json(issued).await;
-        let challenge: burd_protocol::ProofCapabilityChallenge =
-            serde_json::from_value(issued["challenge"].clone()).unwrap();
-        assert_eq!(challenge.provider_id, fixture.provider_id);
-        assert_eq!(challenge.device_id, fixture.device_id);
-        assert_eq!(challenge.session_id, fixture.session_id);
+        let telemetry = submit_live_telemetry_batch(&fixture, 2, 1, "GPU-live-http").await;
+        let challenge =
+            issue_live_proof_challenge(&fixture, "live-proof-v1", "prompt_seed_live_http").await;
 
         let headers = fixture.session_headers();
         let next = send_request(
@@ -4108,7 +4256,11 @@ mod tests {
         let next = response_json(next).await;
         assert_eq!(next["challenge"]["challenge_id"], challenge.challenge_id);
 
-        let signed = signed_proof_response_for_challenge(&fixture, &challenge);
+        let signed = signed_proof_response_for_challenge(
+            &fixture,
+            &challenge,
+            Some(telemetry.batch_hash.clone()),
+        );
         let signed_body = serde_json::to_string(&signed).unwrap();
         let headers = fixture.session_headers();
         let submitted = send_request(
@@ -4158,7 +4310,7 @@ mod tests {
         let client = fixture.db.connect().await.unwrap();
         let persisted = client
             .query_one(
-                "SELECT pc.status, pc.response_hash, pc.public_key_id, vs.status AS verification_status, vs.success_count FROM proof_challenges pc LEFT JOIN provider_verification_states vs ON vs.last_verified_challenge_id = pc.challenge_id WHERE pc.challenge_id = $1",
+                "SELECT pc.status, pc.response_hash, pc.public_key_id, pc.response_json, vs.status AS verification_status, vs.success_count FROM proof_challenges pc LEFT JOIN provider_verification_states vs ON vs.last_verified_challenge_id = pc.challenge_id WHERE pc.challenge_id = $1",
                 &[&challenge.challenge_id],
             )
             .await
@@ -4172,6 +4324,13 @@ mod tests {
             persisted.get::<_, Option<String>>("public_key_id"),
             Some(fixture.public_key_id.clone())
         );
+        let response_json: String = persisted.get::<_, Option<String>>("response_json").unwrap();
+        let persisted_response: burd_protocol::SignedProofCapabilityResponse =
+            serde_json::from_str(&response_json).unwrap();
+        assert_eq!(
+            persisted_response.payload.telemetry_window_hash,
+            Some(telemetry.batch_hash)
+        );
         assert_eq!(
             persisted.get::<_, Option<String>>("verification_status"),
             Some("verified".to_string())
@@ -4180,6 +4339,69 @@ mod tests {
 
         fixture.cleanup().await;
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_proof_challenge_rejects_unregistered_telemetry_window_hash() {
+        let fixture = live_enrolled_session_fixture(
+            "proof_missing_telemetry",
+            "Live Proof Missing Telemetry Provider",
+            "provider-live-proof-missing-telemetry",
+        )
+        .await;
+        let challenge = issue_live_proof_challenge(
+            &fixture,
+            "live-proof-missing-telemetry-v1",
+            "prompt_seed_missing_telemetry",
+        )
+        .await;
+        let signed = signed_proof_response_for_challenge(
+            &fixture,
+            &challenge,
+            Some("sha256:not-a-verified-telemetry-window".to_string()),
+        );
+        let signed_body = serde_json::to_string(&signed).unwrap();
+        let headers = fixture.session_headers();
+        let submitted = send_request(
+            fixture.app.clone(),
+            Method::POST,
+            &format!(
+                "/v1/sessions/{}/challenges/{}/response",
+                fixture.session_id, challenge.challenge_id
+            ),
+            Some(&signed_body),
+            &headers,
+        )
+        .await;
+        assert_eq!(submitted.status(), StatusCode::OK);
+        let submitted = response_json(submitted).await;
+        assert_eq!(submitted["challenge_id"], challenge.challenge_id);
+        assert_eq!(submitted["status"], "failed");
+        assert_eq!(submitted["verification"]["metrics_satisfied"], false);
+        let errors = submitted["verification"]["errors"].as_array().unwrap();
+        assert!(errors.iter().any(|error| {
+            error
+                .as_str()
+                .unwrap()
+                .contains("telemetry window hash is not a verified telemetry batch")
+        }));
+
+        let loaded = send_request(
+            fixture.app.clone(),
+            Method::GET,
+            &format!("/v1/challenges/{}", challenge.challenge_id),
+            None,
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(loaded.status(), StatusCode::OK);
+        let loaded = response_json(loaded).await;
+        assert_eq!(loaded["status"], "failed");
+        assert_eq!(loaded["verification"]["metrics_satisfied"], false);
+
+        fixture.cleanup().await;
+    }
+
     #[tokio::test]
     async fn health_endpoint_does_not_require_database_connection() {
         let config = test_config("postgres://localhost/unavailable");
