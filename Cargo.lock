@@ -259,6 +259,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "burd-agent",
+ "burd-hardware",
  "burd-protocol",
  "chrono",
  "futures-util",

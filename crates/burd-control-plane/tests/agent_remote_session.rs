@@ -1,9 +1,12 @@
 use axum::Router;
 use burd_control_plane::{AppState, ControlPlaneConfig, Database, router};
+use burd_hardware::NvidiaTelemetryCollection;
+use burd_protocol::{GpuTelemetrySample, TelemetryBatchPayload};
 use serde_json::{Value, json};
 use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::io::copy_bidirectional;
@@ -13,6 +16,64 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
 
+const TELEMETRY_MODE_VALID: u8 = 0;
+const TELEMETRY_MODE_UNAVAILABLE: u8 = 1;
+const TELEMETRY_MODE_INVALID: u8 = 2;
+
+static TELEMETRY_MODE: AtomicU8 = AtomicU8::new(TELEMETRY_MODE_VALID);
+static TELEMETRY_UNAVAILABLE_CALLS: AtomicU64 = AtomicU64::new(0);
+static TELEMETRY_INVALID_CALLS: AtomicU64 = AtomicU64::new(0);
+
+fn deterministic_nvidia_telemetry(
+    first_sample_sequence: u64,
+) -> Result<NvidiaTelemetryCollection, String> {
+    let mode = TELEMETRY_MODE.load(Ordering::SeqCst);
+    if mode == TELEMETRY_MODE_UNAVAILABLE {
+        TELEMETRY_UNAVAILABLE_CALLS.fetch_add(1, Ordering::SeqCst);
+        return Err("deterministic NVIDIA source paused by integration test".to_string());
+    }
+
+    let invalid = mode == TELEMETRY_MODE_INVALID;
+    if invalid {
+        TELEMETRY_INVALID_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+    let observed_at = chrono::Utc::now().to_rfc3339();
+    Ok(NvidiaTelemetryCollection {
+        collector: "burd-agent-integration-nvidia-v1".to_string(),
+        samples: vec![GpuTelemetrySample {
+            sample_sequence: first_sample_sequence,
+            observed_at,
+            gpu_uuid: "GPU-agent-integration".to_string(),
+            gpu_name: "NVIDIA Integration GPU".to_string(),
+            pci_bus_id: "00000000:01:00.0".to_string(),
+            pci_vendor_id: Some("10de".to_string()),
+            pci_device_id: Some("2684".to_string()),
+            compute_capability: Some("8.9".to_string()),
+            driver_version: "555.42".to_string(),
+            cuda_driver_version: Some("12.5".to_string()),
+            cuda_runtime_version: Some("12.4".to_string()),
+            vram_total_mib: 24_564,
+            vram_used_mib: Some(2_048),
+            vram_free_mib: Some(22_516),
+            gpu_utilization_percent: Some(if invalid { 101.0 } else { 42.0 }),
+            memory_utilization_percent: Some(18.0),
+            temperature_celsius: Some(58.0),
+            power_draw_watts: Some(180.0),
+            power_limit_watts: Some(320.0),
+            graphics_clock_mhz: Some(1_800),
+            sm_clock_mhz: Some(1_800),
+            memory_clock_mhz: Some(10_500),
+            performance_state: Some("P2".to_string()),
+            throttle_reasons: vec![],
+            ecc_corrected_errors: None,
+            ecc_uncorrected_errors: None,
+            processes: vec![],
+            container_id: None,
+            job_id: None,
+        }],
+        warnings: vec![],
+    })
+}
 struct RunningHttpServer {
     addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
@@ -262,6 +323,103 @@ async fn session_rows(client: &Client) -> Vec<SessionRow> {
         .collect()
 }
 
+#[derive(Debug, Clone)]
+struct TelemetryBatchRow {
+    control_sequence: u64,
+    sample_sequence_start: u64,
+    sample_sequence_end: u64,
+    sample_count: u32,
+    persisted_sample_count: u64,
+    batch_hash: String,
+    public_key_id: String,
+    signature: String,
+    canonicalization_version: String,
+    payload_json: String,
+    verification_json: String,
+    public_key: String,
+}
+
+async fn telemetry_batch_rows(client: &Client, session_id: &str) -> Vec<TelemetryBatchRow> {
+    client
+        .query(
+            "SELECT t.control_sequence, t.sample_sequence_start, t.sample_sequence_end, t.sample_count, t.batch_hash, t.public_key_id, t.signature, t.canonicalization_version, t.payload_json, t.verification_json, k.public_key, (SELECT COUNT(*)::BIGINT FROM gpu_telemetry_samples s WHERE s.batch_id = t.batch_id) AS persisted_sample_count FROM telemetry_batches t JOIN provider_public_keys k ON k.public_key_id = t.public_key_id WHERE t.session_id = $1 ORDER BY t.sample_sequence_start",
+            &[&session_id],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| TelemetryBatchRow {
+            control_sequence: row.get::<_, i64>("control_sequence").max(0) as u64,
+            sample_sequence_start: row.get::<_, i64>("sample_sequence_start").max(0) as u64,
+            sample_sequence_end: row.get::<_, i64>("sample_sequence_end").max(0) as u64,
+            sample_count: row.get::<_, i32>("sample_count").max(0) as u32,
+            persisted_sample_count: row.get::<_, i64>("persisted_sample_count").max(0) as u64,
+            batch_hash: row.get("batch_hash"),
+            public_key_id: row.get("public_key_id"),
+            signature: row.get("signature"),
+            canonicalization_version: row.get("canonicalization_version"),
+            payload_json: row.get("payload_json"),
+            verification_json: row.get("verification_json"),
+            public_key: row.get("public_key"),
+        })
+        .collect()
+}
+
+async fn wait_for_telemetry_batches<F>(
+    client: &Client,
+    session_id: &str,
+    description: &str,
+    mut condition: F,
+) -> Vec<TelemetryBatchRow>
+where
+    F: FnMut(&[TelemetryBatchRow]) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let rows = telemetry_batch_rows(client, session_id).await;
+        if condition(&rows) {
+            return rows;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {description}; last rows: {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_counter(counter: &AtomicU64, expected: u64, description: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while counter.load(Ordering::SeqCst) < expected {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {description}; current count: {}",
+            counter.load(Ordering::SeqCst)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn wait_for_local_telemetry_sequence(expected: u64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let state = tokio::task::spawn_blocking(burd_protocol::load_remote_session)
+            .await
+            .unwrap()
+            .unwrap();
+        if state.telemetry_sequence_last >= expected {
+            assert_eq!(state.telemetry_sequence_last, expected);
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for local telemetry ACK sequence {expected}; current sequence: {}",
+            state.telemetry_sequence_last
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 async fn wait_for_sessions<F>(
     client: &Client,
     description: &str,
@@ -446,4 +604,248 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
         error.contains("revoked"),
         "unexpected Agent revocation error: {error}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn live_agent_signed_telemetry_persists_ack_resumes_and_handles_rejection() {
+    let _environment_lock = agent_environment_lock().lock().await;
+    TELEMETRY_MODE.store(TELEMETRY_MODE_VALID, Ordering::SeqCst);
+    TELEMETRY_UNAVAILABLE_CALLS.store(0, Ordering::SeqCst);
+    TELEMETRY_INVALID_CALLS.store(0, Ordering::SeqCst);
+
+    let database_url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
+        .expect("BURD_CONTROL_TEST_DATABASE_URL is required for this ignored integration test");
+    let label = format!("agent_signed_telemetry_{}", Uuid::new_v4().simple());
+    let schema = format!("burd_{label}");
+    let object_storage_dir = PathBuf::from(format!("target/test-control-objects/{schema}"));
+    let _agent_state = AgentStateGuard::install(&label);
+
+    let mut config = ControlPlaneConfig::from_lookup(|key| match key {
+        "BURD_CONTROL_DATABASE_URL" => Some(database_url.clone()),
+        "BURD_CONTROL_ADMIN_TOKEN" => Some("test-admin".to_string()),
+        _ => None,
+    })
+    .unwrap();
+    config.environment = "test".to_string();
+    config.database_schema = Some(schema.clone());
+    config.object_storage_dir = object_storage_dir.display().to_string();
+    config.rate_limit_per_minute = 1_000;
+    config.remote_session_ttl_seconds = 30;
+    config.heartbeat_interval_seconds = 1;
+    config.missed_heartbeat_limit = 2;
+    config.telemetry_min_batch_interval_seconds = 0;
+
+    let db = Database::new(database_url.clone(), Some(schema.clone())).unwrap();
+    db.migrate().await.unwrap();
+    let app = router(Arc::new(AppState::new(config, db.clone())));
+    let server = RunningHttpServer::start(app).await;
+    let proxy = TestTcpProxy::start(server.addr).await;
+    let control_plane_url = format!("http://{}", proxy.addr);
+
+    let (expected_provider_id, enrollment_token) = issue_enrollment_token(&control_plane_url).await;
+    tokio::task::spawn_blocking(burd_protocol::init_identity)
+        .await
+        .unwrap()
+        .unwrap();
+    let enrollment_url = control_plane_url.clone();
+    let enrollment = tokio::task::spawn_blocking(move || {
+        burd_agent::remote_enrollment::enroll(
+            &enrollment_url,
+            enrollment_token,
+            "burd-agent-integration/0.1.0",
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(enrollment.provider_id, expected_provider_id);
+
+    let client = schema_client(&database_url, &schema).await;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut agent_task = tokio::spawn(async move {
+        burd_agent::remote_session::connect_until_shutdown_with_telemetry_collector(
+            "burd-agent-integration/0.1.0",
+            1,
+            true,
+            1,
+            deterministic_nvidia_telemetry,
+            shutdown_rx,
+        )
+        .await
+    });
+
+    let initial_sessions = wait_for_sessions(
+        &client,
+        "the telemetry Agent session to become online",
+        |rows| rows.len() == 1 && rows[0].status == "online" && rows[0].sequence_last >= 1,
+    )
+    .await;
+    let initial_session = initial_sessions[0].clone();
+    let accepted = wait_for_telemetry_batches(
+        &client,
+        &initial_session.session_id,
+        "the Agent-produced signed telemetry batch",
+        |rows| !rows.is_empty(),
+    )
+    .await;
+    let first = &accepted[0];
+    assert_eq!(first.sample_sequence_start, 1);
+    assert_eq!(first.sample_sequence_end, 1);
+    assert_eq!(first.sample_count, 1);
+    assert_eq!(first.persisted_sample_count, 1);
+    assert_eq!(
+        first.canonicalization_version,
+        burd_protocol::TELEMETRY_CANONICALIZATION_VERSION
+    );
+
+    let payload: TelemetryBatchPayload = serde_json::from_str(&first.payload_json).unwrap();
+    assert_eq!(payload.provider_id, expected_provider_id);
+    assert_eq!(payload.device_id, enrollment.device_id);
+    assert_eq!(payload.session_id, initial_session.session_id);
+    assert_eq!(payload.control_sequence, first.control_sequence);
+    assert_eq!(payload.collector, "burd-agent-integration-nvidia-v1");
+    assert_eq!(payload.samples[0].gpu_uuid, "GPU-agent-integration");
+    assert_eq!(payload.samples[0].gpu_utilization_percent, Some(42.0));
+    assert_eq!(
+        burd_protocol::telemetry_batch_hash(&payload).unwrap(),
+        first.batch_hash
+    );
+    let signature_message = burd_protocol::telemetry_batch_signature_message(
+        &payload,
+        &first.batch_hash,
+        &first.public_key_id,
+    )
+    .unwrap();
+    assert!(
+        burd_protocol::verify_message(
+            &first.public_key,
+            signature_message.as_bytes(),
+            &first.signature,
+        )
+        .unwrap()
+    );
+    let verification: Value = serde_json::from_str(&first.verification_json).unwrap();
+    assert_eq!(verification["hash_valid"], true);
+    assert_eq!(verification["signature_valid"], true);
+    assert_eq!(verification["session_bound"], true);
+    assert_eq!(verification["fingerprint_bound"], true);
+
+    TELEMETRY_MODE.store(TELEMETRY_MODE_UNAVAILABLE, Ordering::SeqCst);
+    wait_for_counter(
+        &TELEMETRY_UNAVAILABLE_CALLS,
+        1,
+        "the deterministic source to pause before reconnect",
+    )
+    .await;
+    let before_drop = telemetry_batch_rows(&client, &initial_session.session_id).await;
+    let sequence_before_drop = before_drop.last().unwrap().sample_sequence_end;
+    wait_for_local_telemetry_sequence(sequence_before_drop).await;
+
+    proxy.drop_connections();
+    wait_for_sessions(&client, "the telemetry Agent session to resume", |rows| {
+        rows.iter().any(|row| {
+            row.session_id == initial_session.session_id
+                && row.status == "online"
+                && row.resume_events >= 1
+        })
+    })
+    .await;
+
+    TELEMETRY_MODE.store(TELEMETRY_MODE_VALID, Ordering::SeqCst);
+    let after_resume = wait_for_telemetry_batches(
+        &client,
+        &initial_session.session_id,
+        "telemetry sequence continuation after reconnect",
+        |rows| {
+            rows.last()
+                .is_some_and(|row| row.sample_sequence_end > sequence_before_drop)
+        },
+    )
+    .await;
+    TELEMETRY_MODE.store(TELEMETRY_MODE_UNAVAILABLE, Ordering::SeqCst);
+    let unavailable_before = TELEMETRY_UNAVAILABLE_CALLS.load(Ordering::SeqCst);
+    wait_for_counter(
+        &TELEMETRY_UNAVAILABLE_CALLS,
+        unavailable_before + 1,
+        "the deterministic source to pause after reconnect",
+    )
+    .await;
+
+    let accepted_after_resume = telemetry_batch_rows(&client, &initial_session.session_id).await;
+    assert!(accepted_after_resume.len() >= after_resume.len());
+    for (offset, row) in accepted_after_resume.iter().enumerate() {
+        let expected_sequence = offset as u64 + 1;
+        assert_eq!(row.sample_sequence_start, expected_sequence);
+        assert_eq!(row.sample_sequence_end, expected_sequence);
+        assert_eq!(row.sample_count, 1);
+        assert_eq!(row.persisted_sample_count, 1);
+    }
+    let last_accepted = accepted_after_resume.last().unwrap();
+    let accepted_count = accepted_after_resume.len();
+    let accepted_control_sequence = last_accepted.control_sequence;
+    let accepted_sample_sequence = last_accepted.sample_sequence_end;
+    wait_for_local_telemetry_sequence(accepted_sample_sequence).await;
+
+    let sequence_before_rejection = session_rows(&client)
+        .await
+        .into_iter()
+        .find(|row| row.session_id == initial_session.session_id)
+        .unwrap()
+        .sequence_last;
+    TELEMETRY_MODE.store(TELEMETRY_MODE_INVALID, Ordering::SeqCst);
+    wait_for_counter(
+        &TELEMETRY_INVALID_CALLS,
+        1,
+        "the Agent to submit invalid deterministic telemetry",
+    )
+    .await;
+    wait_for_sessions(
+        &client,
+        "heartbeats to continue after telemetry rejection",
+        |rows| {
+            rows.iter().any(|row| {
+                row.session_id == initial_session.session_id
+                    && row.status == "online"
+                    && row.sequence_last > sequence_before_rejection
+                    && row.sequence_last > i64::try_from(accepted_control_sequence).unwrap()
+            })
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(2_200)).await;
+
+    assert_eq!(
+        TELEMETRY_INVALID_CALLS.load(Ordering::SeqCst),
+        1,
+        "the Agent must disable telemetry after a server rejection"
+    );
+    assert_eq!(
+        telemetry_batch_rows(&client, &initial_session.session_id)
+            .await
+            .len(),
+        accepted_count,
+        "rejected telemetry must not be persisted"
+    );
+    assert!(
+        !agent_task.is_finished(),
+        "telemetry rejection must not terminate the remote session"
+    );
+    wait_for_local_telemetry_sequence(accepted_sample_sequence).await;
+
+    let _ = shutdown_tx.send(true);
+    let agent_result = tokio::time::timeout(Duration::from_secs(5), &mut agent_task)
+        .await
+        .expect("Agent did not stop after integration-test shutdown")
+        .unwrap();
+    assert!(
+        agent_result.is_ok(),
+        "unexpected Agent error: {agent_result:?}"
+    );
+
+    proxy.stop().await;
+    server.stop().await;
+    db.drop_schema_for_test().await.unwrap();
+    let _ = std::fs::remove_dir_all(&object_storage_dir);
+    TELEMETRY_MODE.store(TELEMETRY_MODE_VALID, Ordering::SeqCst);
 }

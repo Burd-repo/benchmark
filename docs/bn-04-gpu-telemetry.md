@@ -91,6 +91,12 @@ It is also enabled when `telemetry_enabled` is true in the agent identity
 configuration. Without `nvidia-smi`, the remote session remains connected and
 reports telemetry as unavailable in structured stderr logs.
 
+An ignored PostgreSQL integration harness uses a deterministic NVIDIA source
+behind the Agent's `integration-test-support` feature. It exercises the production
+batch builder, canonical hash, Ed25519 signature, WebSocket transport, ACK and
+sequence persistence, reconnect continuation, backend transaction, and rejection
+handling without claiming that CI collected real GPU measurements.
+
 ## Configuration
 
 - `BURD_CONTROL_TELEMETRY_MAX_SAMPLES_PER_BATCH=64`
