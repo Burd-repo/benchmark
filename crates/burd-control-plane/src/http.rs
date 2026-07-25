@@ -2211,10 +2211,17 @@ async fn handle_control_channel(
                 } else {
                     "revoked".to_string()
                 };
+                let revocation_request_id = new_request_id();
+                let sequence_ack = state
+                    .db
+                    .get_remote_session(&session_id, &authorized, &revocation_request_id)
+                    .await
+                    .map(|session| session.sequence_last)
+                    .unwrap_or(authorized.sequence_last);
                 let message = ServerControlMessage {
-                    request_id: new_request_id(),
+                    request_id: revocation_request_id,
                     session_id: session_id.clone(),
-                    sequence_ack: authorized.sequence_last,
+                    sequence_ack,
                     server_time: chrono::Utc::now().to_rfc3339(),
                     message_type: "session_revoked".to_string(),
                     payload: serde_json::json!({ "reason": reason }),
@@ -3967,7 +3974,7 @@ mod tests {
     }
     #[tokio::test]
     #[ignore]
-    async fn live_control_channel_websocket_flow_acknowledges_duplicate_and_revocation() {
+    async fn live_control_channel_websocket_flow_persists_telemetry_and_rejects_replay() {
         let fixture = live_pending_session_fixture(
             "control_ws",
             "Live Control Channel Provider",
@@ -4022,6 +4029,68 @@ mod tests {
         assert_eq!(ack.payload["status"], "online");
         assert_eq!(ack.payload["sequence_ack"], 1);
 
+        let signed = signed_telemetry_batch_for_fixture(&fixture, 2, 1, "GPU-live-websocket");
+        let telemetry_body = telemetry_batch_body(&fixture, 2, &signed);
+        socket
+            .send(TungsteniteMessage::Text(telemetry_body.clone().into()))
+            .await
+            .unwrap();
+        let telemetry_ack = live_server_control_message(socket.next().await.unwrap().unwrap());
+        assert_eq!(telemetry_ack.session_id, fixture.session_id);
+        assert_eq!(telemetry_ack.message_type, "telemetry_ack");
+        assert_eq!(telemetry_ack.sequence_ack, 2);
+        let telemetry_receipt: burd_protocol::TelemetryBatchReceipt =
+            serde_json::from_value(telemetry_ack.payload).unwrap();
+        assert_eq!(telemetry_receipt.status, "accepted");
+        assert_eq!(telemetry_receipt.control_sequence_ack, 2);
+        assert_eq!(telemetry_receipt.sample_sequence_end, 1);
+        assert_eq!(telemetry_receipt.sample_count, 1);
+        assert_eq!(telemetry_receipt.batch_hash, signed.batch_hash);
+
+        socket
+            .send(TungsteniteMessage::Text(telemetry_body.into()))
+            .await
+            .unwrap();
+        let telemetry_replay = live_server_control_message(socket.next().await.unwrap().unwrap());
+        assert_eq!(telemetry_replay.session_id, fixture.session_id);
+        assert_eq!(telemetry_replay.message_type, "telemetry_rejected");
+        assert_eq!(telemetry_replay.sequence_ack, 2);
+        assert!(
+            telemetry_replay.payload["message"]
+                .as_str()
+                .unwrap()
+                .contains("already observed")
+        );
+
+        let headers = fixture.session_headers();
+        let latest = send_request(
+            fixture.app.clone(),
+            Method::GET,
+            &format!("/v1/sessions/{}/telemetry/latest", fixture.session_id),
+            None,
+            &headers,
+        )
+        .await;
+        assert_eq!(latest.status(), StatusCode::OK);
+        let latest = response_json(latest).await;
+        assert_eq!(latest["batch_hash"], signed.batch_hash);
+        assert_eq!(latest["samples"][0]["gpu_uuid"], "GPU-live-websocket");
+
+        let client = fixture.db.connect().await.unwrap();
+        let persisted = client
+            .query_one(
+                "SELECT t.control_sequence, t.sample_sequence_start, t.sample_sequence_end, t.sample_count, (SELECT COUNT(*)::BIGINT FROM gpu_telemetry_samples s WHERE s.batch_id = t.batch_id) AS persisted_sample_count, (SELECT s.gpu_uuid FROM gpu_telemetry_samples s WHERE s.batch_id = t.batch_id ORDER BY s.sample_sequence LIMIT 1) AS gpu_uuid FROM telemetry_batches t WHERE t.session_id = $1 AND t.batch_hash = $2",
+                &[&fixture.session_id, &signed.batch_hash],
+            )
+            .await
+            .unwrap();
+        assert_eq!(persisted.get::<_, i64>("control_sequence"), 2);
+        assert_eq!(persisted.get::<_, i64>("sample_sequence_start"), 1);
+        assert_eq!(persisted.get::<_, i64>("sample_sequence_end"), 1);
+        assert_eq!(persisted.get::<_, i32>("sample_count"), 1);
+        assert_eq!(persisted.get::<_, i64>("persisted_sample_count"), 1);
+        assert_eq!(persisted.get::<_, String>("gpu_uuid"), "GPU-live-websocket");
+
         let revoked = send_request(
             fixture.app.clone(),
             Method::POST,
@@ -4037,6 +4106,7 @@ mod tests {
         let revocation = live_server_control_message(socket.next().await.unwrap().unwrap());
         assert_eq!(revocation.session_id, fixture.session_id);
         assert_eq!(revocation.message_type, "session_revoked");
+        assert_eq!(revocation.sequence_ack, 2);
         assert_eq!(revocation.payload["reason"], "revoked_by_admin");
 
         drop(socket);
