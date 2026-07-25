@@ -329,9 +329,13 @@ starting the API server or depending on host state:
   in-memory and is not a supervised daemon. `remote-session status` reads
   backend state.
 - PostgreSQL integration coverage exercises start, duplicate rejection,
-  heartbeat, degradation, resume, and revocation. A separate ignored harness runs
-  the real Agent loop against Axum and isolated PostgreSQL, injects socket loss and
+  heartbeat, degradation, resume, and revocation. One ignored harness runs the
+  real Agent loop against Axum and isolated PostgreSQL, injects socket loss and
   backend unavailability, and verifies resume, expiry replacement, and revocation.
+- A second ignored Agent harness injects deterministic test-only NVIDIA samples
+  through the production signing and WebSocket path. It verifies canonical hashes,
+  Ed25519 signatures, control/sample sequence continuity after reconnect, local ACK
+  persistence, transactional storage, and nonfatal server rejection handling.
 - OpenAPI documents remote session start, session record, heartbeat control-message receipt, and revocation schemas, with fixture-backed examples for session start and heartbeat HTTP fallback.
 - BN-03 does not implement GPU telemetry, backend-issued challenges, Proof of
   Capability, trust policy, jobs, scheduler, marketplace, billing, Pix, or

@@ -21,6 +21,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 burd-agent = { path = "../burd-agent", features = ["integration-test-support"] }
+burd-hardware = { path = "../burd-hardware" }
 futures-util.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
 tokio-tungstenite.workspace = true

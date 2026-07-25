@@ -3,7 +3,7 @@ use crate::remote_enrollment::{
     refresh_credential_checked,
 };
 use burd_bench::{ProviderRegistrationPayload, build_registration_payload};
-use burd_hardware::collect_nvidia_telemetry;
+use burd_hardware::{NvidiaTelemetryCollection, collect_nvidia_telemetry};
 use burd_protocol::{
     ClientControlMessage, GpuTelemetrySample, HeartbeatPayload, RemoteEnrollmentState,
     RemoteSessionRecord, RemoteSessionResume, RemoteSessionState, RemoteSessionStateStatus,
@@ -47,6 +47,7 @@ pub fn connect(
             retry_seed,
             telemetry_enabled,
             telemetry_batch_samples,
+            collect_nvidia_telemetry,
             shutdown_rx,
         )
         .await
@@ -62,6 +63,26 @@ pub async fn connect_until_shutdown(
     telemetry_batch_samples: usize,
     shutdown: watch::Receiver<bool>,
 ) -> Result<RemoteSessionStateStatus, String> {
+    connect_until_shutdown_with_telemetry_collector(
+        agent_version,
+        max_reconnect_delay_seconds,
+        telemetry,
+        telemetry_batch_samples,
+        collect_nvidia_telemetry,
+        shutdown,
+    )
+    .await
+}
+
+#[cfg(feature = "integration-test-support")]
+pub async fn connect_until_shutdown_with_telemetry_collector(
+    agent_version: &str,
+    max_reconnect_delay_seconds: u64,
+    telemetry: bool,
+    telemetry_batch_samples: usize,
+    telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
+    shutdown: watch::Receiver<bool>,
+) -> Result<RemoteSessionStateStatus, String> {
     validate_telemetry_batch_samples(telemetry_batch_samples)?;
     let identity = tokio::task::spawn_blocking(load_identity)
         .await
@@ -74,6 +95,7 @@ pub async fn connect_until_shutdown(
         retry_seed,
         telemetry_enabled,
         telemetry_batch_samples,
+        telemetry_collector,
         shutdown,
     )
     .await?;
@@ -175,6 +197,7 @@ async fn run_control_loop(
     retry_seed: u64,
     telemetry_enabled: bool,
     telemetry_batch_samples: usize,
+    telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let mut retry_policy = ReconnectPolicy::new(max_reconnect_delay_seconds, retry_seed);
@@ -186,6 +209,7 @@ async fn run_control_loop(
             agent_version.clone(),
             telemetry_enabled,
             telemetry_batch_samples,
+            telemetry_collector,
             &mut shutdown,
         )
         .await
@@ -228,6 +252,7 @@ async fn attempt_connection(
     agent_version: String,
     telemetry_enabled: bool,
     telemetry_batch_samples: usize,
+    telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<(), ReconnectFailure> {
     if shutdown_requested(shutdown) {
@@ -260,8 +285,11 @@ async fn attempt_connection(
         enrollment,
         session,
         hardware_fingerprint,
-        telemetry_enabled,
-        telemetry_batch_samples,
+        TelemetryRuntime {
+            enabled: telemetry_enabled,
+            batch_samples: telemetry_batch_samples,
+            collector: telemetry_collector,
+        },
         &mut connection_was_stable,
         shutdown,
     )
@@ -484,12 +512,18 @@ fn websocket_http_outcome(status: u16) -> Option<ConnectionOutcome> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TelemetryRuntime {
+    enabled: bool,
+    batch_samples: usize,
+    collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
+}
+
 async fn run_one_connection(
     mut enrollment: RemoteEnrollmentState,
     session: RemoteSessionState,
     hardware_fingerprint: String,
-    telemetry_enabled: bool,
-    telemetry_batch_samples: usize,
+    telemetry: TelemetryRuntime,
     connection_was_stable: &mut bool,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<ConnectionOutcome, String> {
@@ -545,7 +579,7 @@ async fn run_one_connection(
     let mut telemetry_samples = Vec::<GpuTelemetrySample>::new();
     let mut telemetry_sequence = session.telemetry_sequence_last;
     let mut telemetry_unavailable_logged = false;
-    let mut telemetry_active = telemetry_enabled;
+    let mut telemetry_active = telemetry.enabled;
 
     loop {
         tokio::select! {
@@ -617,11 +651,9 @@ async fn run_one_connection(
             let next_sample_sequence = telemetry_sequence
                 .checked_add(telemetry_samples.len() as u64 + 1)
                 .ok_or_else(|| "GPU telemetry sequence overflow".to_string())?;
-            match tokio::task::spawn_blocking(move || {
-                collect_nvidia_telemetry(next_sample_sequence)
-            })
-            .await
-            .map_err(|error| format!("GPU telemetry collection task failed: {error}"))?
+            match tokio::task::spawn_blocking(move || (telemetry.collector)(next_sample_sequence))
+                .await
+                .map_err(|error| format!("GPU telemetry collection task failed: {error}"))?
             {
                 Ok(collection) => {
                     telemetry_unavailable_logged = false;
@@ -638,7 +670,7 @@ async fn run_one_connection(
                     if telemetry_samples.len() > 64 {
                         return Err("GPU telemetry batch exceeded 64 samples".to_string());
                     }
-                    if telemetry_samples.len() >= telemetry_batch_samples {
+                    if telemetry_samples.len() >= telemetry.batch_samples {
                         sequence = sequence.saturating_add(1);
                         let signed = build_signed_telemetry_batch(
                             &enrollment,
