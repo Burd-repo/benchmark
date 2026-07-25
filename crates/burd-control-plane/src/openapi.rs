@@ -1008,7 +1008,7 @@ pub fn document() -> serde_json::Value {
                     "security": [{ "adminBearer": [] }],
                     "responses": {
                         "202": { "description": "eligible online sessions evaluated and due challenges issued" },
-                        "400": { "description": "invalid sweep request" },
+                        "400": { "description": "invalid sweep request or recurring proof profile is not configured" },
                         "401": { "description": "admin credential missing or invalid" }
                     }
                 }
@@ -1029,6 +1029,7 @@ pub fn document() -> serde_json::Value {
                     "security": [{ "adminBearer": [] }],
                     "responses": {
                         "201": { "description": "challenge issued with nonce, artifact hash, expiry, and requirements" },
+                        "400": { "description": "challenge fields or proof requirements are invalid" },
                         "401": { "description": "admin credential missing or invalid" },
                         "404": { "description": "provider, device, or session not found" },
                         "409": { "description": "session is not online/degraded or fingerprint does not match" }

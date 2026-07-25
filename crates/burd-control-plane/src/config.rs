@@ -1,8 +1,9 @@
-use burd_protocol::sha256_hex;
+use burd_protocol::{PROOF_CAPABILITY_REQUIRED_PROOFS, sha256_hex};
+use std::collections::HashSet;
 use std::env;
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ControlPlaneConfig {
     pub environment: String,
     pub host: String,
@@ -28,6 +29,7 @@ pub struct ControlPlaneConfig {
     pub verification_retry_budget: u32,
     pub verification_sweep_limit: u32,
     pub verification_suspect_failures: u32,
+    pub verification_proof_profile: Option<VerificationProofProfileConfig>,
     pub observability_deployment_id: String,
     pub observability_recent_events_limit: u32,
     pub slo_availability_target_bps: u32,
@@ -39,6 +41,15 @@ pub struct ControlPlaneConfig {
     pub security_require_sbom_hash: bool,
     pub security_accepted_release_channels: Vec<String>,
     pub security_accepted_attestation_modes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerificationProofProfileConfig {
+    pub profile_version: String,
+    pub model_artifact_hash: String,
+    pub required_proofs: Vec<String>,
+    pub min_tokens_per_second: f64,
+    pub max_ttft_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +176,33 @@ impl ControlPlaneConfig {
             lookup("BURD_CONTROL_VERIFICATION_SUSPECT_FAILURES").unwrap_or_else(|| "3".to_string()),
             "BURD_CONTROL_VERIFICATION_SUSPECT_FAILURES",
         )?;
+        let verification_profile_version = lookup("BURD_CONTROL_VERIFICATION_PROFILE_VERSION")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "poc-cuda-llm-v1".to_string());
+        let verification_model_artifact_hash =
+            lookup("BURD_CONTROL_VERIFICATION_MODEL_ARTIFACT_HASH")
+                .filter(|value| !value.trim().is_empty());
+        let verification_required_proofs = parse_csv(
+            lookup("BURD_CONTROL_VERIFICATION_REQUIRED_PROOFS")
+                .unwrap_or_else(|| PROOF_CAPABILITY_REQUIRED_PROOFS.join(",")),
+            "BURD_CONTROL_VERIFICATION_REQUIRED_PROOFS",
+        )?;
+        let verification_min_tokens_per_second = parse_nonnegative_f64(
+            lookup("BURD_CONTROL_VERIFICATION_MIN_TOKENS_PER_SECOND")
+                .unwrap_or_else(|| "0".to_string()),
+            "BURD_CONTROL_VERIFICATION_MIN_TOKENS_PER_SECOND",
+        )?;
+        let verification_max_ttft_ms = parse_nonnegative_u64(
+            lookup("BURD_CONTROL_VERIFICATION_MAX_TTFT_MS").unwrap_or_else(|| "0".to_string()),
+            "BURD_CONTROL_VERIFICATION_MAX_TTFT_MS",
+        )?;
+        let verification_proof_profile = build_verification_proof_profile(
+            verification_profile_version,
+            verification_model_artifact_hash,
+            verification_required_proofs,
+            verification_min_tokens_per_second,
+            verification_max_ttft_ms,
+        )?;
 
         let observability_recent_events_limit = parse_u32(
             lookup("BURD_CONTROL_OBSERVABILITY_RECENT_EVENTS_LIMIT")
@@ -236,6 +274,7 @@ impl ControlPlaneConfig {
             verification_retry_budget,
             verification_sweep_limit,
             verification_suspect_failures,
+            verification_proof_profile,
             observability_deployment_id: lookup("BURD_CONTROL_DEPLOYMENT_ID")
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "local".to_string()),
@@ -252,6 +291,103 @@ impl ControlPlaneConfig {
             security_accepted_attestation_modes,
         })
     }
+}
+
+fn build_verification_proof_profile(
+    profile_version: String,
+    model_artifact_hash: Option<String>,
+    required_proofs: Vec<String>,
+    min_tokens_per_second: f64,
+    max_ttft_ms: u64,
+) -> Result<Option<VerificationProofProfileConfig>, ConfigError> {
+    let profile_version = profile_version.trim().to_string();
+    if !is_bounded_ascii(&profile_version, 96) {
+        return Err(ConfigError::new(
+            "BURD_CONTROL_VERIFICATION_PROFILE_VERSION must be short printable ASCII",
+        ));
+    }
+
+    let unique_proofs = required_proofs
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let has_exact_proof_contract = unique_proofs.len() == required_proofs.len()
+        && unique_proofs.len() == PROOF_CAPABILITY_REQUIRED_PROOFS.len()
+        && PROOF_CAPABILITY_REQUIRED_PROOFS
+            .iter()
+            .all(|proof| unique_proofs.contains(proof));
+    if !has_exact_proof_contract {
+        return Err(ConfigError::new(format!(
+            "BURD_CONTROL_VERIFICATION_REQUIRED_PROOFS must contain each supported proof exactly once: {}",
+            PROOF_CAPABILITY_REQUIRED_PROOFS.join(",")
+        )));
+    }
+
+    let Some(model_artifact_hash) = model_artifact_hash else {
+        if min_tokens_per_second > 0.0 || max_ttft_ms > 0 {
+            return Err(ConfigError::new(
+                "BURD_CONTROL_VERIFICATION_MODEL_ARTIFACT_HASH is required when verification thresholds are configured",
+            ));
+        }
+        return Ok(None);
+    };
+    let model_artifact_hash = model_artifact_hash.trim().to_ascii_lowercase();
+    if !is_sha256_digest(&model_artifact_hash) {
+        return Err(ConfigError::new(
+            "BURD_CONTROL_VERIFICATION_MODEL_ARTIFACT_HASH must be an exact sha256 digest",
+        ));
+    }
+    if min_tokens_per_second <= 0.0 {
+        return Err(ConfigError::new(
+            "BURD_CONTROL_VERIFICATION_MIN_TOKENS_PER_SECOND must be greater than zero when a proof profile is configured",
+        ));
+    }
+    if max_ttft_ms == 0 || max_ttft_ms > i64::MAX as u64 {
+        return Err(ConfigError::new(
+            "BURD_CONTROL_VERIFICATION_MAX_TTFT_MS must be between 1 and i64::MAX when a proof profile is configured",
+        ));
+    }
+
+    Ok(Some(VerificationProofProfileConfig {
+        profile_version,
+        model_artifact_hash,
+        required_proofs,
+        min_tokens_per_second,
+        max_ttft_ms,
+    }))
+}
+
+fn parse_nonnegative_f64(raw: String, name: &str) -> Result<f64, ConfigError> {
+    let value = raw
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| ConfigError::new(format!("{name} must be a nonnegative number")))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(ConfigError::new(format!(
+            "{name} must be a nonnegative finite number"
+        )));
+    }
+    Ok(value)
+}
+
+fn parse_nonnegative_u64(raw: String, name: &str) -> Result<u64, ConfigError> {
+    raw.trim()
+        .parse::<u64>()
+        .map_err(|_| ConfigError::new(format!("{name} must be a nonnegative integer")))
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn is_bounded_ascii(value: &str, max_len: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_len
+        && value
+            .chars()
+            .all(|character| character.is_ascii() && !character.is_ascii_control())
 }
 
 fn parse_u16(raw: String, name: &str) -> Result<u16, ConfigError> {
@@ -350,6 +486,7 @@ mod tests {
         assert_eq!(config.verification_retry_budget, 2);
         assert_eq!(config.verification_sweep_limit, 25);
         assert_eq!(config.verification_suspect_failures, 3);
+        assert!(config.verification_proof_profile.is_none());
         assert_eq!(config.observability_deployment_id, "local");
         assert_eq!(config.observability_recent_events_limit, 100);
         assert_eq!(config.slo_availability_target_bps, 9990);
@@ -396,6 +533,109 @@ mod tests {
             error
                 .to_string()
                 .contains("SECURITY_REQUIRE_REMOTE_ATTESTATION")
+        );
+    }
+    fn base_values() -> HashMap<&'static str, &'static str> {
+        HashMap::from([
+            ("DATABASE_URL", "postgres://localhost/burd"),
+            ("BURD_CONTROL_ADMIN_TOKEN", "admin-secret"),
+        ])
+    }
+
+    #[test]
+    fn config_builds_complete_versioned_verification_profile() {
+        let mut values = base_values();
+        values.insert(
+            "BURD_CONTROL_VERIFICATION_PROFILE_VERSION",
+            "poc-cuda-llm-v2",
+        );
+        values.insert(
+            "BURD_CONTROL_VERIFICATION_MODEL_ARTIFACT_HASH",
+            "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        );
+        values.insert("BURD_CONTROL_VERIFICATION_MIN_TOKENS_PER_SECOND", "12.5");
+        values.insert("BURD_CONTROL_VERIFICATION_MAX_TTFT_MS", "1500");
+        let config = ControlPlaneConfig::from_lookup(|key| {
+            values.get(key).map(|value| (*value).to_string())
+        })
+        .unwrap();
+
+        let profile = config.verification_proof_profile.unwrap();
+        assert_eq!(profile.profile_version, "poc-cuda-llm-v2");
+        assert_eq!(
+            profile.model_artifact_hash,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(profile.required_proofs.len(), 7);
+        assert_eq!(profile.min_tokens_per_second, 12.5);
+        assert_eq!(profile.max_ttft_ms, 1500);
+    }
+
+    #[test]
+    fn config_rejects_partial_verification_profile() {
+        let mut values = base_values();
+        values.insert("BURD_CONTROL_VERIFICATION_MIN_TOKENS_PER_SECOND", "12.5");
+        values.insert("BURD_CONTROL_VERIFICATION_MAX_TTFT_MS", "1500");
+        let error = ControlPlaneConfig::from_lookup(|key| {
+            values.get(key).map(|value| (*value).to_string())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("MODEL_ARTIFACT_HASH"));
+
+        values.insert(
+            "BURD_CONTROL_VERIFICATION_MODEL_ARTIFACT_HASH",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        values.insert("BURD_CONTROL_VERIFICATION_MIN_TOKENS_PER_SECOND", "0");
+        let error = ControlPlaneConfig::from_lookup(|key| {
+            values.get(key).map(|value| (*value).to_string())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("MIN_TOKENS_PER_SECOND"));
+
+        values.insert("BURD_CONTROL_VERIFICATION_MIN_TOKENS_PER_SECOND", "12.5");
+        values.insert(
+            "BURD_CONTROL_VERIFICATION_MAX_TTFT_MS",
+            "18446744073709551615",
+        );
+        let error = ControlPlaneConfig::from_lookup(|key| {
+            values.get(key).map(|value| (*value).to_string())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("MAX_TTFT_MS"));
+    }
+
+    #[test]
+    fn config_rejects_placeholder_digest_and_incomplete_proof_contract() {
+        let mut values = base_values();
+        values.insert(
+            "BURD_CONTROL_VERIFICATION_MODEL_ARTIFACT_HASH",
+            "sha256:burd-poc-v1",
+        );
+        values.insert("BURD_CONTROL_VERIFICATION_MIN_TOKENS_PER_SECOND", "12.5");
+        values.insert("BURD_CONTROL_VERIFICATION_MAX_TTFT_MS", "1500");
+        let error = ControlPlaneConfig::from_lookup(|key| {
+            values.get(key).map(|value| (*value).to_string())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("exact sha256 digest"));
+
+        values.insert(
+            "BURD_CONTROL_VERIFICATION_MODEL_ARTIFACT_HASH",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        values.insert(
+            "BURD_CONTROL_VERIFICATION_REQUIRED_PROOFS",
+            "cuda_runtime,llm_short_inference",
+        );
+        let error = ControlPlaneConfig::from_lookup(|key| {
+            values.get(key).map(|value| (*value).to_string())
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("each supported proof exactly once")
         );
     }
 }

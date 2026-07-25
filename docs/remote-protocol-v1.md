@@ -505,12 +505,14 @@ Request fields:
 
 Backend behavior:
 
+- rejects the sweep with `400 invalid_request` unless a complete versioned recurring proof profile is configured;
 - expires stale proof challenges using server time;
 - converts expired running verification states into failed verification state;
 - evaluates `online` and `degraded` sessions only;
 - skips blocked/quarantined providers, inactive devices, sessions without backend hardware fingerprint, and sessions that already have an active proof challenge;
 - issues BN-06 challenges for new, due, suspect, forced, or stale-running verification states;
-- binds issued challenges to the backend session fingerprint and latest accepted GPU telemetry UUID when available.
+- binds issued challenges to the backend session fingerprint and latest accepted GPU telemetry UUID when available;
+- copies the configured profile version, exact model digest, canonical proof set, minimum TPS, and maximum TTFT into the immutable challenge record.
 
 Returns `request_id`, `evaluated`, and an `issued` list with provider, device, session, challenge ID, and reason.
 

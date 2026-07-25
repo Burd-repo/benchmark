@@ -135,8 +135,9 @@ hardware attestation or a real performance result.
 - Local failure history and attempted-challenge suppression are in memory only.
 - A local execution failure is logged and left for backend expiry; there is no
   signed failure-response contract.
-- The BN-07 sweep still emits a placeholder model artifact hash by default, so
-  production recurrence needs configured/profile-backed artifact selection.
+- A later hardening pass made BN-07 recurrence fail closed and require a real,
+  versioned deployment profile; artifact distribution and per-GPU selection
+  remain open. See `versioned-recurring-proof-profiles.md`.
 - Ollama is the only LLM runtime supported by this first executor.
 - CUDA compatibility still requires slow tests across supported driver/runtime
   versions and GPU families.
@@ -145,8 +146,8 @@ hardware attestation or a real performance result.
 
 ## Recommended Next PRs
 
-1. Make recurring verification profiles select a real, versioned artifact digest
-   and thresholds instead of the placeholder BN-07 default.
+1. Completed by `versioned-recurring-proof-profiles.md`: recurring verification
+   now requires a real, versioned artifact digest and positive thresholds.
 2. Add a controlled physical-GPU test matrix for CUDA library loading, UUID
    binding, residency, SGEMM, Ollama digest binding, and contention behavior.
 3. Add Agent service supervision and durable proof attempt/error state without
