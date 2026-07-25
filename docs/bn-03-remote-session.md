@@ -18,7 +18,7 @@ The local `session` command remains a local evidence snapshot; the new
    server receipt time, payload hash, sequence gap, status, and rolling TTL.
 6. Socket loss or missed heartbeats marks the session `offline`; sequence gaps
    or fingerprint mismatch mark it `degraded`.
-7. The agent reconnects with exponential backoff and resumes the same session.
+7. The agent reconnects with bounded exponential backoff and per-agent jitter, and resumes the same session.
 8. Administrative revocation updates PostgreSQL and signals the active socket.
 
 ## States
@@ -54,7 +54,12 @@ burd-agent remote-session status --json
 
 `connect` runs until interrupted. It refreshes the short-lived device
 credential before expiry and persists only the data needed for process restart
-and session resume in `~/.burd/remote-session.json`.
+and session resume in `~/.burd/remote-session.json`. Transient transport, HTTP
+`408`/`429`/`5xx`, and conflict failures retry with a bounded exponential
+ceiling and per-agent jitter. The failure counter resets only after a heartbeat
+acknowledgement proves the connection is usable. Revoked or invalid credentials stop
+the command; missing or expired sessions are recreated. Retry attempts are in-memory
+and reset when the process restarts.
 
 ## Configuration
 
@@ -66,6 +71,7 @@ The backend periodically expires stale sessions independently of requests.
 
 ## Deferred
 
-Backend challenges, remote trust policy, regional probes,
-jobs, and scheduling remain deferred to BN-04 and later. BN-03 accepts only
-heartbeat messages on the control channel.
+BN-03 itself introduced heartbeat messages on the control channel. BN-04 extends
+that channel with signed telemetry. A supervised agent daemon, durable retry
+attempt state, backend challenge execution, jobs, and scheduling remain outside
+this hardening scope.

@@ -1,4 +1,7 @@
-use crate::remote_enrollment::{join_url, post_json, refresh_credential};
+use crate::remote_enrollment::{
+    ControlPlaneRequestError, join_url, post_json_checked, refresh_credential,
+    refresh_credential_checked,
+};
 use burd_bench::build_registration_payload;
 use burd_hardware::collect_nvidia_telemetry;
 use burd_protocol::{
@@ -28,14 +31,15 @@ pub fn connect(
     if !(1..=64).contains(&telemetry_batch_samples) {
         return Err("telemetry_batch_samples must be between 1 and 64".to_string());
     }
-    let telemetry_enabled = telemetry || load_identity()?.telemetry_enabled;
-    ensure_credential_fresh()?;
-    start_or_resume(agent_version)?;
+    let identity = load_identity()?;
+    let telemetry_enabled = telemetry || identity.telemetry_enabled;
+    let retry_seed = stable_retry_seed(&identity.machine_id);
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|error| format!("failed to start remote session runtime: {error}"))?;
     runtime.block_on(run_control_loop(
         agent_version.to_string(),
         max_reconnect_delay_seconds.max(1),
+        retry_seed,
         telemetry_enabled,
         telemetry_batch_samples,
     ))?;
@@ -75,8 +79,10 @@ pub fn status() -> Result<RemoteSessionRecord, String> {
         .map_err(|error| format!("invalid remote session response contract: {error}"))
 }
 
-fn start_or_resume(agent_version: &str) -> Result<RemoteSessionStateStatus, String> {
-    let enrollment = load_remote_enrollment()?;
+fn start_or_resume(agent_version: &str) -> Result<RemoteSessionStateStatus, ReconnectFailure> {
+    let enrollment = load_remote_enrollment().map_err(|error| {
+        ReconnectFailure::terminal("local_state", format!("failed to load enrollment: {error}"))
+    })?;
     let registration = build_registration_payload(agent_version);
     let persisted = load_remote_session().ok();
     let request = StartRemoteSessionRequest {
@@ -92,72 +98,305 @@ fn start_or_resume(agent_version: &str) -> Result<RemoteSessionStateStatus, Stri
             resume_token: state.resume_token.clone(),
         }),
     };
-    let result: Result<StartRemoteSessionResponse, String> = post_json(
+    let result: Result<StartRemoteSessionResponse, ControlPlaneRequestError> = post_json_checked(
         &join_url(&enrollment.control_plane_url, "/v1/sessions"),
         &request,
         Some(&enrollment.credential),
     );
     let response = match result {
         Ok(response) => response,
-        Err(error)
-            if persisted.is_some()
-                && (error.contains("expired") || error.contains("not_found")) =>
-        {
-            clear_remote_session()?;
+        Err(error) if persisted.is_some() && persisted_session_should_restart(&error) => {
+            clear_remote_session().map_err(|error| {
+                ReconnectFailure::terminal(
+                    "local_state",
+                    format!("failed to clear expired remote session: {error}"),
+                )
+            })?;
             return start_or_resume(agent_version);
         }
-        Err(error) => return Err(error),
+        Err(error) => return Err(classify_control_plane_error(error)),
     };
-    save_remote_session(&enrollment.control_plane_url, &response)
+    save_remote_session(&enrollment.control_plane_url, &response).map_err(|error| {
+        ReconnectFailure::terminal(
+            "local_state",
+            format!("failed to persist remote session: {error}"),
+        )
+    })
 }
 
 async fn run_control_loop(
     agent_version: String,
     max_reconnect_delay_seconds: u64,
+    retry_seed: u64,
     telemetry_enabled: bool,
     telemetry_batch_samples: usize,
 ) -> Result<(), String> {
-    let mut backoff = 1_u64;
+    let mut retry_policy = ReconnectPolicy::new(max_reconnect_delay_seconds, retry_seed);
     loop {
-        let enrollment = ensure_credential_fresh()?;
-        let session = load_remote_session()?;
-        match run_one_connection(
-            enrollment,
-            session,
+        match attempt_connection(
+            agent_version.clone(),
             telemetry_enabled,
             telemetry_batch_samples,
         )
         .await
         {
-            Ok(ConnectionOutcome::Stopped) => return Ok(()),
-            Ok(ConnectionOutcome::Terminal(reason)) => return Err(reason),
-            Err(error) => {
+            Ok(()) => return Ok(()),
+            Err(failure) => {
+                match failure.disposition {
+                    ReconnectDisposition::Stop => return Err(failure.message),
+                    ReconnectDisposition::RestartSession => {
+                        clear_remote_session().map_err(|error| {
+                            format!("failed to clear remote session before restart: {error}")
+                        })?;
+                    }
+                    ReconnectDisposition::Retry => {}
+                }
+                let delay = retry_policy.delay_after_failure(failure.connection_was_stable);
                 eprintln!(
                     "{}",
                     serde_json::json!({
-                        "event": "remote_session_reconnect",
-                        "delay_seconds": backoff,
-                        "error": error,
+                        "event": "remote_session_retry_scheduled",
+                        "attempt": delay.attempt,
+                        "delay_seconds": delay.seconds,
+                        "backoff_ceiling_seconds": delay.ceiling_seconds,
+                        "failure_kind": failure.kind,
+                        "action": failure.disposition.as_str(),
+                        "connection_was_stable": failure.connection_was_stable,
+                        "error": failure.message,
                     })
                 );
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => return Ok(()),
+                    _ = tokio::time::sleep(Duration::from_secs(delay.seconds)) => {}
+                }
             }
         }
+    }
+}
 
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => return Ok(()),
-            _ = tokio::time::sleep(Duration::from_secs(backoff)) => {}
+async fn attempt_connection(
+    agent_version: String,
+    telemetry_enabled: bool,
+    telemetry_batch_samples: usize,
+) -> Result<(), ReconnectFailure> {
+    let prepared = tokio::task::spawn_blocking(move || {
+        let enrollment = ensure_credential_fresh()?;
+        start_or_resume(&agent_version)?;
+        let session = load_remote_session().map_err(|error| {
+            ReconnectFailure::terminal(
+                "local_state",
+                format!("failed to load remote session: {error}"),
+            )
+        })?;
+        Ok::<_, ReconnectFailure>((enrollment, session))
+    })
+    .await
+    .map_err(|error| {
+        ReconnectFailure::terminal(
+            "internal_task",
+            format!("remote session preparation task failed: {error}"),
+        )
+    })??;
+
+    let (enrollment, session) = prepared;
+    let mut connection_was_stable = false;
+    match run_one_connection(
+        enrollment,
+        session,
+        telemetry_enabled,
+        telemetry_batch_samples,
+        &mut connection_was_stable,
+    )
+    .await
+    {
+        Ok(ConnectionOutcome::Stopped) => Ok(()),
+        Ok(ConnectionOutcome::Terminal(reason)) => {
+            Err(ReconnectFailure::terminal("session_revoked", reason)
+                .with_connection_stability(connection_was_stable))
         }
-        match start_or_resume(&agent_version) {
-            Ok(_) => backoff = 1,
-            Err(error) => {
-                eprintln!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "remote_session_resume_failed",
-                        "error": error,
-                    })
-                );
-                backoff = (backoff.saturating_mul(2)).min(max_reconnect_delay_seconds);
+        Ok(ConnectionOutcome::RestartSession(reason)) => {
+            Err(ReconnectFailure::restart_session("session_expired", reason)
+                .with_connection_stability(connection_was_stable))
+        }
+        Err(error) => Err(ReconnectFailure::retry("connection_error", error)
+            .with_connection_stability(connection_was_stable)),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconnectDisposition {
+    Retry,
+    RestartSession,
+    Stop,
+}
+
+impl ReconnectDisposition {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Retry => "retry",
+            Self::RestartSession => "restart_session",
+            Self::Stop => "stop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReconnectFailure {
+    kind: &'static str,
+    message: String,
+    disposition: ReconnectDisposition,
+    connection_was_stable: bool,
+}
+
+impl ReconnectFailure {
+    fn retry(kind: &'static str, message: String) -> Self {
+        Self {
+            kind,
+            message,
+            disposition: ReconnectDisposition::Retry,
+            connection_was_stable: false,
+        }
+    }
+
+    fn restart_session(kind: &'static str, message: String) -> Self {
+        Self {
+            kind,
+            message,
+            disposition: ReconnectDisposition::RestartSession,
+            connection_was_stable: false,
+        }
+    }
+
+    fn terminal(kind: &'static str, message: String) -> Self {
+        Self {
+            kind,
+            message,
+            disposition: ReconnectDisposition::Stop,
+            connection_was_stable: false,
+        }
+    }
+
+    fn with_connection_stability(mut self, stable: bool) -> Self {
+        self.connection_was_stable = stable;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RetryDelay {
+    attempt: u32,
+    seconds: u64,
+    ceiling_seconds: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ReconnectPolicy {
+    max_delay_seconds: u64,
+    consecutive_failures: u32,
+    jitter_seed: u64,
+}
+
+impl ReconnectPolicy {
+    fn new(max_delay_seconds: u64, jitter_seed: u64) -> Self {
+        Self {
+            max_delay_seconds: max_delay_seconds.max(1),
+            consecutive_failures: 0,
+            jitter_seed,
+        }
+    }
+
+    fn delay_after_failure(&mut self, connection_was_stable: bool) -> RetryDelay {
+        if connection_was_stable {
+            self.reset();
+        }
+        self.next_delay()
+    }
+
+    fn next_delay(&mut self) -> RetryDelay {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        let exponent = self.consecutive_failures.saturating_sub(1).min(63);
+        let ceiling_seconds = 1_u64
+            .checked_shl(exponent)
+            .unwrap_or(u64::MAX)
+            .min(self.max_delay_seconds);
+        let floor_seconds = (ceiling_seconds / 2).max(1);
+        let jitter_span = ceiling_seconds.saturating_sub(floor_seconds);
+        let jitter = if jitter_span == 0 {
+            0
+        } else {
+            mix_retry_seed(self.jitter_seed ^ u64::from(self.consecutive_failures))
+                % (jitter_span + 1)
+        };
+        RetryDelay {
+            attempt: self.consecutive_failures,
+            seconds: floor_seconds + jitter,
+            ceiling_seconds,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.consecutive_failures = 0;
+    }
+}
+
+fn stable_retry_seed(value: &str) -> u64 {
+    value
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
+}
+
+fn mix_retry_seed(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58476d1ce4e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d049bb133111eb);
+    value ^ (value >> 31)
+}
+
+fn persisted_session_should_restart(error: &ControlPlaneRequestError) -> bool {
+    error.is_code("expired")
+        || error.is_code("not_found")
+        || matches!(
+            error,
+            ControlPlaneRequestError::Rejected {
+                status: 404 | 410,
+                ..
+            }
+        )
+}
+
+fn classify_control_plane_error(error: ControlPlaneRequestError) -> ReconnectFailure {
+    match error {
+        ControlPlaneRequestError::LocalState(message) => {
+            ReconnectFailure::terminal("local_state", message)
+        }
+        ControlPlaneRequestError::Transport(message) => {
+            ReconnectFailure::retry("control_plane_transport", message)
+        }
+        ControlPlaneRequestError::Contract(message) => {
+            ReconnectFailure::terminal("control_plane_contract", message)
+        }
+        ControlPlaneRequestError::Rejected {
+            status,
+            code,
+            message,
+        } => {
+            let detail = format!("control plane {code}: {message}");
+            if code == "revoked" {
+                ReconnectFailure::terminal("revoked", detail)
+            } else if code == "unauthorized" || status == 401 || status == 403 {
+                ReconnectFailure::terminal("unauthorized", detail)
+            } else if code == "expired" {
+                ReconnectFailure::terminal("expired", detail)
+            } else if code == "not_found" {
+                ReconnectFailure::terminal("not_found", detail)
+            } else if status == 408 || status == 429 || status >= 500 || code == "conflict" {
+                ReconnectFailure::retry("control_plane_rejected", detail)
+            } else {
+                ReconnectFailure::terminal("control_plane_rejected", detail)
             }
         }
     }
@@ -166,6 +405,25 @@ async fn run_control_loop(
 enum ConnectionOutcome {
     Stopped,
     Terminal(String),
+    RestartSession(String),
+}
+
+fn websocket_http_outcome(status: u16) -> Option<ConnectionOutcome> {
+    match status {
+        400 => Some(ConnectionOutcome::Terminal(
+            "control plane rejected the WebSocket request contract".to_string(),
+        )),
+        401 => Some(ConnectionOutcome::Terminal(
+            "control channel credential is invalid or expired".to_string(),
+        )),
+        403 => Some(ConnectionOutcome::Terminal(
+            "control channel device or session has been revoked".to_string(),
+        )),
+        404 | 410 => Some(ConnectionOutcome::RestartSession(
+            "remote session is missing or expired".to_string(),
+        )),
+        _ => None,
+    }
 }
 
 async fn run_one_connection(
@@ -173,6 +431,7 @@ async fn run_one_connection(
     session: RemoteSessionState,
     telemetry_enabled: bool,
     telemetry_batch_samples: usize,
+    connection_was_stable: &mut bool,
 ) -> Result<ConnectionOutcome, String> {
     let mut request = session
         .control_url
@@ -195,9 +454,19 @@ async fn run_one_connection(
         HeaderValue::from_str(&enrollment.device_id)
             .map_err(|error| format!("invalid device ID header: {error}"))?,
     );
-    let (mut socket, _) = connect_async(request)
-        .await
-        .map_err(|error| format!("control channel connection failed: {error}"))?;
+    let (mut socket, _) = match connect_async(request).await {
+        Ok(connected) => connected,
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            if let Some(outcome) = websocket_http_outcome(response.status().as_u16()) {
+                return Ok(outcome);
+            }
+            return Err(format!(
+                "control channel handshake failed with HTTP {}",
+                response.status().as_u16()
+            ));
+        }
+        Err(error) => return Err(format!("control channel connection failed: {error}")),
+    };
 
     let ready = receive_server_message(&mut socket, Duration::from_secs(10)).await?;
     if ready.message_type != "session_ready" {
@@ -269,6 +538,7 @@ async fn run_one_connection(
                     ));
                 }
                 update_remote_session_sequence(sequence)?;
+                *connection_was_stable = true;
             }
             "session_revoked" => {
                 return Ok(ConnectionOutcome::Terminal(
@@ -504,11 +774,27 @@ where
     }
 }
 
-fn ensure_credential_fresh() -> Result<RemoteEnrollmentState, String> {
-    let state = load_remote_enrollment()?;
-    if credential_refresh_due(&state)? {
-        refresh_credential()?;
-        load_remote_enrollment()
+fn ensure_credential_fresh() -> Result<RemoteEnrollmentState, ReconnectFailure> {
+    let state = load_remote_enrollment().map_err(|error| {
+        ReconnectFailure::terminal(
+            "local_state",
+            format!("failed to load remote enrollment: {error}"),
+        )
+    })?;
+    let refresh_due = credential_refresh_due(&state).map_err(|error| {
+        ReconnectFailure::terminal(
+            "local_state",
+            format!("failed to evaluate credential expiry: {error}"),
+        )
+    })?;
+    if refresh_due {
+        refresh_credential_checked().map_err(classify_control_plane_error)?;
+        load_remote_enrollment().map_err(|error| {
+            ReconnectFailure::terminal(
+                "local_state",
+                format!("failed to load refreshed credential: {error}"),
+            )
+        })
     } else {
         Ok(state)
     }
@@ -544,5 +830,83 @@ mod tests {
             enrolled_at: Utc::now().to_rfc3339(),
         };
         assert!(credential_refresh_due(&state).unwrap());
+    }
+
+    #[test]
+    fn reconnect_backoff_is_deterministic_bounded_and_resettable() {
+        let mut first = ReconnectPolicy::new(16, 42);
+        let mut second = ReconnectPolicy::new(16, 42);
+        let first_delays = (0..7).map(|_| first.next_delay()).collect::<Vec<_>>();
+        let second_delays = (0..7).map(|_| second.next_delay()).collect::<Vec<_>>();
+
+        assert_eq!(first_delays, second_delays);
+        assert_eq!(
+            first_delays
+                .iter()
+                .map(|delay| delay.ceiling_seconds)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 4, 8, 16, 16, 16]
+        );
+        for delay in &first_delays {
+            assert!(delay.seconds >= (delay.ceiling_seconds / 2).max(1));
+            assert!(delay.seconds <= delay.ceiling_seconds);
+        }
+
+        assert_eq!(
+            first.delay_after_failure(true),
+            RetryDelay {
+                attempt: 1,
+                seconds: 1,
+                ceiling_seconds: 1,
+            }
+        );
+        assert_eq!(first.delay_after_failure(false).attempt, 2);
+    }
+
+    #[test]
+    fn control_plane_failures_distinguish_retry_from_terminal_auth() {
+        let unavailable = classify_control_plane_error(ControlPlaneRequestError::Rejected {
+            status: 503,
+            code: "database_unavailable".to_string(),
+            message: "dependency unavailable".to_string(),
+        });
+        assert_eq!(unavailable.disposition, ReconnectDisposition::Retry);
+        assert_eq!(unavailable.kind, "control_plane_rejected");
+
+        let revoked = classify_control_plane_error(ControlPlaneRequestError::Rejected {
+            status: 403,
+            code: "revoked".to_string(),
+            message: "device revoked".to_string(),
+        });
+        assert_eq!(revoked.disposition, ReconnectDisposition::Stop);
+        assert_eq!(revoked.kind, "revoked");
+
+        let unauthorized = classify_control_plane_error(ControlPlaneRequestError::Rejected {
+            status: 401,
+            code: "unauthorized".to_string(),
+            message: "credential invalid".to_string(),
+        });
+        assert_eq!(unauthorized.disposition, ReconnectDisposition::Stop);
+        assert_eq!(unauthorized.kind, "unauthorized");
+    }
+
+    #[test]
+    fn websocket_statuses_restart_expired_sessions_and_stop_revoked_devices() {
+        assert!(matches!(
+            websocket_http_outcome(410),
+            Some(ConnectionOutcome::RestartSession(_))
+        ));
+        assert!(matches!(
+            websocket_http_outcome(403),
+            Some(ConnectionOutcome::Terminal(_))
+        ));
+        assert!(websocket_http_outcome(503).is_none());
+
+        let missing_without_envelope = ControlPlaneRequestError::Rejected {
+            status: 404,
+            code: "remote_error".to_string(),
+            message: "control plane rejected request".to_string(),
+        };
+        assert!(persisted_session_should_restart(&missing_without_envelope));
     }
 }

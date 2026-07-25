@@ -321,7 +321,11 @@ starting the API server or depending on host state:
 - Duplicate sockets and replayed sequences are rejected. Sequence gaps or
   fingerprint mismatch degrade the session.
 - `burd-agent remote-session connect` maintains the connection with credential
-  refresh and reconnect backoff. `remote-session status` reads backend state.
+  refresh, typed failure classification, bounded exponential backoff, per-agent
+  jitter, and reset only after an acknowledged heartbeat. Revoked/invalid
+  credentials stop; missing/expired sessions are recreated. Retry state remains
+  in-memory and is not a supervised daemon. `remote-session status` reads
+  backend state.
 - PostgreSQL integration coverage exercises start, duplicate rejection,
   heartbeat, degradation, resume, and revocation.
 - OpenAPI documents remote session start, session record, heartbeat control-message receipt, and revocation schemas, with fixture-backed examples for session start and heartbeat HTTP fallback.
