@@ -430,10 +430,12 @@ starting the API server or depending on host state:
   linkage. It does not claim physical CUDA/Ollama execution.
 - BN-06 still lacks a supervised Agent daemon, durable local retry state,
   production artifact distribution, and broad physical-GPU compatibility
-  validation. BN-07 adds recurring verification state and an admin sweep, but
-  its default model artifact value remains a non-executable profile placeholder.
-  Global trust/antifraud scoring is owned by BN-09; jobs, scheduler, marketplace,
-  billing, Pix, and payouts remain separate scopes.
+  validation. BN-07 adds recurring verification state and an admin sweep. The
+  sweep now requires a complete deployment profile with an exact Ollama digest
+  and positive TPS/TTFT thresholds; recurrence is disabled by default instead of
+  emitting a non-executable placeholder challenge. Global trust/antifraud
+  scoring is owned by BN-09; jobs, scheduler, marketplace, billing, Pix, and
+  payouts remain separate scopes.
 
 ## BN-07 - Recurring And Risk-Based Verification
 
@@ -444,8 +446,8 @@ starting the API server or depending on host state:
 - The sweep evaluates online/degraded sessions, skips blocked/quarantined providers and inactive devices, avoids duplicate active challenges, and issues BN-06 challenges when devices are new, due, suspect, forced, or stale-running.
 - Challenge expiry is recalculated by server time during sweeps. Expired running verifications become failed verification state.
 - BN-06 proof responses now update provider-device verification state to `verified`, `verification_due`, or `suspect` in the same transaction as challenge verification.
-- Config controls period, retry budget, sweep limit, and suspect failure threshold through `BURD_CONTROL_VERIFICATION_*` variables.
-- BN-07 does not implement an autonomous background verification scheduler process, production artifact selection/distribution, jobs, scheduler, marketplace, billing, Pix, or payouts. BN-09 owns the initial backend trust/antifraud model.
+- Config controls cadence/failure policy and an optional versioned proof profile through `BURD_CONTROL_VERIFICATION_*`; partial profiles fail startup and unconfigured sweeps return `400 invalid_request`.
+- BN-07 does not implement an autonomous background verification scheduler process, model artifact distribution, automatic profile selection by GPU family, jobs, scheduler, marketplace, billing, Pix, or payouts. BN-09 owns the initial backend trust/antifraud model.
 
 ## BN-08 - Regional Network Probes
 

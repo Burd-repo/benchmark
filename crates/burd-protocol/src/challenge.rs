@@ -12,6 +12,15 @@ pub const PROOF_CHALLENGE_RESPONSE_SCHEMA_VERSION: &str = "burd-proof-capability
 pub const PROOF_CHALLENGE_CANONICALIZATION_VERSION: &str = "burd-json-c14n-v1";
 pub const PROOF_CHALLENGE_SIGNATURE_DOMAIN: &str = "burd.proof-capability-response.v1";
 pub const VERIFICATION_POLICY_VERSION: &str = "burd-verification-policy-v1";
+pub const PROOF_CAPABILITY_REQUIRED_PROOFS: &[&str] = &[
+    "cuda_runtime",
+    "vram_allocation_residency",
+    "tensor_gemm_microbenchmark",
+    "llm_short_inference",
+    "performance_consistency",
+    "contention_detection",
+    "telemetry_window",
+];
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Challenge {
     pub challenge_id: String,

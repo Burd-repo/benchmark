@@ -39,9 +39,9 @@ Not implemented:
 - a supervised/background Agent daemon or durable Agent-side retry history;
 - a separate Agent-to-backend `running` transition;
 - production model artifact distribution or prefetch;
-- automatic selection of an executable model digest by the BN-07 sweep; its
-  current default artifact value is a profile placeholder and must not be
-  presented as an installed model;
+- automatic selection of a model profile by GPU family or model distribution;
+  the BN-07 sweep uses one explicitly configured deployment profile and refuses
+  to issue recurring challenges while that profile is absent;
 - production validation of the CUDA/Ollama executor on every supported NVIDIA
   driver, CUDA runtime, and GPU family;
 - scheduler enforcement, paid jobs, billing, Pix, payouts, or complete
@@ -94,6 +94,7 @@ local runtime configuration, not a backend authorization signal.
 Admin endpoint. It issues a proof challenge for an enrolled device and active
 remote session. The session must be `online` or `degraded`, and
 `required_fingerprint` must match the session fingerprint stored by the backend.
+Unknown or duplicate proof requirements are rejected before persistence.
 
 ### `GET /v1/sessions/{session_id}/challenges/next`
 

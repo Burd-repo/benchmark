@@ -215,6 +215,8 @@ exige CUDA/Ollama conforme o perfil; veja
 [`docs/bn-06-active-proof-of-capability.md`](docs/bn-06-active-proof-of-capability.md).
 O BN-07 adiciona estado backend-owned para verificacao recorrente e baseada em risco; veja
 [`docs/bn-07-recurring-risk-verification.md`](docs/bn-07-recurring-risk-verification.md).
+O sweep recorrente fica desabilitado ate o Control Plane receber um perfil completo
+com digest Ollama exato e thresholds positivos; ele nao usa artifact mock como fallback.
 O BN-08 adiciona registry backend-owned de probes regionais de rede e score remoto; veja
 [`docs/bn-08-regional-network-probes.md`](docs/bn-08-regional-network-probes.md).
 O BN-09 adiciona trust global e antifraude backend-owned no control plane; veja

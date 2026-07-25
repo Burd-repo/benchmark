@@ -20,7 +20,7 @@ use crate::remote_session::{
 };
 use crate::security_hardening::SecurityPolicy;
 use crate::telemetry::TelemetryPolicy;
-use crate::verification_policy::VerificationPolicy;
+use crate::verification_policy::{RecurringProofProfile, VerificationPolicy};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -1954,6 +1954,7 @@ async fn run_verification_sweep(
             &payload,
             proof_challenge_policy(&state.config),
             verification_policy(&state.config),
+            recurring_proof_profile(&state.config),
         )
         .await
         .map_err(|error| session_api_error(error, request_id.clone()))?;
@@ -2075,6 +2076,18 @@ fn verification_policy(config: &ControlPlaneConfig) -> VerificationPolicy {
     }
 }
 
+fn recurring_proof_profile(config: &ControlPlaneConfig) -> Option<RecurringProofProfile> {
+    config
+        .verification_proof_profile
+        .as_ref()
+        .map(|profile| RecurringProofProfile {
+            profile_version: profile.profile_version.clone(),
+            model_artifact_hash: profile.model_artifact_hash.clone(),
+            required_proofs: profile.required_proofs.clone(),
+            min_tokens_per_second: profile.min_tokens_per_second,
+            max_ttft_ms: profile.max_ttft_ms,
+        })
+}
 fn security_policy(config: &ControlPlaneConfig) -> SecurityPolicy {
     SecurityPolicy {
         min_agent_version: config.security_min_agent_version.clone(),
@@ -2796,6 +2809,7 @@ mod tests {
             verification_retry_budget: 2,
             verification_sweep_limit: 25,
             verification_suspect_failures: 3,
+            verification_proof_profile: None,
             observability_deployment_id: "test".to_string(),
             observability_recent_events_limit: 16,
             slo_availability_target_bps: 9990,
@@ -3404,11 +3418,32 @@ mod tests {
         idempotency_key: &str,
         record_initial_heartbeat: bool,
     ) -> LiveHttpFixture {
+        live_enrolled_session_fixture_with_config(
+            schema_label,
+            display_name,
+            idempotency_key,
+            record_initial_heartbeat,
+            |_| {},
+        )
+        .await
+    }
+
+    async fn live_enrolled_session_fixture_with_config<F>(
+        schema_label: &str,
+        display_name: &str,
+        idempotency_key: &str,
+        record_initial_heartbeat: bool,
+        configure: F,
+    ) -> LiveHttpFixture
+    where
+        F: FnOnce(&mut ControlPlaneConfig),
+    {
         let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
             .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
         let schema = format!("burd_http_{schema_label}_{}", Uuid::new_v4().simple());
         let object_storage_dir = format!("target/test-control-objects/{schema}");
         let mut config = test_config(&url);
+        configure(&mut config);
         config.database_schema = Some(schema.clone());
         config.object_storage_dir = object_storage_dir.clone();
         let db = Database::new(url, Some(schema)).unwrap();
@@ -4300,6 +4335,144 @@ mod tests {
         fixture.cleanup().await;
     }
 
+    #[tokio::test]
+    async fn verification_sweep_fails_closed_without_proof_profile() {
+        let response = send_request(
+            test_app("postgres://unavailable"),
+            Method::POST,
+            "/v1/verification/sweep",
+            Some("{}"),
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_error_envelope(&body, "invalid_request");
+        assert_eq!(
+            body["error"]["message"],
+            "recurring verification proof profile is not configured"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_verification_sweep_persists_versioned_proof_profile() {
+        let fixture = live_enrolled_session_fixture_with_config(
+            "versioned_proof_profile",
+            "Versioned Proof Profile Provider",
+            "provider-versioned-proof-profile",
+            true,
+            |config| {
+                config.verification_proof_profile =
+                    Some(crate::config::VerificationProofProfileConfig {
+                        profile_version: "poc-cuda-llm-v2".to_string(),
+                        model_artifact_hash:
+                            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                .to_string(),
+                        required_proofs: burd_protocol::PROOF_CAPABILITY_REQUIRED_PROOFS
+                            .iter()
+                            .map(|proof| (*proof).to_string())
+                            .collect(),
+                        min_tokens_per_second: 12.5,
+                        max_ttft_ms: 1500,
+                    });
+            },
+        )
+        .await;
+        submit_live_telemetry_batch(&fixture, 2, 1, "GPU-versioned-proof").await;
+
+        let response = send_request(
+            fixture.app.clone(),
+            Method::POST,
+            "/v1/verification/sweep",
+            Some(r#"{"force":true,"reason":"versioned_profile_test"}"#),
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = response_json(response).await;
+        assert_eq!(body["issued"].as_array().unwrap().len(), 1);
+        let challenge_id = body["issued"][0]["challenge_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let response = send_request(
+            fixture.app.clone(),
+            Method::GET,
+            &format!("/v1/challenges/{challenge_id}"),
+            None,
+            &[("authorization", "Bearer test-admin")],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let challenge = response_json(response).await;
+        assert_eq!(challenge["challenge"]["profile_version"], "poc-cuda-llm-v2");
+        assert_eq!(
+            challenge["challenge"]["model_artifact_hash"],
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(challenge["challenge"]["required_backend"], "cuda");
+        assert_eq!(
+            challenge["challenge"]["required_gpu_uuid"],
+            "GPU-versioned-proof"
+        );
+        assert_eq!(challenge["challenge"]["min_tokens_per_second"], 12.5);
+        assert_eq!(challenge["challenge"]["max_ttft_ms"], 1500);
+        assert_eq!(
+            challenge["challenge"]["required_proofs"],
+            serde_json::json!(burd_protocol::PROOF_CAPABILITY_REQUIRED_PROOFS)
+        );
+
+        let client = fixture.db.connect().await.unwrap();
+        let persisted = client
+            .query_one(
+                "SELECT pc.trigger_reason, pc.verification_policy_version, pc.model_artifact_hash, pc.required_proofs_json, pc.min_tokens_per_second, pc.max_ttft_ms, vs.status AS verification_status, vs.last_challenge_id FROM proof_challenges pc JOIN provider_verification_states vs ON vs.provider_id = pc.provider_id AND vs.device_id = pc.device_id WHERE pc.challenge_id = $1",
+                &[&challenge_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            persisted
+                .get::<_, Option<String>>("trigger_reason")
+                .as_deref(),
+            Some("versioned_profile_test")
+        );
+        assert_eq!(
+            persisted
+                .get::<_, Option<String>>("verification_policy_version")
+                .as_deref(),
+            Some(burd_protocol::VERIFICATION_POLICY_VERSION)
+        );
+        assert_eq!(
+            persisted.get::<_, String>("model_artifact_hash"),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        let required_proofs_json: String = persisted.get("required_proofs_json");
+        let required_proofs: Vec<String> = serde_json::from_str(&required_proofs_json).unwrap();
+        assert_eq!(
+            required_proofs,
+            burd_protocol::PROOF_CAPABILITY_REQUIRED_PROOFS
+                .iter()
+                .map(|proof| (*proof).to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(persisted.get::<_, f64>("min_tokens_per_second"), 12.5);
+        assert_eq!(persisted.get::<_, i64>("max_ttft_ms"), 1500);
+        assert_eq!(
+            persisted.get::<_, String>("verification_status"),
+            "verification_running"
+        );
+        assert_eq!(
+            persisted
+                .get::<_, Option<String>>("last_challenge_id")
+                .as_deref(),
+            Some(challenge_id.as_str())
+        );
+
+        fixture.cleanup().await;
+    }
     #[tokio::test]
     #[ignore]
     async fn live_proof_challenge_http_flow_verifies_signed_response() {

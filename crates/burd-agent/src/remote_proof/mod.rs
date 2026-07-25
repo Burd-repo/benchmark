@@ -4,12 +4,12 @@ mod ollama;
 use crate::remote_enrollment::{ControlPlaneRequestError, join_url};
 use burd_bench::build_registration_payload;
 use burd_protocol::{
-    GpuTelemetrySample, NextProofChallengeResponse, PROOF_CHALLENGE_CANONICALIZATION_VERSION,
-    PROOF_CHALLENGE_RESPONSE_SCHEMA_VERSION, PROOF_CHALLENGE_SCHEMA_VERSION,
-    ProofCapabilityChallenge, ProofCapabilityMetrics, ProofCapabilityResponsePayload,
-    SignedProofCapabilityResponse, SubmitProofChallengeResponse, load_identity, load_private_key,
-    load_remote_enrollment, load_remote_session, proof_capability_response_hash,
-    proof_capability_response_signature_message, sign_message,
+    GpuTelemetrySample, NextProofChallengeResponse, PROOF_CAPABILITY_REQUIRED_PROOFS,
+    PROOF_CHALLENGE_CANONICALIZATION_VERSION, PROOF_CHALLENGE_RESPONSE_SCHEMA_VERSION,
+    PROOF_CHALLENGE_SCHEMA_VERSION, ProofCapabilityChallenge, ProofCapabilityMetrics,
+    ProofCapabilityResponsePayload, SignedProofCapabilityResponse, SubmitProofChallengeResponse,
+    load_identity, load_private_key, load_remote_enrollment, load_remote_session,
+    proof_capability_response_hash, proof_capability_response_signature_message, sign_message,
 };
 use chrono::{DateTime, Utc};
 use std::collections::BTreeSet;
@@ -22,16 +22,6 @@ pub(crate) use cuda::execute_remote_proof;
 const PROOF_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const TELEMETRY_CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 const EXECUTION_GATE_TIMEOUT: Duration = Duration::from_secs(30);
-const SUPPORTED_PROOFS: [&str; 7] = [
-    "cuda_runtime",
-    "vram_allocation_residency",
-    "tensor_gemm_microbenchmark",
-    "llm_short_inference",
-    "performance_consistency",
-    "contention_detection",
-    "telemetry_window",
-];
-
 #[derive(Debug, Clone)]
 pub(crate) struct ProofTelemetryWindow {
     pub(crate) batch_hash: String,
@@ -334,7 +324,10 @@ fn validate_challenge_context(
     if challenge.required_proofs.is_empty() {
         return Err("proof challenge does not specify any required proofs".to_string());
     }
-    let supported = SUPPORTED_PROOFS.into_iter().collect::<BTreeSet<_>>();
+    let supported = PROOF_CAPABILITY_REQUIRED_PROOFS
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
     if let Some(unknown) = challenge
         .required_proofs
         .iter()
@@ -566,7 +559,10 @@ mod tests {
 
     #[test]
     fn supported_proof_set_rejects_unknown_requirements() {
-        let supported = SUPPORTED_PROOFS.into_iter().collect::<BTreeSet<_>>();
+        let supported = PROOF_CAPABILITY_REQUIRED_PROOFS
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
         assert!(supported.contains("cuda_runtime"));
         assert!(!supported.contains("self_reported_score"));
     }

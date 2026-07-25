@@ -5,27 +5,18 @@ use crate::verification_policy::{
 };
 use burd_protocol::{
     IssueProofChallengeRequest, IssueProofChallengeResponse, NextProofChallengeResponse,
-    PROOF_CHALLENGE_CANONICALIZATION_VERSION, PROOF_CHALLENGE_RESPONSE_SCHEMA_VERSION,
-    PROOF_CHALLENGE_SCHEMA_VERSION, ProofCapabilityChallenge, ProofChallengeRecord,
-    ProofChallengeVerification, SignedProofCapabilityResponse, SubmitProofChallengeResponse,
-    proof_capability_response_hash, proof_capability_response_signature_message, random_token,
-    verify_message,
+    PROOF_CAPABILITY_REQUIRED_PROOFS, PROOF_CHALLENGE_CANONICALIZATION_VERSION,
+    PROOF_CHALLENGE_RESPONSE_SCHEMA_VERSION, PROOF_CHALLENGE_SCHEMA_VERSION,
+    ProofCapabilityChallenge, ProofChallengeRecord, ProofChallengeVerification,
+    SignedProofCapabilityResponse, SubmitProofChallengeResponse, proof_capability_response_hash,
+    proof_capability_response_signature_message, random_token, verify_message,
 };
 use chrono::{DateTime, Duration, Utc};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tokio_postgres::{Row, Transaction};
 use uuid::Uuid;
-
-const DEFAULT_REQUIRED_PROOFS: &[&str] = &[
-    "cuda_runtime",
-    "vram_allocation_residency",
-    "tensor_gemm_microbenchmark",
-    "llm_short_inference",
-    "performance_consistency",
-    "contention_detection",
-    "telemetry_window",
-];
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProofChallengePolicy {
@@ -422,7 +413,7 @@ fn normalized_required_proofs(
     request: &IssueProofChallengeRequest,
 ) -> Result<Vec<String>, SessionError> {
     let proofs: Vec<String> = if request.required_proofs.is_empty() {
-        DEFAULT_REQUIRED_PROOFS
+        PROOF_CAPABILITY_REQUIRED_PROOFS
             .iter()
             .map(|proof| (*proof).to_string())
             .collect()
@@ -437,6 +428,20 @@ fn normalized_required_proofs(
         return Err(SessionError::Invalid(
             "required_proofs must contain short ASCII identifiers".to_string(),
         ));
+    }
+    let unique = proofs.iter().map(String::as_str).collect::<HashSet<_>>();
+    if unique.len() != proofs.len() {
+        return Err(SessionError::Invalid(
+            "required_proofs must not contain duplicates".to_string(),
+        ));
+    }
+    if let Some(unknown) = proofs
+        .iter()
+        .find(|proof| !PROOF_CAPABILITY_REQUIRED_PROOFS.contains(&proof.as_str()))
+    {
+        return Err(SessionError::Invalid(format!(
+            "required_proofs contains unsupported proof {unknown}"
+        )));
     }
     Ok(proofs)
 }
@@ -1079,7 +1084,7 @@ mod tests {
             required_backend: "cuda".to_string(),
             model_artifact_hash: "sha256:model".to_string(),
             prompt_seed: "seed_1".to_string(),
-            required_proofs: DEFAULT_REQUIRED_PROOFS
+            required_proofs: PROOF_CAPABILITY_REQUIRED_PROOFS
                 .iter()
                 .map(|proof| (*proof).to_string())
                 .collect(),
@@ -1194,5 +1199,41 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("tokens_per_second"))
         );
+    }
+    fn issue_request(required_proofs: Vec<String>) -> IssueProofChallengeRequest {
+        IssueProofChallengeRequest {
+            provider_id: "provider_1".to_string(),
+            device_id: "device_1".to_string(),
+            session_id: "session_1".to_string(),
+            profile_version: "poc-cuda-llm-v1".to_string(),
+            required_fingerprint: "sha256:fingerprint".to_string(),
+            required_gpu_uuid: Some("GPU-test".to_string()),
+            required_backend: "cuda".to_string(),
+            model_artifact_hash: "sha256:model".to_string(),
+            prompt_seed: "seed_1".to_string(),
+            required_proofs,
+            min_tokens_per_second: 10.0,
+            max_ttft_ms: 500,
+            expires_in_seconds: None,
+        }
+    }
+
+    #[test]
+    fn challenge_issuance_rejects_unknown_and_duplicate_proofs() {
+        let error = normalized_required_proofs(&issue_request(vec![
+            "cuda_runtime".to_string(),
+            "self_reported_score".to_string(),
+        ]))
+        .unwrap_err();
+        assert!(
+            matches!(error, SessionError::Invalid(message) if message.contains("unsupported proof"))
+        );
+
+        let error = normalized_required_proofs(&issue_request(vec![
+            "cuda_runtime".to_string(),
+            "cuda_runtime".to_string(),
+        ]))
+        .unwrap_err();
+        assert!(matches!(error, SessionError::Invalid(message) if message.contains("duplicates")));
     }
 }

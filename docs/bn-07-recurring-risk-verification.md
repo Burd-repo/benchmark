@@ -11,6 +11,7 @@ Implemented:
 - policy metadata on `proof_challenges`: trigger reason, risk reasons, and verification policy version;
 - admin-triggered verification sweep that evaluates online/degraded remote sessions and issues BN-06 challenges when due;
 - retry budget, periodic due interval, sweep limit, and suspect-failure threshold from config;
+- optional versioned recurring proof profile with an exact model digest, canonical proof set, minimum TPS, and maximum TTFT;
 - challenge expiry handling during sweeps, with expired running verifications converted into failed verification state;
 - automatic state transitions when a BN-06 proof response verifies or fails;
 - audit events for challenge issuance by policy, verified state, and failed state;
@@ -19,7 +20,7 @@ Implemented:
 Not implemented:
 
 - background scheduler process for automatic sweep cadence;
-- production artifact selection/distribution for sweep-issued LLM challenges; the default artifact hash remains a profile placeholder;
+- model artifact distribution or automatic selection by GPU family; this pass configures one deployment-wide recurring profile;
 - risk model using job history, regional probes, duplicate GPU detection, or performance history;
 - trust/antifraud score publication;
 - scheduler enforcement, leases, paid jobs, billing, Pix, payouts, or marketplace listings.
@@ -62,6 +63,7 @@ Request fields:
 
 The sweep:
 
+- requires a complete recurring proof profile and returns the BN-00 `invalid_request` envelope with HTTP `400` when recurrence is disabled;
 - expires stale issued/acknowledged/running proof challenges by server time;
 - updates verification state for expired running challenges;
 - evaluates remote sessions in `online` or `degraded` state;
@@ -100,6 +102,15 @@ Each row includes:
 - `BURD_CONTROL_VERIFICATION_RETRY_BUDGET`, default `2`.
 - `BURD_CONTROL_VERIFICATION_SWEEP_LIMIT`, default `25`.
 - `BURD_CONTROL_VERIFICATION_SUSPECT_FAILURES`, default `3`.
+- `BURD_CONTROL_VERIFICATION_PROFILE_VERSION`, default `poc-cuda-llm-v1`.
+- `BURD_CONTROL_VERIFICATION_MODEL_ARTIFACT_HASH`, exact `sha256:<64 hex>` Ollama digest; unset by default.
+- `BURD_CONTROL_VERIFICATION_REQUIRED_PROOFS`, defaults to the complete canonical BN-06 proof set and must contain every supported proof exactly once.
+- `BURD_CONTROL_VERIFICATION_MIN_TOKENS_PER_SECOND`, default `0` while recurrence is disabled; must be greater than zero with an artifact digest.
+- `BURD_CONTROL_VERIFICATION_MAX_TTFT_MS`, default `0` while recurrence is disabled; must be greater than zero with an artifact digest.
+
+The backend can start with recurrence disabled. A configured artifact digest and both
+positive thresholds activate the profile as one unit. Partial profiles fail startup,
+and a sweep cannot silently fall back to a mock artifact or zero thresholds.
 
 ## Server Authority
 

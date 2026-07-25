@@ -10,16 +10,21 @@ use burd_protocol::{
 use chrono::{DateTime, Duration, Utc};
 use tokio_postgres::{Row, Transaction};
 
-const DEFAULT_PROFILE_VERSION: &str = "poc-cuda-llm-v1";
-const DEFAULT_REQUIRED_BACKEND: &str = "cuda";
-const DEFAULT_MODEL_ARTIFACT_HASH: &str = "sha256:burd-poc-v1";
-
 #[derive(Debug, Clone, Copy)]
 pub struct VerificationPolicy {
     pub period_seconds: u32,
     pub retry_budget: u32,
     pub sweep_limit: u32,
     pub suspect_failures: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecurringProofProfile {
+    pub profile_version: String,
+    pub model_artifact_hash: String,
+    pub required_proofs: Vec<String>,
+    pub min_tokens_per_second: f64,
+    pub max_ttft_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -54,8 +59,14 @@ impl Database {
         request: &RunVerificationSweepRequest,
         proof_policy: ProofChallengePolicy,
         verification_policy: VerificationPolicy,
+        proof_profile: Option<RecurringProofProfile>,
     ) -> Result<RunVerificationSweepResponse, SessionError> {
         validate_sweep_request(request)?;
+        let proof_profile = proof_profile.ok_or_else(|| {
+            SessionError::Invalid(
+                "recurring verification proof profile is not configured".to_string(),
+            )
+        })?;
         self.expire_stale_verification_challenges(request_id, verification_policy)
             .await?;
 
@@ -77,21 +88,7 @@ impl Database {
             let response = match self
                 .issue_proof_challenge_with_context(
                     request_id,
-                    &IssueProofChallengeRequest {
-                        provider_id: candidate.provider_id.clone(),
-                        device_id: candidate.device_id.clone(),
-                        session_id: candidate.session_id.clone(),
-                        profile_version: DEFAULT_PROFILE_VERSION.to_string(),
-                        required_fingerprint: candidate.hardware_fingerprint.clone(),
-                        required_gpu_uuid: candidate.latest_gpu_uuid.clone(),
-                        required_backend: DEFAULT_REQUIRED_BACKEND.to_string(),
-                        model_artifact_hash: DEFAULT_MODEL_ARTIFACT_HASH.to_string(),
-                        prompt_seed,
-                        required_proofs: Vec::new(),
-                        min_tokens_per_second: 0.0,
-                        max_ttft_ms: 0,
-                        expires_in_seconds: None,
-                    },
+                    &recurring_challenge_request(&candidate, &proof_profile, prompt_seed),
                     proof_policy,
                     Some(VerificationChallengeContext {
                         reason: reason.clone(),
@@ -407,6 +404,28 @@ pub(crate) fn failed_transition(
     }
 }
 
+fn recurring_challenge_request(
+    candidate: &VerificationCandidate,
+    profile: &RecurringProofProfile,
+    prompt_seed: String,
+) -> IssueProofChallengeRequest {
+    IssueProofChallengeRequest {
+        provider_id: candidate.provider_id.clone(),
+        device_id: candidate.device_id.clone(),
+        session_id: candidate.session_id.clone(),
+        profile_version: profile.profile_version.clone(),
+        required_fingerprint: candidate.hardware_fingerprint.clone(),
+        required_gpu_uuid: candidate.latest_gpu_uuid.clone(),
+        required_backend: "cuda".to_string(),
+        model_artifact_hash: profile.model_artifact_hash.clone(),
+        prompt_seed,
+        required_proofs: profile.required_proofs.clone(),
+        min_tokens_per_second: profile.min_tokens_per_second,
+        max_ttft_ms: profile.max_ttft_ms,
+        expires_in_seconds: None,
+    }
+}
+
 fn should_issue_challenge(
     candidate: &VerificationCandidate,
     now: DateTime<Utc>,
@@ -571,5 +590,40 @@ mod tests {
     #[test]
     fn due_check_fails_open_on_bad_timestamp() {
         assert!(due_at_or_past("not-a-date", Utc::now()));
+    }
+    #[test]
+    fn recurring_challenge_request_preserves_versioned_profile_contract() {
+        let candidate = VerificationCandidate {
+            provider_id: "provider_1".to_string(),
+            device_id: "device_1".to_string(),
+            session_id: "session_1".to_string(),
+            hardware_fingerprint: "sha256:fingerprint".to_string(),
+            latest_gpu_uuid: Some("GPU-test".to_string()),
+            state_status: None,
+            next_due_at: None,
+            has_active_challenge: false,
+        };
+        let profile = RecurringProofProfile {
+            profile_version: "poc-cuda-llm-v2".to_string(),
+            model_artifact_hash:
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+            required_proofs: burd_protocol::PROOF_CAPABILITY_REQUIRED_PROOFS
+                .iter()
+                .map(|proof| (*proof).to_string())
+                .collect(),
+            min_tokens_per_second: 12.5,
+            max_ttft_ms: 1500,
+        };
+
+        let request = recurring_challenge_request(&candidate, &profile, "seed_1".to_string());
+        assert_eq!(request.profile_version, profile.profile_version);
+        assert_eq!(request.model_artifact_hash, profile.model_artifact_hash);
+        assert_eq!(request.required_proofs, profile.required_proofs);
+        assert_eq!(request.min_tokens_per_second, 12.5);
+        assert_eq!(request.max_ttft_ms, 1500);
+        assert_eq!(request.required_backend, "cuda");
+        assert_eq!(request.required_gpu_uuid.as_deref(), Some("GPU-test"));
+        assert_eq!(request.required_fingerprint, "sha256:fingerprint");
     }
 }
