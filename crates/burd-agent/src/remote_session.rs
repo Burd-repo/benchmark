@@ -2,7 +2,7 @@ use crate::remote_enrollment::{
     ControlPlaneRequestError, join_url, post_json_checked, refresh_credential,
     refresh_credential_checked,
 };
-use burd_bench::build_registration_payload;
+use burd_bench::{ProviderRegistrationPayload, build_registration_payload};
 use burd_hardware::collect_nvidia_telemetry;
 use burd_protocol::{
     ClientControlMessage, GpuTelemetrySample, HeartbeatPayload, RemoteEnrollmentState,
@@ -17,6 +17,7 @@ use burd_protocol::{
 use chrono::{Duration as ChronoDuration, Utc};
 use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
+use tokio::sync::watch;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -28,22 +29,64 @@ pub fn connect(
     telemetry: bool,
     telemetry_batch_samples: usize,
 ) -> Result<RemoteSessionStateStatus, String> {
-    if !(1..=64).contains(&telemetry_batch_samples) {
-        return Err("telemetry_batch_samples must be between 1 and 64".to_string());
-    }
+    validate_telemetry_batch_samples(telemetry_batch_samples)?;
     let identity = load_identity()?;
     let telemetry_enabled = telemetry || identity.telemetry_enabled;
     let retry_seed = stable_retry_seed(&identity.machine_id);
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|error| format!("failed to start remote session runtime: {error}"))?;
-    runtime.block_on(run_control_loop(
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    runtime.block_on(async move {
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            let _ = shutdown_tx.send(true);
+        });
+        run_control_loop(
+            agent_version.to_string(),
+            max_reconnect_delay_seconds.max(1),
+            retry_seed,
+            telemetry_enabled,
+            telemetry_batch_samples,
+            shutdown_rx,
+        )
+        .await
+    })?;
+    show_remote_session()
+}
+
+#[cfg(feature = "integration-test-support")]
+pub async fn connect_until_shutdown(
+    agent_version: &str,
+    max_reconnect_delay_seconds: u64,
+    telemetry: bool,
+    telemetry_batch_samples: usize,
+    shutdown: watch::Receiver<bool>,
+) -> Result<RemoteSessionStateStatus, String> {
+    validate_telemetry_batch_samples(telemetry_batch_samples)?;
+    let identity = tokio::task::spawn_blocking(load_identity)
+        .await
+        .map_err(|error| format!("failed to load identity task: {error}"))??;
+    let telemetry_enabled = telemetry || identity.telemetry_enabled;
+    let retry_seed = stable_retry_seed(&identity.machine_id);
+    run_control_loop(
         agent_version.to_string(),
         max_reconnect_delay_seconds.max(1),
         retry_seed,
         telemetry_enabled,
         telemetry_batch_samples,
-    ))?;
-    show_remote_session()
+        shutdown,
+    )
+    .await?;
+    tokio::task::spawn_blocking(show_remote_session)
+        .await
+        .map_err(|error| format!("failed to load remote session status task: {error}"))?
+}
+
+fn validate_telemetry_batch_samples(telemetry_batch_samples: usize) -> Result<(), String> {
+    if !(1..=64).contains(&telemetry_batch_samples) {
+        return Err("telemetry_batch_samples must be between 1 and 64".to_string());
+    }
+    Ok(())
 }
 
 pub fn status() -> Result<RemoteSessionRecord, String> {
@@ -79,19 +122,21 @@ pub fn status() -> Result<RemoteSessionRecord, String> {
         .map_err(|error| format!("invalid remote session response contract: {error}"))
 }
 
-fn start_or_resume(agent_version: &str) -> Result<RemoteSessionStateStatus, ReconnectFailure> {
+fn start_or_resume(
+    agent_version: &str,
+    registration: &ProviderRegistrationPayload,
+) -> Result<RemoteSessionStateStatus, ReconnectFailure> {
     let enrollment = load_remote_enrollment().map_err(|error| {
         ReconnectFailure::terminal("local_state", format!("failed to load enrollment: {error}"))
     })?;
-    let registration = build_registration_payload(agent_version);
     let persisted = load_remote_session().ok();
     let request = StartRemoteSessionRequest {
         provider_id: enrollment.provider_id.clone(),
         device_id: enrollment.device_id.clone(),
-        hardware_fingerprint: registration.hardware_fingerprint,
+        hardware_fingerprint: registration.hardware_fingerprint.clone(),
         agent_version: agent_version.to_string(),
-        capabilities: registration.capabilities,
-        latest_report_hash: registration.latest_signed_report_hash,
+        capabilities: registration.capabilities.clone(),
+        latest_report_hash: registration.latest_signed_report_hash.clone(),
         latest_challenge_id: None,
         resume: persisted.as_ref().map(|state| RemoteSessionResume {
             session_id: state.session_id.clone(),
@@ -112,7 +157,7 @@ fn start_or_resume(agent_version: &str) -> Result<RemoteSessionStateStatus, Reco
                     format!("failed to clear expired remote session: {error}"),
                 )
             })?;
-            return start_or_resume(agent_version);
+            return start_or_resume(agent_version, registration);
         }
         Err(error) => return Err(classify_control_plane_error(error)),
     };
@@ -130,13 +175,18 @@ async fn run_control_loop(
     retry_seed: u64,
     telemetry_enabled: bool,
     telemetry_batch_samples: usize,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let mut retry_policy = ReconnectPolicy::new(max_reconnect_delay_seconds, retry_seed);
     loop {
+        if shutdown_requested(&shutdown) {
+            return Ok(());
+        }
         match attempt_connection(
             agent_version.clone(),
             telemetry_enabled,
             telemetry_batch_samples,
+            &mut shutdown,
         )
         .await
         {
@@ -166,7 +216,7 @@ async fn run_control_loop(
                     })
                 );
                 tokio::select! {
-                    _ = tokio::signal::ctrl_c() => return Ok(()),
+                    _ = wait_for_shutdown(&mut shutdown) => return Ok(()),
                     _ = tokio::time::sleep(Duration::from_secs(delay.seconds)) => {}
                 }
             }
@@ -178,17 +228,23 @@ async fn attempt_connection(
     agent_version: String,
     telemetry_enabled: bool,
     telemetry_batch_samples: usize,
+    shutdown: &mut watch::Receiver<bool>,
 ) -> Result<(), ReconnectFailure> {
+    if shutdown_requested(shutdown) {
+        return Ok(());
+    }
     let prepared = tokio::task::spawn_blocking(move || {
         let enrollment = ensure_credential_fresh()?;
-        start_or_resume(&agent_version)?;
+        let registration = build_registration_payload(&agent_version);
+        let hardware_fingerprint = registration.hardware_fingerprint.clone();
+        start_or_resume(&agent_version, &registration)?;
         let session = load_remote_session().map_err(|error| {
             ReconnectFailure::terminal(
                 "local_state",
                 format!("failed to load remote session: {error}"),
             )
         })?;
-        Ok::<_, ReconnectFailure>((enrollment, session))
+        Ok::<_, ReconnectFailure>((enrollment, session, hardware_fingerprint))
     })
     .await
     .map_err(|error| {
@@ -198,14 +254,16 @@ async fn attempt_connection(
         )
     })??;
 
-    let (enrollment, session) = prepared;
+    let (enrollment, session, hardware_fingerprint) = prepared;
     let mut connection_was_stable = false;
     match run_one_connection(
         enrollment,
         session,
+        hardware_fingerprint,
         telemetry_enabled,
         telemetry_batch_samples,
         &mut connection_was_stable,
+        shutdown,
     )
     .await
     {
@@ -429,9 +487,11 @@ fn websocket_http_outcome(status: u16) -> Option<ConnectionOutcome> {
 async fn run_one_connection(
     mut enrollment: RemoteEnrollmentState,
     session: RemoteSessionState,
+    hardware_fingerprint: String,
     telemetry_enabled: bool,
     telemetry_batch_samples: usize,
     connection_was_stable: &mut bool,
+    shutdown: &mut watch::Receiver<bool>,
 ) -> Result<ConnectionOutcome, String> {
     let mut request = session
         .control_url
@@ -489,7 +549,7 @@ async fn run_one_connection(
 
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            _ = wait_for_shutdown(shutdown) => {
                 let _ = socket.close(None).await;
                 return Ok(ConnectionOutcome::Stopped);
             }
@@ -497,7 +557,6 @@ async fn run_one_connection(
         }
 
         sequence = sequence.saturating_add(1);
-        let registration = build_registration_payload(env!("CARGO_PKG_VERSION"));
         let heartbeat = ClientControlMessage {
             session_id: session.session_id.clone(),
             device_id: enrollment.device_id.clone(),
@@ -505,7 +564,7 @@ async fn run_one_connection(
             sent_at: Utc::now().to_rfc3339(),
             message_type: "heartbeat".to_string(),
             payload: serde_json::to_value(HeartbeatPayload {
-                hardware_fingerprint: registration.hardware_fingerprint,
+                hardware_fingerprint: hardware_fingerprint.clone(),
                 local_status: serde_json::json!({
                     "agent": "connected",
                     "credential_expires_at": enrollment.credential_expires_at,
@@ -523,7 +582,7 @@ async fn run_one_connection(
             .map_err(|error| format!("failed to send heartbeat: {error}"))?;
 
         let response = tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            _ = wait_for_shutdown(shutdown) => {
                 let _ = socket.close(None).await;
                 return Ok(ConnectionOutcome::Stopped);
             }
@@ -584,6 +643,7 @@ async fn run_one_connection(
                         let signed = build_signed_telemetry_batch(
                             &enrollment,
                             &session,
+                            &hardware_fingerprint,
                             sequence,
                             collection.collector,
                             &telemetry_samples,
@@ -610,7 +670,7 @@ async fn run_one_connection(
                             .await
                             .map_err(|error| format!("failed to send telemetry batch: {error}"))?;
                         let response = tokio::select! {
-                            _ = tokio::signal::ctrl_c() => {
+                            _ = wait_for_shutdown(shutdown) => {
                                 let _ = socket.close(None).await;
                                 return Ok(ConnectionOutcome::Stopped);
                             }
@@ -700,9 +760,22 @@ async fn run_one_connection(
     }
 }
 
+fn shutdown_requested(shutdown: &watch::Receiver<bool>) -> bool {
+    *shutdown.borrow()
+}
+
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    while !shutdown_requested(shutdown) {
+        if shutdown.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 fn build_signed_telemetry_batch(
     enrollment: &RemoteEnrollmentState,
     session: &RemoteSessionState,
+    hardware_fingerprint: &str,
     control_sequence: u64,
     collector: String,
     samples: &[GpuTelemetrySample],
@@ -723,8 +796,7 @@ fn build_signed_telemetry_batch(
         control_sequence,
         sample_sequence_start: first.sample_sequence,
         sample_sequence_end: last.sample_sequence,
-        hardware_fingerprint: build_registration_payload(env!("CARGO_PKG_VERSION"))
-            .hardware_fingerprint,
+        hardware_fingerprint: hardware_fingerprint.to_string(),
         collector,
         collected_at_start: first.observed_at.clone(),
         collected_at_end: last.observed_at.clone(),
@@ -817,6 +889,27 @@ fn remote_error(value: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn telemetry_batch_sample_limit_is_validated_before_connecting() {
+        assert!(validate_telemetry_batch_samples(1).is_ok());
+        assert!(validate_telemetry_batch_samples(64).is_ok());
+        assert!(validate_telemetry_batch_samples(0).is_err());
+        assert!(validate_telemetry_batch_samples(65).is_err());
+    }
+
+    #[tokio::test]
+    async fn shutdown_receiver_wakes_control_loop_waiters() {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        shutdown_tx.send(true).unwrap();
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wait_for_shutdown(&mut shutdown_rx),
+        )
+        .await
+        .unwrap();
+        assert!(shutdown_requested(&shutdown_rx));
+    }
 
     #[test]
     fn credential_refreshes_before_expiry() {

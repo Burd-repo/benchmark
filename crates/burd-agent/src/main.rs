@@ -1,8 +1,7 @@
 mod cli;
-mod remote_enrollment;
-mod remote_session;
 
 use anyhow::Result;
+use burd_agent::{remote_enrollment, remote_session};
 use burd_bench::{
     DiskBenchmarkOptions, LlmBenchmarkOptions, NetworkBenchmarkOptions, ReportRunOptions,
     SecureRuntimePlanOptions, append_report_history, append_signed_report_history,

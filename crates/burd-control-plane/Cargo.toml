@@ -20,6 +20,9 @@ tokio-postgres.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+burd-agent = { path = "../burd-agent", features = ["integration-test-support"] }
 futures-util.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
 tokio-tungstenite.workspace = true
 tower.workspace = true
+ureq.workspace = true
