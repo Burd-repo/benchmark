@@ -292,6 +292,8 @@ session resume token are sent in headers, never in the URL:
   `type`, and `payload`;
 - every server message includes `request_id`, `sequence_ack`, `type`, and
   `payload`;
+- backend-initiated `session_revoked` messages acknowledge the latest control
+  sequence persisted for the session;
 - sequence gaps, duplicates, and stale sessions are audit events.
 
 BN-04 client message types:
