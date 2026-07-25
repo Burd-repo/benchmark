@@ -1,6 +1,6 @@
 # BN-07 - Recurring And Risk-Based Verification
 
-BN-07 turns the BN-06 Proof of Capability protocol into backend-owned verification state. It does not add the agent-side CUDA/VRAM/GEMM/LLM workload runner, global trust scoring, antifraud ranking, scheduler, jobs, marketplace, billing, Pix, or payouts.
+BN-07 turns the BN-06 Proof of Capability protocol into backend-owned verification state. The later BN-06 Agent runner executes challenges, while BN-07 remains responsible only for recurrence and policy state. It does not add a background scheduler, jobs, marketplace, billing, Pix, or payouts.
 
 ## Scope
 
@@ -19,7 +19,7 @@ Implemented:
 Not implemented:
 
 - background scheduler process for automatic sweep cadence;
-- agent-side active proof workload execution;
+- production artifact selection/distribution for sweep-issued LLM challenges; the default artifact hash remains a profile placeholder;
 - risk model using job history, regional probes, duplicate GPU detection, or performance history;
 - trust/antifraud score publication;
 - scheduler enforcement, leases, paid jobs, billing, Pix, payouts, or marketplace listings.

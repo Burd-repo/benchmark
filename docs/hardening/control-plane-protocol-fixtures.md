@@ -26,7 +26,7 @@ This hardening pass added fixture-backed OpenAPI examples for the highest-risk B
 ## Still Planned, Mock, Or Local
 
 - The examples use redacted placeholder tokens, signatures, and hashes; they are contract examples, not valid cryptographic proofs.
-- Agent-side remote Proof of Capability workload execution remains unimplemented.
+- At the time of this pass, Agent-side remote Proof of Capability workload execution remained unimplemented; the later BN-06 Agent runner adds it.
 - Full live HTTP happy-path fixtures for enrollment, session, evidence, and proof challenge verification remain future work.
 - BN-12 secure runtime remains local planning only, with no remote execution endpoint added.
 

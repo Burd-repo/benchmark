@@ -150,14 +150,15 @@ The live PostgreSQL test verifies:
 - A telemetry rejection disables collection only for the current connection;
   reconnecting starts a fresh telemetry attempt and may repeat a persistent
   policy error.
-- The Agent still does not execute backend-issued Proof of Capability workloads
-  or automatically bind telemetry capture to a challenge execution window.
+- At the time of this harness, the Agent did not execute backend-issued Proof of
+  Capability workloads or bind telemetry capture to execution. The subsequent
+  BN-06 Agent runner closes that gap.
 - The foreground Agent command still lacks service supervision and durable
   retry history.
 
-## Recommended Next PR
+## Recommended Next PR (Completed)
 
-Implement the Agent side of BN-06 as a narrow remote Proof of Capability runner:
+The subsequent BN-06 Agent runner implemented this recommendation:
 pick up backend-issued challenges, enforce nonce/fingerprint/GPU/artifact and
 expiry bindings, execute only the already-defined approved proof profiles,
 capture the required telemetry window, sign the independent response, and

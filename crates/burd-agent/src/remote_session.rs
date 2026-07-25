@@ -2,6 +2,9 @@ use crate::remote_enrollment::{
     ControlPlaneRequestError, join_url, post_json_checked, refresh_credential,
     refresh_credential_checked,
 };
+use crate::remote_proof::{
+    ProofExecutor, ProofTelemetryRequest, ProofTelemetryWindow, execute_remote_proof, run_worker,
+};
 use burd_bench::{ProviderRegistrationPayload, build_registration_payload};
 use burd_hardware::{NvidiaTelemetryCollection, collect_nvidia_telemetry};
 use burd_protocol::{
@@ -17,7 +20,7 @@ use burd_protocol::{
 use chrono::{Duration as ChronoDuration, Utc};
 use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -28,10 +31,13 @@ pub fn connect(
     max_reconnect_delay_seconds: u64,
     telemetry: bool,
     telemetry_batch_samples: usize,
+    proofs: bool,
 ) -> Result<RemoteSessionStateStatus, String> {
     validate_telemetry_batch_samples(telemetry_batch_samples)?;
     let identity = load_identity()?;
-    let telemetry_enabled = telemetry || identity.telemetry_enabled;
+    let telemetry_enabled = proofs || telemetry || identity.telemetry_enabled;
+    let proof_agent_version = proofs.then(|| agent_version.to_string());
+
     let retry_seed = stable_retry_seed(&identity.machine_id);
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|error| format!("failed to start remote session runtime: {error}"))?;
@@ -41,13 +47,15 @@ pub fn connect(
             let _ = tokio::signal::ctrl_c().await;
             let _ = shutdown_tx.send(true);
         });
-        run_control_loop(
+        run_control_and_proof(
             agent_version.to_string(),
             max_reconnect_delay_seconds.max(1),
             retry_seed,
             telemetry_enabled,
             telemetry_batch_samples,
             collect_nvidia_telemetry,
+            proof_agent_version,
+            execute_remote_proof,
             shutdown_rx,
         )
         .await
@@ -89,13 +97,15 @@ pub async fn connect_until_shutdown_with_telemetry_collector(
         .map_err(|error| format!("failed to load identity task: {error}"))??;
     let telemetry_enabled = telemetry || identity.telemetry_enabled;
     let retry_seed = stable_retry_seed(&identity.machine_id);
-    run_control_loop(
+    run_control_and_proof(
         agent_version.to_string(),
         max_reconnect_delay_seconds.max(1),
         retry_seed,
         telemetry_enabled,
         telemetry_batch_samples,
         telemetry_collector,
+        None,
+        execute_remote_proof,
         shutdown,
     )
     .await?;
@@ -104,6 +114,86 @@ pub async fn connect_until_shutdown_with_telemetry_collector(
         .map_err(|error| format!("failed to load remote session status task: {error}"))?
 }
 
+#[cfg(feature = "integration-test-support")]
+#[allow(clippy::too_many_arguments)]
+pub async fn connect_until_shutdown_with_test_runtime(
+    agent_version: &str,
+    max_reconnect_delay_seconds: u64,
+    telemetry_batch_samples: usize,
+    telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
+    proof_executor: ProofExecutor,
+    shutdown: watch::Receiver<bool>,
+) -> Result<RemoteSessionStateStatus, String> {
+    validate_telemetry_batch_samples(telemetry_batch_samples)?;
+    let identity = tokio::task::spawn_blocking(load_identity)
+        .await
+        .map_err(|error| format!("failed to load identity task: {error}"))??;
+    let retry_seed = stable_retry_seed(&identity.machine_id);
+    run_control_and_proof(
+        agent_version.to_string(),
+        max_reconnect_delay_seconds.max(1),
+        retry_seed,
+        true,
+        telemetry_batch_samples,
+        telemetry_collector,
+        Some(agent_version.to_string()),
+        proof_executor,
+        shutdown,
+    )
+    .await?;
+    tokio::task::spawn_blocking(show_remote_session)
+        .await
+        .map_err(|error| format!("failed to load remote session status task: {error}"))?
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_control_and_proof(
+    agent_version: String,
+    max_reconnect_delay_seconds: u64,
+    retry_seed: u64,
+    telemetry_enabled: bool,
+    telemetry_batch_samples: usize,
+    telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
+    proof_agent_version: Option<String>,
+    proof_executor: ProofExecutor,
+    shutdown: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let (proof_telemetry_tx, mut proof_telemetry_rx) = mpsc::channel(1);
+    let (proof_shutdown_tx, proof_shutdown_rx) = watch::channel(false);
+    let proof_worker = proof_agent_version.map(|proof_agent_version| {
+        tokio::spawn(run_worker(
+            proof_agent_version,
+            proof_telemetry_tx,
+            proof_executor,
+            proof_shutdown_rx,
+        ))
+    });
+    let result = run_control_loop(
+        ControlLoopRuntime {
+            agent_version,
+            max_reconnect_delay_seconds,
+            retry_seed,
+            telemetry: TelemetryRuntime {
+                enabled: telemetry_enabled,
+                batch_samples: telemetry_batch_samples,
+                collector: telemetry_collector,
+            },
+        },
+        &mut proof_telemetry_rx,
+        shutdown,
+    )
+    .await;
+    let _ = proof_shutdown_tx.send(true);
+    if let Some(worker) = proof_worker {
+        match worker.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) if result.is_ok() => return Err(error),
+            Ok(Err(error)) => log_proof_worker_shutdown_error(&error),
+            Err(error) => log_proof_worker_shutdown_error(&error.to_string()),
+        }
+    }
+    result
+}
 fn validate_telemetry_batch_samples(telemetry_batch_samples: usize) -> Result<(), String> {
     if !(1..=64).contains(&telemetry_batch_samples) {
         return Err("telemetry_batch_samples must be between 1 and 64".to_string());
@@ -191,25 +281,30 @@ fn start_or_resume(
     })
 }
 
-async fn run_control_loop(
+struct ControlLoopRuntime {
     agent_version: String,
     max_reconnect_delay_seconds: u64,
     retry_seed: u64,
-    telemetry_enabled: bool,
-    telemetry_batch_samples: usize,
-    telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
+    telemetry: TelemetryRuntime,
+}
+
+async fn run_control_loop(
+    runtime: ControlLoopRuntime,
+    proof_telemetry: &mut mpsc::Receiver<ProofTelemetryRequest>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let mut retry_policy = ReconnectPolicy::new(max_reconnect_delay_seconds, retry_seed);
+    let mut retry_policy =
+        ReconnectPolicy::new(runtime.max_reconnect_delay_seconds, runtime.retry_seed);
     loop {
         if shutdown_requested(&shutdown) {
             return Ok(());
         }
         match attempt_connection(
-            agent_version.clone(),
-            telemetry_enabled,
-            telemetry_batch_samples,
-            telemetry_collector,
+            runtime.agent_version.clone(),
+            runtime.telemetry.enabled,
+            runtime.telemetry.batch_samples,
+            runtime.telemetry.collector,
+            proof_telemetry,
             &mut shutdown,
         )
         .await
@@ -253,6 +348,7 @@ async fn attempt_connection(
     telemetry_enabled: bool,
     telemetry_batch_samples: usize,
     telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
+    proof_telemetry: &mut mpsc::Receiver<ProofTelemetryRequest>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<(), ReconnectFailure> {
     if shutdown_requested(shutdown) {
@@ -291,6 +387,7 @@ async fn attempt_connection(
             collector: telemetry_collector,
         },
         &mut connection_was_stable,
+        proof_telemetry,
         shutdown,
     )
     .await
@@ -525,6 +622,7 @@ async fn run_one_connection(
     hardware_fingerprint: String,
     telemetry: TelemetryRuntime,
     connection_was_stable: &mut bool,
+    proof_telemetry: &mut mpsc::Receiver<ProofTelemetryRequest>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<ConnectionOutcome, String> {
     let mut request = session
@@ -580,207 +678,193 @@ async fn run_one_connection(
     let mut telemetry_sequence = session.telemetry_sequence_last;
     let mut telemetry_unavailable_logged = false;
     let mut telemetry_active = telemetry.enabled;
+    let mut proof_channel_open = true;
+    let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
-        tokio::select! {
+        let action = tokio::select! {
             _ = wait_for_shutdown(shutdown) => {
                 let _ = socket.close(None).await;
                 return Ok(ConnectionOutcome::Stopped);
             }
-            _ = tokio::time::sleep(interval) => {}
-        }
-
-        sequence = sequence.saturating_add(1);
-        let heartbeat = ClientControlMessage {
-            session_id: session.session_id.clone(),
-            device_id: enrollment.device_id.clone(),
-            sequence,
-            sent_at: Utc::now().to_rfc3339(),
-            message_type: "heartbeat".to_string(),
-            payload: serde_json::to_value(HeartbeatPayload {
-                hardware_fingerprint: hardware_fingerprint.clone(),
-                local_status: serde_json::json!({
-                    "agent": "connected",
-                    "credential_expires_at": enrollment.credential_expires_at,
-                }),
-            })
-            .map_err(|error| format!("failed to serialize heartbeat: {error}"))?,
-        };
-        socket
-            .send(Message::Text(
-                serde_json::to_string(&heartbeat)
-                    .map_err(|error| format!("failed to serialize heartbeat: {error}"))?
-                    .into(),
-            ))
-            .await
-            .map_err(|error| format!("failed to send heartbeat: {error}"))?;
-
-        let response = tokio::select! {
-            _ = wait_for_shutdown(shutdown) => {
-                let _ = socket.close(None).await;
-                return Ok(ConnectionOutcome::Stopped);
-            }
-            response = receive_server_message(&mut socket, response_timeout) => response?
-        };
-        match response.message_type.as_str() {
-            "heartbeat_ack" => {
-                if response.sequence_ack != sequence {
-                    return Err(format!(
-                        "heartbeat acknowledgement mismatch: sent {sequence}, received {}",
-                        response.sequence_ack
-                    ));
+            request = proof_telemetry.recv(), if proof_channel_open => {
+                match request {
+                    Some(request) => ConnectionAction::ProofTelemetry(request),
+                    None => ConnectionAction::ProofChannelClosed,
                 }
-                update_remote_session_sequence(sequence)?;
-                *connection_was_stable = true;
             }
-            "session_revoked" => {
-                return Ok(ConnectionOutcome::Terminal(
-                    "remote session was revoked by the control plane".to_string(),
-                ));
-            }
-            "error" => {
-                let message = response.payload["message"]
-                    .as_str()
-                    .unwrap_or("control plane rejected heartbeat");
-                return Err(message.to_string());
-            }
-            other => return Err(format!("unexpected control message {other}")),
-        }
+            _ = heartbeat.tick() => ConnectionAction::Heartbeat,
+        };
 
-        if telemetry_active {
-            let next_sample_sequence = telemetry_sequence
-                .checked_add(telemetry_samples.len() as u64 + 1)
-                .ok_or_else(|| "GPU telemetry sequence overflow".to_string())?;
-            match tokio::task::spawn_blocking(move || (telemetry.collector)(next_sample_sequence))
-                .await
-                .map_err(|error| format!("GPU telemetry collection task failed: {error}"))?
-            {
-                Ok(collection) => {
-                    telemetry_unavailable_logged = false;
-                    for warning in collection.warnings {
-                        eprintln!(
-                            "{}",
-                            serde_json::json!({
-                                "event": "gpu_telemetry_partial",
-                                "warning": warning,
-                            })
-                        );
+        match action {
+            ConnectionAction::ProofChannelClosed => {
+                proof_channel_open = false;
+                continue;
+            }
+            ConnectionAction::Heartbeat => {
+                sequence = sequence.saturating_add(1);
+                let heartbeat = ClientControlMessage {
+                    session_id: session.session_id.clone(),
+                    device_id: enrollment.device_id.clone(),
+                    sequence,
+                    sent_at: Utc::now().to_rfc3339(),
+                    message_type: "heartbeat".to_string(),
+                    payload: serde_json::to_value(HeartbeatPayload {
+                        hardware_fingerprint: hardware_fingerprint.clone(),
+                        local_status: serde_json::json!({
+                            "agent": "connected",
+                            "credential_expires_at": enrollment.credential_expires_at,
+                        }),
+                    })
+                    .map_err(|error| format!("failed to serialize heartbeat: {error}"))?,
+                };
+                socket
+                    .send(Message::Text(
+                        serde_json::to_string(&heartbeat)
+                            .map_err(|error| format!("failed to serialize heartbeat: {error}"))?
+                            .into(),
+                    ))
+                    .await
+                    .map_err(|error| format!("failed to send heartbeat: {error}"))?;
+                let response = tokio::select! {
+                    _ = wait_for_shutdown(shutdown) => {
+                        let _ = socket.close(None).await;
+                        return Ok(ConnectionOutcome::Stopped);
                     }
-                    telemetry_samples.extend(collection.samples);
-                    if telemetry_samples.len() > 64 {
-                        return Err("GPU telemetry batch exceeded 64 samples".to_string());
+                    response = receive_server_message(&mut socket, response_timeout) => response?
+                };
+                match response.message_type.as_str() {
+                    "heartbeat_ack" => {
+                        if response.sequence_ack != sequence {
+                            return Err(format!(
+                                "heartbeat acknowledgement mismatch: sent {sequence}, received {}",
+                                response.sequence_ack
+                            ));
+                        }
+                        update_remote_session_sequence(sequence)?;
+                        *connection_was_stable = true;
                     }
-                    if telemetry_samples.len() >= telemetry.batch_samples {
-                        sequence = sequence.saturating_add(1);
-                        let signed = build_signed_telemetry_batch(
-                            &enrollment,
-                            &session,
-                            &hardware_fingerprint,
-                            sequence,
-                            collection.collector,
-                            &telemetry_samples,
-                        )?;
-                        let batch_hash = signed.batch_hash.clone();
-                        let telemetry_message = ClientControlMessage {
-                            session_id: session.session_id.clone(),
-                            device_id: enrollment.device_id.clone(),
-                            sequence,
-                            sent_at: Utc::now().to_rfc3339(),
-                            message_type: "telemetry_batch".to_string(),
-                            payload: serde_json::to_value(signed).map_err(|error| {
-                                format!("failed to serialize telemetry batch: {error}")
-                            })?,
-                        };
-                        socket
-                            .send(Message::Text(
-                                serde_json::to_string(&telemetry_message)
-                                    .map_err(|error| {
-                                        format!("failed to serialize telemetry message: {error}")
-                                    })?
-                                    .into(),
-                            ))
-                            .await
-                            .map_err(|error| format!("failed to send telemetry batch: {error}"))?;
-                        let response = tokio::select! {
-                            _ = wait_for_shutdown(shutdown) => {
-                                let _ = socket.close(None).await;
-                                return Ok(ConnectionOutcome::Stopped);
+                    "session_revoked" => {
+                        return Ok(ConnectionOutcome::Terminal(
+                            "remote session was revoked by the control plane".to_string(),
+                        ));
+                    }
+                    "error" => {
+                        let message = response.payload["message"]
+                            .as_str()
+                            .unwrap_or("control plane rejected heartbeat");
+                        return Err(message.to_string());
+                    }
+                    other => return Err(format!("unexpected control message {other}")),
+                }
+                if telemetry_active {
+                    match collect_and_submit_telemetry(
+                        &mut socket,
+                        &enrollment,
+                        &session,
+                        &hardware_fingerprint,
+                        telemetry,
+                        &mut sequence,
+                        &mut telemetry_sequence,
+                        &mut telemetry_samples,
+                        false,
+                        response_timeout,
+                    )
+                    .await?
+                    {
+                        TelemetryOutcome::Buffered | TelemetryOutcome::Accepted(_) => {
+                            telemetry_unavailable_logged = false;
+                        }
+                        TelemetryOutcome::Unavailable(error) => {
+                            if !telemetry_unavailable_logged {
+                                log_telemetry_unavailable(&error);
+                                telemetry_unavailable_logged = true;
                             }
-                            response = receive_server_message(&mut socket, response_timeout) => response?
-                        };
-                        match response.message_type.as_str() {
-                            "telemetry_ack" => {
-                                let receipt: TelemetryBatchReceipt =
-                                    serde_json::from_value(response.payload).map_err(|error| {
-                                        format!("invalid telemetry acknowledgement: {error}")
-                                    })?;
-                                let expected_sample_end = telemetry_samples
-                                    .last()
-                                    .map(|sample| sample.sample_sequence)
-                                    .ok_or_else(|| "telemetry batch is empty".to_string())?;
-                                if receipt.control_sequence_ack != sequence
-                                    || receipt.sample_sequence_end != expected_sample_end
-                                    || receipt.batch_hash != batch_hash
-                                {
-                                    return Err(
-                                        "telemetry acknowledgement does not match sent batch"
-                                            .to_string(),
-                                    );
-                                }
-                                update_remote_session_sequence(sequence)?;
-                                update_remote_telemetry_sequence(expected_sample_end)?;
-                                telemetry_sequence = expected_sample_end;
-                                telemetry_samples.clear();
-                            }
-                            "telemetry_rejected" => {
-                                let message = response.payload["message"]
-                                    .as_str()
-                                    .unwrap_or("control plane rejected telemetry batch");
-                                eprintln!(
-                                    "{}",
-                                    serde_json::json!({
-                                        "event": "gpu_telemetry_rejected",
-                                        "error": message,
-                                    })
-                                );
-                                sequence = response.sequence_ack;
-                                update_remote_session_sequence(sequence)?;
-                                telemetry_samples.clear();
-                                telemetry_active = false;
-                            }
-                            "session_revoked" => {
-                                return Ok(ConnectionOutcome::Terminal(
-                                    "remote session was revoked by the control plane".to_string(),
-                                ));
-                            }
-                            "error" => {
-                                let message = response.payload["message"]
-                                    .as_str()
-                                    .unwrap_or("control plane rejected telemetry batch");
-                                return Err(message.to_string());
-                            }
-                            other => {
-                                return Err(format!(
-                                    "unexpected telemetry control message {other}"
-                                ));
-                            }
+                        }
+                        TelemetryOutcome::Rejected(error) => {
+                            log_telemetry_rejected(&error);
+                            telemetry_active = false;
+                        }
+                        TelemetryOutcome::SessionRevoked => {
+                            return Ok(ConnectionOutcome::Terminal(
+                                "remote session was revoked by the control plane".to_string(),
+                            ));
                         }
                     }
                 }
-                Err(error) => {
-                    if !telemetry_unavailable_logged {
-                        eprintln!(
-                            "{}",
-                            serde_json::json!({
-                                "event": "gpu_telemetry_unavailable",
-                                "error": error,
-                            })
-                        );
-                        telemetry_unavailable_logged = true;
+            }
+            ConnectionAction::ProofTelemetry(request) => {
+                if !telemetry_active {
+                    let _ = request.response.send(Err(
+                        "signed GPU telemetry is unavailable for remote proof".to_string(),
+                    ));
+                    continue;
+                }
+                let outcome = collect_and_submit_telemetry(
+                    &mut socket,
+                    &enrollment,
+                    &session,
+                    &hardware_fingerprint,
+                    telemetry,
+                    &mut sequence,
+                    &mut telemetry_sequence,
+                    &mut telemetry_samples,
+                    true,
+                    response_timeout,
+                )
+                .await;
+                match outcome {
+                    Ok(TelemetryOutcome::Accepted(window)) => {
+                        telemetry_unavailable_logged = false;
+                        let includes_gpu = window.samples.iter().any(|sample| {
+                            sample
+                                .gpu_uuid
+                                .eq_ignore_ascii_case(&request.required_gpu_uuid)
+                        });
+                        let result = if includes_gpu {
+                            Ok(window)
+                        } else {
+                            Err(format!(
+                                "signed telemetry did not include proof GPU {}",
+                                request.required_gpu_uuid
+                            ))
+                        };
+                        let _ = request.response.send(result);
+                    }
+                    Ok(TelemetryOutcome::Unavailable(error)) => {
+                        if !telemetry_unavailable_logged {
+                            log_telemetry_unavailable(&error);
+                            telemetry_unavailable_logged = true;
+                        }
+                        let _ = request.response.send(Err(error));
+                    }
+                    Ok(TelemetryOutcome::Rejected(error)) => {
+                        log_telemetry_rejected(&error);
+                        telemetry_active = false;
+                        let _ = request.response.send(Err(error));
+                    }
+                    Ok(TelemetryOutcome::SessionRevoked) => {
+                        let _ = request
+                            .response
+                            .send(Err("remote session was revoked".to_string()));
+                        return Ok(ConnectionOutcome::Terminal(
+                            "remote session was revoked by the control plane".to_string(),
+                        ));
+                    }
+                    Ok(TelemetryOutcome::Buffered) => {
+                        let _ = request.response.send(Err(
+                            "forced proof telemetry was buffered without submission".to_string(),
+                        ));
+                    }
+                    Err(error) => {
+                        let _ = request.response.send(Err(error.clone()));
+                        return Err(error);
                     }
                 }
             }
         }
+
         if credential_refresh_due(&enrollment)? {
             enrollment = tokio::task::spawn_blocking(|| {
                 refresh_credential()?;
@@ -791,7 +875,169 @@ async fn run_one_connection(
         }
     }
 }
+#[derive(Debug)]
+enum ConnectionAction {
+    Heartbeat,
+    ProofTelemetry(ProofTelemetryRequest),
+    ProofChannelClosed,
+}
 
+#[derive(Debug)]
+enum TelemetryOutcome {
+    Buffered,
+    Accepted(ProofTelemetryWindow),
+    Unavailable(String),
+    Rejected(String),
+    SessionRevoked,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn collect_and_submit_telemetry<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    enrollment: &RemoteEnrollmentState,
+    session: &RemoteSessionState,
+    hardware_fingerprint: &str,
+    telemetry: TelemetryRuntime,
+    sequence: &mut u64,
+    telemetry_sequence: &mut u64,
+    telemetry_samples: &mut Vec<GpuTelemetrySample>,
+    force_submit: bool,
+    response_timeout: Duration,
+) -> Result<TelemetryOutcome, String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if force_submit {
+        telemetry_samples.clear();
+    }
+    let next_sample_sequence = telemetry_sequence
+        .checked_add(telemetry_samples.len() as u64 + 1)
+        .ok_or_else(|| "GPU telemetry sequence overflow".to_string())?;
+    let collection =
+        match tokio::task::spawn_blocking(move || (telemetry.collector)(next_sample_sequence))
+            .await
+            .map_err(|error| format!("GPU telemetry collection task failed: {error}"))?
+        {
+            Ok(collection) => collection,
+            Err(error) => return Ok(TelemetryOutcome::Unavailable(error)),
+        };
+    for warning in &collection.warnings {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "event": "gpu_telemetry_partial",
+                "warning": warning,
+            })
+        );
+    }
+    telemetry_samples.extend(collection.samples);
+    if telemetry_samples.len() > 64 {
+        return Err("GPU telemetry batch exceeded 64 samples".to_string());
+    }
+    if !force_submit && telemetry_samples.len() < telemetry.batch_samples {
+        return Ok(TelemetryOutcome::Buffered);
+    }
+
+    *sequence = sequence.saturating_add(1);
+    let signed = build_signed_telemetry_batch(
+        enrollment,
+        session,
+        hardware_fingerprint,
+        *sequence,
+        collection.collector,
+        telemetry_samples,
+    )?;
+    let batch_hash = signed.batch_hash.clone();
+    let submitted_samples = signed.payload.samples.clone();
+    let telemetry_message = ClientControlMessage {
+        session_id: session.session_id.clone(),
+        device_id: enrollment.device_id.clone(),
+        sequence: *sequence,
+        sent_at: Utc::now().to_rfc3339(),
+        message_type: "telemetry_batch".to_string(),
+        payload: serde_json::to_value(signed)
+            .map_err(|error| format!("failed to serialize telemetry batch: {error}"))?,
+    };
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&telemetry_message)
+                .map_err(|error| format!("failed to serialize telemetry message: {error}"))?
+                .into(),
+        ))
+        .await
+        .map_err(|error| format!("failed to send telemetry batch: {error}"))?;
+    let response = receive_server_message(socket, response_timeout).await?;
+    match response.message_type.as_str() {
+        "telemetry_ack" => {
+            let receipt: TelemetryBatchReceipt = serde_json::from_value(response.payload)
+                .map_err(|error| format!("invalid telemetry acknowledgement: {error}"))?;
+            let expected_sample_end = telemetry_samples
+                .last()
+                .map(|sample| sample.sample_sequence)
+                .ok_or_else(|| "telemetry batch is empty".to_string())?;
+            if receipt.control_sequence_ack != *sequence
+                || receipt.sample_sequence_end != expected_sample_end
+                || receipt.batch_hash != batch_hash
+            {
+                return Err("telemetry acknowledgement does not match sent batch".to_string());
+            }
+            update_remote_session_sequence(*sequence)?;
+            update_remote_telemetry_sequence(expected_sample_end)?;
+            *telemetry_sequence = expected_sample_end;
+            telemetry_samples.clear();
+            Ok(TelemetryOutcome::Accepted(ProofTelemetryWindow {
+                batch_hash,
+                samples: submitted_samples,
+            }))
+        }
+        "telemetry_rejected" => {
+            let message = response.payload["message"]
+                .as_str()
+                .unwrap_or("control plane rejected telemetry batch")
+                .to_string();
+            *sequence = response.sequence_ack;
+            update_remote_session_sequence(*sequence)?;
+            telemetry_samples.clear();
+            Ok(TelemetryOutcome::Rejected(message))
+        }
+        "session_revoked" => Ok(TelemetryOutcome::SessionRevoked),
+        "error" => Err(response.payload["message"]
+            .as_str()
+            .unwrap_or("control plane rejected telemetry batch")
+            .to_string()),
+        other => Err(format!("unexpected telemetry control message {other}")),
+    }
+}
+
+fn log_telemetry_unavailable(error: &str) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event": "gpu_telemetry_unavailable",
+            "error": error,
+        })
+    );
+}
+
+fn log_telemetry_rejected(error: &str) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event": "gpu_telemetry_rejected",
+            "error": error,
+        })
+    );
+}
+
+fn log_proof_worker_shutdown_error(error: &str) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "event": "remote_proof_worker_shutdown_failed",
+            "error": error,
+        })
+    );
+}
 fn shutdown_requested(shutdown: &watch::Receiver<bool>) -> bool {
     *shutdown.borrow()
 }

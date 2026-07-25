@@ -24,6 +24,7 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["clock", "serde"] }
 clap = { version = "4.5", features = ["derive"] }
 csv = "1.4"
+cudarc = { version = "0.19.8", default-features = false, features = ["std", "driver", "runtime", "cublas", "dynamic-loading", "cuda-12000"] }
 dirs = "6.0"
 ed25519-dalek = "2.2"
 futures-util = "0.3"

@@ -26,7 +26,7 @@ No agent daemon, proof workload runner, scheduler loop, job runtime, marketplace
 
 - The signed telemetry payload is a deterministic test fixture, not a real `nvidia-smi` collection.
 - The proof metrics are deterministic test values, not a real CUDA/VRAM/GEMM/LLM workload execution.
-- The agent still does not automatically capture a telemetry window during proof execution.
+- At the time of this pass, the Agent did not automatically capture a telemetry window during proof execution; the later BN-06 Agent runner closes that gap.
 - WebSocket telemetry streaming is not expanded here; the live test uses the authenticated HTTP telemetry fallback.
 
 ## Bugs Found
@@ -93,7 +93,7 @@ No agent daemon, proof workload runner, scheduler loop, job runtime, marketplace
 
 - A backend-accepted telemetry batch proves the reported signed telemetry existed, but this pass still does not prove agent-side timing overlap with a real proof workload.
 - The live helper cleans temporary schemas only on successful test completion; a panic can leave disposable test schemas behind.
-- Automatic challenge telemetry capture remains a future agent/runtime concern.
+- Automatic challenge telemetry capture was future work for this pass and is implemented by the later BN-06 Agent runner.
 
 ## Deferred Items
 
