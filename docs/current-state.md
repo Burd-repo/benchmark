@@ -322,12 +322,16 @@ starting the API server or depending on host state:
   fingerprint mismatch degrade the session.
 - `burd-agent remote-session connect` maintains the connection with credential
   refresh, typed failure classification, bounded exponential backoff, per-agent
-  jitter, and reset only after an acknowledged heartbeat. Revoked/invalid
-  credentials stop; missing/expired sessions are recreated. Retry state remains
+  jitter, and reset only after an acknowledged heartbeat. Hardware registration
+  runs during blocking connection preparation, and the resulting fingerprint is
+  reused for periodic heartbeats and telemetry. Revoked/invalid credentials stop;
+  missing/expired sessions are recreated. Retry state remains
   in-memory and is not a supervised daemon. `remote-session status` reads
   backend state.
 - PostgreSQL integration coverage exercises start, duplicate rejection,
-  heartbeat, degradation, resume, and revocation.
+  heartbeat, degradation, resume, and revocation. A separate ignored harness runs
+  the real Agent loop against Axum and isolated PostgreSQL, injects socket loss and
+  backend unavailability, and verifies resume, expiry replacement, and revocation.
 - OpenAPI documents remote session start, session record, heartbeat control-message receipt, and revocation schemas, with fixture-backed examples for session start and heartbeat HTTP fallback.
 - BN-03 does not implement GPU telemetry, backend-issued challenges, Proof of
   Capability, trust policy, jobs, scheduler, marketplace, billing, Pix, or

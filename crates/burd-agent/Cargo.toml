@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[features]
+integration-test-support = []
+
 [[bin]]
 name = "burd-agent"
 path = "src/main.rs"

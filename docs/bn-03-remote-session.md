@@ -18,7 +18,11 @@ The local `session` command remains a local evidence snapshot; the new
    server receipt time, payload hash, sequence gap, status, and rolling TTL.
 6. Socket loss or missed heartbeats marks the session `offline`; sequence gaps
    or fingerprint mismatch mark it `degraded`.
-7. The agent reconnects with bounded exponential backoff and per-agent jitter, and resumes the same session.
+7. The agent reconnects with bounded exponential backoff and per-agent
+   jitter, and resumes the same session. Hardware registration is collected
+   during blocking connection preparation; the connection reuses the
+   enrollment-bound fingerprint for heartbeats and signed telemetry instead of
+   repeating hardware detection on every interval.
 8. Administrative revocation updates PostgreSQL and signals the active socket.
 
 ## States
@@ -59,7 +63,9 @@ and session resume in `~/.burd/remote-session.json`. Transient transport, HTTP
 ceiling and per-agent jitter. The failure counter resets only after a heartbeat
 acknowledgement proves the connection is usable. Revoked or invalid credentials stop
 the command; missing or expired sessions are recreated. Retry attempts are in-memory
-and reset when the process restarts.
+and reset when the process restarts. An ignored PostgreSQL integration test runs the
+real Agent loop through enrollment, heartbeat acknowledgement, socket loss, resume,
+server-side expiry, replacement session creation, and administrative revocation.
 
 ## Configuration
 
