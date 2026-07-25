@@ -349,12 +349,14 @@ fn run() -> Result<()> {
                 max_reconnect_delay_seconds,
                 telemetry,
                 telemetry_batch_samples,
+                proofs,
             } => {
                 let result = remote_session::connect(
                     AGENT_VERSION,
                     max_reconnect_delay_seconds,
                     telemetry,
                     telemetry_batch_samples,
+                    proofs,
                 )
                 .map_err(anyhow::Error::msg)?;
                 print_json(&result)?;

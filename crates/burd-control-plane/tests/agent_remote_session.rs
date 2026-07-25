@@ -1,7 +1,11 @@
 use axum::Router;
+use burd_agent::remote_proof::{ProofExecution, ProofExecutionRequest};
 use burd_control_plane::{AppState, ControlPlaneConfig, Database, router};
 use burd_hardware::NvidiaTelemetryCollection;
-use burd_protocol::{GpuTelemetrySample, TelemetryBatchPayload};
+use burd_protocol::{
+    GpuTelemetrySample, ProofCapabilityMetrics, SignedProofCapabilityResponse,
+    TelemetryBatchPayload,
+};
 use serde_json::{Value, json};
 use std::ffi::OsString;
 use std::net::SocketAddr;
@@ -72,6 +76,39 @@ fn deterministic_nvidia_telemetry(
             job_id: None,
         }],
         warnings: vec![],
+    })
+}
+fn deterministic_proof_telemetry(
+    first_sample_sequence: u64,
+) -> Result<NvidiaTelemetryCollection, String> {
+    let mut collection = deterministic_nvidia_telemetry(first_sample_sequence)?;
+    collection.samples[0].gpu_utilization_percent = Some(5.0);
+    Ok(collection)
+}
+fn deterministic_proof_executor(
+    mut request: ProofExecutionRequest,
+) -> Result<ProofExecution, String> {
+    let gpu_uuid = request
+        .challenge
+        .required_gpu_uuid
+        .clone()
+        .unwrap_or_else(|| "GPU-agent-integration".to_string());
+    request.hold_residency_for_telemetry(gpu_uuid.clone())?;
+    Ok(ProofExecution {
+        gpu_uuid,
+        driver_version: "555.42".to_string(),
+        cuda_driver_version: Some("12.5".to_string()),
+        cuda_runtime_version: Some("12.4".to_string()),
+        metrics: ProofCapabilityMetrics {
+            tokens_per_second: Some(72.5),
+            ttft_ms: Some(85),
+            vram_allocated_mib: Some(64),
+            vram_resident_mib: Some(64),
+            gemm_gflops: Some(21_000.0),
+            cuda_runtime_detected: true,
+            backend_proof: "integration-test-only-deterministic-proof-v1".to_string(),
+            contention_detected: false,
+        },
     })
 }
 struct RunningHttpServer {
@@ -388,6 +425,46 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
+struct ProofChallengeRow {
+    status: String,
+    response_hash: Option<String>,
+    response_json: Option<String>,
+    verification_json: Option<String>,
+    public_key: Option<String>,
+}
+
+async fn proof_challenge_row(client: &Client, challenge_id: &str) -> ProofChallengeRow {
+    let row = client
+        .query_one(
+            "SELECT pc.status, pc.response_hash, pc.response_json, pc.verification_json, k.public_key FROM proof_challenges pc LEFT JOIN provider_public_keys k ON k.public_key_id = pc.public_key_id WHERE pc.challenge_id = $1",
+            &[&challenge_id],
+        )
+        .await
+        .unwrap();
+    ProofChallengeRow {
+        status: row.get("status"),
+        response_hash: row.get("response_hash"),
+        response_json: row.get("response_json"),
+        verification_json: row.get("verification_json"),
+        public_key: row.get("public_key"),
+    }
+}
+
+async fn wait_for_verified_proof(client: &Client, challenge_id: &str) -> ProofChallengeRow {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+    loop {
+        let row = proof_challenge_row(client, challenge_id).await;
+        if row.status == "verified" {
+            return row;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for Agent proof {challenge_id}; last row: {row:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
 async fn wait_for_counter(counter: &AtomicU64, expected: u64, description: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while counter.load(Ordering::SeqCst) < expected {
@@ -848,4 +925,219 @@ async fn live_agent_signed_telemetry_persists_ack_resumes_and_handles_rejection(
     db.drop_schema_for_test().await.unwrap();
     let _ = std::fs::remove_dir_all(&object_storage_dir);
     TELEMETRY_MODE.store(TELEMETRY_MODE_VALID, Ordering::SeqCst);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn live_agent_executes_and_submits_a_verified_remote_proof() {
+    let _environment_lock = agent_environment_lock().lock().await;
+    TELEMETRY_MODE.store(TELEMETRY_MODE_VALID, Ordering::SeqCst);
+
+    let database_url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
+        .expect("BURD_CONTROL_TEST_DATABASE_URL is required for this ignored integration test");
+    let label = format!("agent_remote_proof_{}", Uuid::new_v4().simple());
+    let schema = format!("burd_{label}");
+    let object_storage_dir = PathBuf::from(format!("target/test-control-objects/{schema}"));
+    let _agent_state = AgentStateGuard::install(&label);
+
+    let mut config = ControlPlaneConfig::from_lookup(|key| match key {
+        "BURD_CONTROL_DATABASE_URL" => Some(database_url.clone()),
+        "BURD_CONTROL_ADMIN_TOKEN" => Some("test-admin".to_string()),
+        _ => None,
+    })
+    .unwrap();
+    config.environment = "test".to_string();
+    config.database_schema = Some(schema.clone());
+    config.object_storage_dir = object_storage_dir.display().to_string();
+    config.rate_limit_per_minute = 1_000;
+    config.remote_session_ttl_seconds = 30;
+    config.heartbeat_interval_seconds = 1;
+    config.missed_heartbeat_limit = 2;
+    config.telemetry_min_batch_interval_seconds = 0;
+
+    let db = Database::new(database_url.clone(), Some(schema.clone())).unwrap();
+    db.migrate().await.unwrap();
+    let app = router(Arc::new(AppState::new(config, db.clone())));
+    let server = RunningHttpServer::start(app).await;
+    let control_plane_url = format!("http://{}", server.addr);
+
+    let (expected_provider_id, enrollment_token) = issue_enrollment_token(&control_plane_url).await;
+    tokio::task::spawn_blocking(burd_protocol::init_identity)
+        .await
+        .unwrap()
+        .unwrap();
+    let enrollment_url = control_plane_url.clone();
+    let enrollment = tokio::task::spawn_blocking(move || {
+        burd_agent::remote_enrollment::enroll(
+            &enrollment_url,
+            enrollment_token,
+            "burd-agent-proof-integration/0.1.0",
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(enrollment.provider_id, expected_provider_id);
+
+    let client = schema_client(&database_url, &schema).await;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut agent_task = tokio::spawn(async move {
+        burd_agent::remote_session::connect_until_shutdown_with_test_runtime(
+            "burd-agent-proof-integration/0.1.0",
+            1,
+            8,
+            deterministic_proof_telemetry,
+            deterministic_proof_executor,
+            shutdown_rx,
+        )
+        .await
+    });
+
+    let sessions = wait_for_sessions(
+        &client,
+        "the proof Agent session to become online",
+        |rows| rows.len() == 1 && rows[0].status == "online" && rows[0].sequence_last >= 1,
+    )
+    .await;
+    let session = sessions[0].clone();
+
+    let fingerprint: String = client
+        .query_one(
+            "SELECT hardware_fingerprint FROM provider_sessions WHERE session_id = $1",
+            &[&session.session_id],
+        )
+        .await
+        .unwrap()
+        .get("hardware_fingerprint");
+
+    let (status, issued) = post_json(
+        format!("{control_plane_url}/v1/challenges"),
+        json!({
+            "provider_id": expected_provider_id,
+            "device_id": enrollment.device_id,
+            "session_id": session.session_id,
+            "profile_version": "burd-poc-integration-v1",
+            "required_fingerprint": fingerprint,
+            "required_gpu_uuid": "GPU-agent-integration",
+            "required_backend": "cuda",
+            "model_artifact_hash": "sha256:agent-proof-integration-model",
+            "prompt_seed": "agent-proof-integration-seed",
+            "required_proofs": [
+                "cuda_runtime",
+                "vram_allocation_residency",
+                "tensor_gemm_microbenchmark",
+                "llm_short_inference",
+                "performance_consistency",
+                "contention_detection",
+                "telemetry_window"
+            ],
+            "min_tokens_per_second": 10.0,
+            "max_ttft_ms": 500,
+            "expires_in_seconds": 120
+        }),
+        vec![("Authorization".to_string(), "Bearer test-admin".to_string())],
+    )
+    .await;
+    assert_eq!(status, 201, "proof challenge issue failed: {issued}");
+    let challenge_id = issued["challenge"]["challenge_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let challenge_nonce = issued["challenge"]["nonce"].as_str().unwrap().to_string();
+
+    let row = wait_for_verified_proof(&client, &challenge_id).await;
+    let response: SignedProofCapabilityResponse =
+        serde_json::from_str(row.response_json.as_deref().unwrap()).unwrap();
+    assert_eq!(response.payload.challenge_id, challenge_id);
+    assert_eq!(response.payload.nonce, challenge_nonce);
+    assert_eq!(response.payload.provider_id, expected_provider_id);
+    assert_eq!(response.payload.device_id, enrollment.device_id);
+    assert_eq!(response.payload.session_id, session.session_id);
+    assert_eq!(response.payload.hardware_fingerprint, fingerprint);
+    assert_eq!(response.payload.gpu_uuid, "GPU-agent-integration");
+    assert_eq!(
+        response.payload.metrics.backend_proof,
+        "integration-test-only-deterministic-proof-v1"
+    );
+    assert_eq!(
+        burd_protocol::proof_capability_response_hash(&response.payload).unwrap(),
+        response.response_hash
+    );
+    assert_eq!(
+        row.response_hash.as_deref(),
+        Some(response.response_hash.as_str())
+    );
+    let signature_message = burd_protocol::proof_capability_response_signature_message(
+        &response.payload,
+        &response.response_hash,
+        &response.public_key_id,
+    )
+    .unwrap();
+    assert!(
+        burd_protocol::verify_message(
+            row.public_key.as_deref().unwrap(),
+            signature_message.as_bytes(),
+            &response.signature,
+        )
+        .unwrap()
+    );
+
+    let verification: Value =
+        serde_json::from_str(row.verification_json.as_deref().unwrap()).unwrap();
+    for field in [
+        "response_hash_valid",
+        "signature_valid",
+        "provider_bound",
+        "device_bound",
+        "session_bound",
+        "fingerprint_bound",
+        "gpu_bound",
+        "backend_bound",
+        "artifact_bound",
+        "prompt_bound",
+        "metrics_satisfied",
+    ] {
+        assert_eq!(
+            verification[field], true,
+            "verification field {field} failed"
+        );
+    }
+    assert_eq!(verification["expired_by_server"], false);
+    assert_eq!(verification["errors"], json!([]));
+    let telemetry_window_hash = response.payload.telemetry_window_hash.as_deref().unwrap();
+    let telemetry_link_exists: bool = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM telemetry_batches WHERE batch_hash = $1 AND session_id = $2)",
+            &[&telemetry_window_hash, &session.session_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(telemetry_link_exists);
+    let linked_sample_count: i64 = client
+        .query_one(
+            "SELECT COUNT(*)::BIGINT FROM gpu_telemetry_samples sample JOIN telemetry_batches batch ON batch.batch_id = sample.batch_id WHERE batch.batch_hash = $1",
+            &[&telemetry_window_hash],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        linked_sample_count, 1,
+        "proof telemetry must contain only the in-window forced sample"
+    );
+
+    let _ = shutdown_tx.send(true);
+    let agent_result = tokio::time::timeout(Duration::from_secs(5), &mut agent_task)
+        .await
+        .expect("Agent did not stop after remote proof integration-test shutdown")
+        .unwrap();
+    assert!(
+        agent_result.is_ok(),
+        "unexpected Agent error: {agent_result:?}"
+    );
+
+    server.stop().await;
+    db.drop_schema_for_test().await.unwrap();
+    let _ = std::fs::remove_dir_all(&object_storage_dir);
 }

@@ -180,7 +180,7 @@ after the June 2026 reliability pass.
 
 ## Still Mocked Or Future
 
-- Agent-side proof workload execution, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
+- Production Agent service supervision and durable proof retry state, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
 - Production antifraud operations, case review, admin resolution, and automated enforcement.
 - Marketplace checkout/orchestration beyond single-listing reservation, autonomous/background scheduling, paid job container execution, byte-level data-plane transfer, billing-grade metering enforcement, and external financial settlement.
 - Real Pix gateway capture, bank payout execution, earnings settlement, refunds, disputes, tax workflows, and production financial reconciliation.
@@ -190,7 +190,7 @@ after the June 2026 reliability pass.
 - Production marketplace policy that evolves beyond the initial local
   `nvidia_cuda_only_mvp` classification.
 - Production scheduler optimization, marketplace demand matching, reservations across supply inventory, and multi-GPU/multi-provider placement. BN-14 only offers leases for already-created, already-targeted jobs.
-- Agent-side Proof of Capability execution, agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-20 state.
+- Agent-side Benchmark Profiles v2 runners, deployed probe workers, provider-side job execution, and production risk model inputs beyond BN-20 state.
 
 ## Known Build Warnings
 
@@ -358,10 +358,10 @@ starting the API server or depending on host state:
 - Server-time retention removes old batches and cascades their samples.
 - `burd-agent remote-session connect --telemetry` enables collection without
   making telemetry a replacement for heartbeat liveness.
-- BN-04 does not implement DCGM, agent-orchestrated challenge telemetry
-  capture, regional probes, global trust/antifraud, jobs, scheduler,
-  marketplace, or billing. BN-06 can now verify proof `telemetry_window_hash`
-  values against accepted BN-04 batches for the same session and GPU.
+- BN-04 does not implement DCGM, regional probes, global trust/antifraud, jobs,
+  scheduler, marketplace, or billing. The BN-06 Agent runner now forces a fresh
+  signed telemetry batch while proof VRAM remains resident, and the backend
+  verifies that batch against the same session and GPU.
 
 ## BN-05 - Remote Evidence Registry
 
@@ -414,11 +414,26 @@ starting the API server or depending on host state:
 - Audit events cover challenge issuance, acknowledgement, verification failure,
   verification success, and expiration-by-server-clock.
 - OpenAPI documents proof challenge issuance, challenge retrieval/next-pickup, signed response submission, and verification response schemas, with fixture-backed examples for challenge issuance and signed proof response submission.
-- BN-06 does not implement the agent-side CUDA/VRAM/GEMM/LLM workload runner,
-  agent-side automatic telemetry capture during proof execution, recurring
-  verification policy state, global trust/antifraud scoring, jobs, scheduler,
-  marketplace, billing, Pix, or payouts. BN-07 adds the recurring verification
-  state and admin sweep around BN-06.
+- `burd-agent remote-session connect --proofs` runs the approved CUDA proof in a
+  foreground worker. It dynamically loads the CUDA driver/runtime and cuBLAS,
+  binds CUDA and NVIDIA telemetry UUIDs, holds real VRAM residency, measures
+  SGEMM, and runs short Ollama inference only against an exact installed model
+  digest. Missing runtime dependencies produce an explicit local failure; no
+  metric is fabricated.
+- Proof execution forces a fresh signed telemetry batch while VRAM remains
+  resident, recalculates the current hardware fingerprint, then canonicalizes,
+  hashes, signs, and submits the independent response. `--proofs` implies
+  telemetry and shares the single ordered WebSocket writer with heartbeats.
+- A PostgreSQL ignored integration harness injects deterministic test-only
+  compute and telemetry while exercising real enrollment, WebSocket sequencing,
+  signing, persistence, challenge pickup, response verification, and telemetry
+  linkage. It does not claim physical CUDA/Ollama execution.
+- BN-06 still lacks a supervised Agent daemon, durable local retry state,
+  production artifact distribution, and broad physical-GPU compatibility
+  validation. BN-07 adds recurring verification state and an admin sweep, but
+  its default model artifact value remains a non-executable profile placeholder.
+  Global trust/antifraud scoring is owned by BN-09; jobs, scheduler, marketplace,
+  billing, Pix, and payouts remain separate scopes.
 
 ## BN-07 - Recurring And Risk-Based Verification
 
@@ -430,7 +445,7 @@ starting the API server or depending on host state:
 - Challenge expiry is recalculated by server time during sweeps. Expired running verifications become failed verification state.
 - BN-06 proof responses now update provider-device verification state to `verified`, `verification_due`, or `suspect` in the same transaction as challenge verification.
 - Config controls period, retry budget, sweep limit, and suspect failure threshold through `BURD_CONTROL_VERIFICATION_*` variables.
-- BN-07 does not implement the agent-side proof workload runner, autonomous background scheduler process, global trust/antifraud model, jobs, scheduler, marketplace, billing, Pix, or payouts.
+- BN-07 does not implement an autonomous background verification scheduler process, production artifact selection/distribution, jobs, scheduler, marketplace, billing, Pix, or payouts. BN-09 owns the initial backend trust/antifraud model.
 
 ## BN-08 - Regional Network Probes
 

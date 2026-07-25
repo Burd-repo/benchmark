@@ -29,7 +29,7 @@ This hardening pass stabilized the control-plane OpenAPI document for the implem
 
 ## Still Planned, Mock, Or Local
 
-- Agent-side remote Proof of Capability workload execution remains unimplemented.
+- At the time of this pass, Agent-side remote Proof of Capability workload execution remained unimplemented; the later BN-06 Agent runner adds it.
 - Production regional probe workers remain undeployed.
 - Secure provider runtime execution for paid jobs remains unimplemented.
 - Scheduler/job/marketplace/billing features after BN-12 are outside this OpenAPI hardening scope.

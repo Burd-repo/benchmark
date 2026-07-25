@@ -342,6 +342,9 @@ pub enum RemoteSessionCommands {
         telemetry: bool,
         #[arg(long, default_value_t = 8)]
         telemetry_batch_samples: usize,
+        /// Execute backend-issued Proof of Capability challenges.
+        #[arg(long)]
+        proofs: bool,
     },
     /// Read the backend-authoritative state of the persisted remote session.
     Status {

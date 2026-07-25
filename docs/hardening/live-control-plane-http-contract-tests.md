@@ -22,7 +22,7 @@ This hardening pass moved part of the BN-01 through BN-12 contract coverage from
 ## Still Planned, Mock, Or Local
 
 - BN-12 remains agent-local secure runtime planning only.
-- Agent-side remote Proof of Capability workload execution is still not implemented.
+- At the time of this pass, Agent-side remote Proof of Capability workload execution was not implemented; the later BN-06 Agent runner adds it.
 - Production regional probes, scheduler daemon, paid provider execution, Pix gateway, payouts, and external observability integrations remain outside this scope.
 
 ## Bugs Found

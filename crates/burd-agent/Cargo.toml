@@ -21,6 +21,7 @@ burd-llmfit = { path = "../burd-llmfit" }
 burd-protocol = { path = "../burd-protocol" }
 chrono.workspace = true
 clap.workspace = true
+cudarc.workspace = true
 futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -199,6 +199,7 @@ O fluxo remoto prova posse da chave Ed25519 sem transmitir a chave privada. Veja
 ```powershell
 burd-agent remote-session connect
 burd-agent remote-session connect --telemetry --telemetry-batch-samples 8
+burd-agent remote-session connect --proofs --telemetry-batch-samples 8
 burd-agent remote-session status --json
 ```
 
@@ -208,8 +209,9 @@ sequenciado, retomada e backoff. Veja
 O BN-04 adiciona telemetria GPU assinada no control plane; veja [`docs/bn-04-gpu-telemetry.md`](docs/bn-04-gpu-telemetry.md).
 O BN-05 adiciona registry remoto de evidencias assinadas no control plane; veja
 [`docs/bn-05-remote-evidence-registry.md`](docs/bn-05-remote-evidence-registry.md).
-O BN-06 adiciona protocolo backend-issued de Proof of Capability ativo no
-control plane; veja
+O BN-06 adiciona o protocolo backend-issued e o runner foreground do Agent para
+Proof of Capability CUDA/VRAM/GEMM/LLM. `--proofs` implica telemetria assinada e
+exige CUDA/Ollama conforme o perfil; veja
 [`docs/bn-06-active-proof-of-capability.md`](docs/bn-06-active-proof-of-capability.md).
 O BN-07 adiciona estado backend-owned para verificacao recorrente e baseada em risco; veja
 [`docs/bn-07-recurring-risk-verification.md`](docs/bn-07-recurring-risk-verification.md).

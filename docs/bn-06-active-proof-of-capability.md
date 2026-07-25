@@ -1,87 +1,115 @@
 # BN-06 - Active Proof Of Capability Protocol
 
-BN-06 adds the first remote Proof of Capability surface to the Burd Control Plane.
-Recurring verification state is implemented by BN-07; BN-06 remains the active proof protocol and verifier. It does not add scheduler decisions, jobs, marketplace, or billing.
+BN-06 defines the backend-issued Proof of Capability protocol, its authoritative
+verifier, and the foreground Burd Agent runner. Recurring verification state is
+implemented by BN-07. This scope does not add scheduler decisions, jobs,
+marketplace, billing, or a supervised Agent daemon.
 
 ## Scope
 
 Implemented:
 
 - backend-issued proof challenges for an online or degraded remote session;
-- backend-attested `challenge_id`, nonce, issue time, expiry, required fingerprint, optional GPU UUID, backend, artifact hash, prompt seed, thresholds, and required proof names;
+- backend-attested `challenge_id`, nonce, issue time, expiry, required
+  fingerprint, optional GPU UUID, backend, artifact hash, prompt seed,
+  thresholds, and required proof names;
 - session-authenticated challenge pickup by the enrolled device;
+- `burd-agent remote-session connect --proofs`, which polls for challenges while
+  maintaining the authenticated outbound WebSocket session;
+- current hardware fingerprint recalculation before each proof execution;
+- dynamic CUDA driver/runtime and cuBLAS loading without a build-time CUDA SDK;
+- GPU selection bound across CUDA UUID and signed NVIDIA telemetry UUID;
+- real CUDA VRAM allocation/residency and a cuBLAS SGEMM microbenchmark;
+- optional short Ollama inference bound to the exact locally installed model
+  digest, challenge nonce, and prompt seed;
+- measured wall-clock TTFT and Ollama-reported token throughput;
+- automatic signed telemetry capture while VRAM remains resident;
 - signed proof response contracts in `burd-protocol`;
-- canonical response hash and Ed25519 signature verification against the active backend device key;
-- backend validation for provider, device, session, fingerprint, GPU UUID, backend,
-  model artifact hash, prompt seed, timestamps, CUDA runtime proof, VRAM
-  residency proof, GEMM metric, LLM short inference metrics, contention flag,
-  and telemetry window hash; when `telemetry_window` is required, the hash must
-  reference an accepted BN-04 telemetry batch for the same provider, device,
-  session, fingerprint, and proof GPU UUID;
-- PostgreSQL `proof_challenges` registry with status, response hash, public key ID, response object key, and verification JSON;
-- filesystem-backed object storage for full signed proof response envelopes;
-- audit events for issued, acknowledged, verified, failed, and expired proof challenges.
+- canonical response hash and Ed25519 signature verification against the active
+  backend device key;
+- backend validation for provider, device, session, fingerprint, GPU UUID,
+  backend, model artifact hash, prompt seed, timestamps, CUDA runtime proof,
+  VRAM residency proof, GEMM metric, LLM metrics, contention, and telemetry
+  window linkage;
+- PostgreSQL `proof_challenges` registry, object storage for complete signed
+  responses, and challenge audit events.
 
 Not implemented:
 
-- agent-side execution of the CUDA/VRAM/GEMM/LLM proof workload;
-- agent-side automatic capture/orchestration of a telemetry window during proof
-  execution;
-- agent-side/background automation for recurring challenge execution;
-- trust score or antifraud score recalculation;
-- scheduler enforcement, leases, jobs, billing, Pix, payouts, or marketplace listings.
+- a supervised/background Agent daemon or durable Agent-side retry history;
+- a separate Agent-to-backend `running` transition;
+- production model artifact distribution or prefetch;
+- automatic selection of an executable model digest by the BN-07 sweep; its
+  current default artifact value is a profile placeholder and must not be
+  presented as an installed model;
+- production validation of the CUDA/Ollama executor on every supported NVIDIA
+  driver, CUDA runtime, and GPU family;
+- scheduler enforcement, paid jobs, billing, Pix, payouts, or complete
+  marketplace orchestration.
+
+## Agent Runner
+
+Start the foreground control channel and proof worker with:
+
+```powershell
+burd-agent remote-session connect --proofs --telemetry-batch-samples 8
+```
+
+`--proofs` implies signed GPU telemetry. The Agent keeps one WebSocket writer so
+heartbeat and telemetry control sequences remain ordered. The proof worker polls
+the authenticated session endpoint, validates the challenge against the active
+identity, session, server expiry, supported proof set, current fingerprint, and
+required CUDA backend, then starts the approved executor.
+
+The executor holds a real CUDA allocation while the control loop captures and
+submits a fresh one-sample telemetry batch. Only after the backend accepts that
+batch does execution continue. The response links the accepted batch hash and is
+then canonicalized, hashed, signed with the enrolled Ed25519 key, and submitted.
+
+Local execution errors are logged as `remote_proof_execution_failed`. The Agent
+does not fabricate missing metrics or submit a successful response when CUDA,
+cuBLAS, NVIDIA telemetry, Ollama, or the exact artifact digest is unavailable.
+The challenge remains backend-owned and eventually expires by server time.
+
+### Runtime Requirements
+
+The production executor currently requires:
+
+- an NVIDIA GPU visible through both CUDA and the structured NVIDIA telemetry
+  collector;
+- NVIDIA driver and CUDA runtime shared libraries;
+- cuBLAS when `tensor_gemm_microbenchmark` is required;
+- a reachable Ollama API when `llm_short_inference` or LLM thresholds are
+  required;
+- an installed Ollama model whose reported digest exactly equals
+  `model_artifact_hash`.
+
+`OLLAMA_HOST` may override the default `http://127.0.0.1:11434` endpoint. It is
+local runtime configuration, not a backend authorization signal.
 
 ## API
 
 ### `POST /v1/challenges`
 
-Admin endpoint. Issues a proof challenge for an already enrolled device and active remote session.
-The session must be `online` or `degraded`, and `required_fingerprint` must match the session fingerprint stored by the backend.
-
-Request fields:
-
-- `provider_id`
-- `device_id`
-- `session_id`
-- `profile_version`
-- `required_fingerprint`
-- `required_gpu_uuid`, optional
-- `required_backend`, initially `cuda`
-- `model_artifact_hash`
-- `prompt_seed`
-- `required_proofs`, optional; defaults to the initial BN-06 proof set
-- `min_tokens_per_second`
-- `max_ttft_ms`
-- `expires_in_seconds`, optional and capped by `BURD_CONTROL_PROOF_CHALLENGE_TTL_SECONDS`
+Admin endpoint. It issues a proof challenge for an enrolled device and active
+remote session. The session must be `online` or `degraded`, and
+`required_fingerprint` must match the session fingerprint stored by the backend.
 
 ### `GET /v1/sessions/{session_id}/challenges/next`
 
-Device endpoint. Uses the normal remote-session headers:
-
-- `Authorization: Bearer <device credential>`
-- `X-Burd-Session-Token`
-- `X-Burd-Device-Id`
-
-Returns the oldest non-expired `issued` or `acknowledged` challenge for the session and marks an `issued` challenge as `acknowledged`.
+Device endpoint. It uses the normal remote-session authorization headers and
+returns the oldest non-expired `issued` or `acknowledged` challenge. Fetching an
+`issued` challenge marks it `acknowledged`.
 
 ### `POST /v1/sessions/{session_id}/challenges/{challenge_id}/response`
 
-Device endpoint. Submits `SignedProofCapabilityResponse`.
+Device endpoint. It accepts `SignedProofCapabilityResponse`. The signed payload
+binds challenge ID, nonce, provider/device/session, profile, current fingerprint,
+GPU UUID, CUDA/backend data, exact model artifact hash, prompt seed, metrics,
+accepted telemetry window hash, and execution timestamps.
 
-The signed payload binds:
-
-- challenge ID and nonce;
-- provider, device, and session IDs;
-- profile version;
-- hardware fingerprint and GPU UUID;
-- backend and CUDA proof data;
-- model artifact hash and prompt seed;
-- metrics and telemetry window hash; if `telemetry_window` is required, this
-  hash must be the `batch_hash` of a backend-accepted telemetry batch for the
-  same session and GPU;
-- execution start and completion timestamps.
-
-The signature message uses the `burd.proof-capability-response.v1` domain and the `burd-json-c14n-v1` canonicalization version.
+The signature message uses the `burd.proof-capability-response.v1` domain and
+`burd-json-c14n-v1` canonicalization.
 
 ## State
 
@@ -89,19 +117,22 @@ The signature message uses the `burd.proof-capability-response.v1` domain and th
 issued -> acknowledged -> verified | failed | expired
 ```
 
-`running` is reserved in the database/API contract for the agent-side execution phase, but BN-06 does not require a separate running endpoint.
+`running` remains reserved in the database/API contract. The current Agent does
+not call a separate transition endpoint, so a challenge stays `acknowledged`
+while local execution is in progress.
 
 ## Server Authority
 
-The backend is authoritative for:
+The backend is authoritative for challenge expiry, nonce freshness, active key,
+provider/device/session binding, fingerprint/GPU/backend/artifact/prompt checks,
+thresholds, telemetry-window linkage, and final status. It never trusts a
+provider-sent expiry flag, local capability score, or local eligibility decision.
 
-- challenge expiry;
-- nonce freshness;
-- key binding;
-- provider/device/session binding;
-- fingerprint/GPU/backend/artifact/prompt checks;
-- threshold checks;
-- telemetry-window linkage to server-accepted BN-04 telemetry batches;
-- final `verified`, `failed`, or `expired` status.
+## Validation Boundary
 
-The backend does not trust any provider-sent expiry flag, local capability score, or local eligibility decision.
+The PostgreSQL integration harness injects deterministic test-only compute and
+telemetry at explicit Agent boundaries. It still runs real enrollment, session,
+WebSocket sequencing, telemetry signing, telemetry persistence, challenge
+pickup, response canonicalization/signing, object persistence, and backend
+verification. This proves the remote protocol without claiming that CI executed
+CUDA, cuBLAS, Ollama, or a physical GPU workload.
