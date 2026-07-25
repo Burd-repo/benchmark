@@ -7,7 +7,39 @@ use burd_protocol::{
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::fmt;
 use std::time::Duration;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ControlPlaneRequestError {
+    LocalState(String),
+    Transport(String),
+    Rejected {
+        status: u16,
+        code: String,
+        message: String,
+    },
+    Contract(String),
+}
+
+impl ControlPlaneRequestError {
+    pub(crate) fn is_code(&self, expected: &str) -> bool {
+        matches!(self, Self::Rejected { code, .. } if code == expected)
+    }
+}
+
+impl fmt::Display for ControlPlaneRequestError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LocalState(message) | Self::Transport(message) | Self::Contract(message) => {
+                formatter.write_str(message)
+            }
+            Self::Rejected { code, message, .. } => {
+                write!(formatter, "control plane {code}: {message}")
+            }
+        }
+    }
+}
 
 pub fn enroll(
     control_plane_url: &str,
@@ -62,8 +94,13 @@ pub fn enroll(
 }
 
 pub fn refresh_credential() -> Result<RemoteEnrollmentStatus, String> {
-    let state = load_remote_enrollment()?;
-    let response: DeviceCredentialResponse = post_json(
+    refresh_credential_checked().map_err(|error| error.to_string())
+}
+
+pub(crate) fn refresh_credential_checked()
+-> Result<RemoteEnrollmentStatus, ControlPlaneRequestError> {
+    let state = load_remote_enrollment().map_err(ControlPlaneRequestError::LocalState)?;
+    let response: DeviceCredentialResponse = post_json_checked(
         &join_url(
             &state.control_plane_url,
             &format!("/v1/devices/{}/credentials", state.device_id),
@@ -71,7 +108,7 @@ pub fn refresh_credential() -> Result<RemoteEnrollmentStatus, String> {
         &serde_json::json!({}),
         Some(&state.credential),
     )?;
-    update_remote_credential(&response)
+    update_remote_credential(&response).map_err(ControlPlaneRequestError::LocalState)
 }
 
 pub(crate) fn post_json<TRequest, TResponse>(
@@ -79,6 +116,18 @@ pub(crate) fn post_json<TRequest, TResponse>(
     payload: &TRequest,
     bearer: Option<&str>,
 ) -> Result<TResponse, String>
+where
+    TRequest: Serialize,
+    TResponse: DeserializeOwned,
+{
+    post_json_checked(url, payload, bearer).map_err(|error| error.to_string())
+}
+
+pub(crate) fn post_json_checked<TRequest, TResponse>(
+    url: &str,
+    payload: &TRequest,
+    bearer: Option<&str>,
+) -> Result<TResponse, ControlPlaneRequestError>
 where
     TRequest: Serialize,
     TResponse: DeserializeOwned,
@@ -93,23 +142,35 @@ where
     } else {
         request
     };
-    let mut response = request
-        .send_json(payload)
-        .map_err(|error| format!("control plane request failed: {error}"))?;
+    let mut response = request.send_json(payload).map_err(|error| {
+        ControlPlaneRequestError::Transport(format!("control plane request failed: {error}"))
+    })?;
     let status = response.status();
-    let value: serde_json::Value = response
-        .body_mut()
-        .read_json()
-        .map_err(|error| format!("control plane returned invalid JSON: {error}"))?;
+    let value = response.body_mut().read_json::<serde_json::Value>();
     if !status.is_success() {
-        let code = value["error"]["code"].as_str().unwrap_or("remote_error");
+        let value = value.unwrap_or(serde_json::Value::Null);
+        let code = value["error"]["code"]
+            .as_str()
+            .unwrap_or("remote_error")
+            .to_string();
         let message = value["error"]["message"]
             .as_str()
-            .unwrap_or("control plane rejected request");
-        return Err(format!("control plane {code}: {message}"));
+            .unwrap_or("control plane rejected request")
+            .to_string();
+        return Err(ControlPlaneRequestError::Rejected {
+            status: status.as_u16(),
+            code,
+            message,
+        });
     }
-    serde_json::from_value(value)
-        .map_err(|error| format!("invalid control plane response contract: {error}"))
+    let value = value.map_err(|error| {
+        ControlPlaneRequestError::Contract(format!("control plane returned invalid JSON: {error}"))
+    })?;
+    serde_json::from_value(value).map_err(|error| {
+        ControlPlaneRequestError::Contract(format!(
+            "invalid control plane response contract: {error}"
+        ))
+    })
 }
 
 pub(crate) fn join_url(base: &str, path: &str) -> String {
@@ -125,6 +186,21 @@ mod tests {
         assert_eq!(
             join_url("https://api.burd.cloud/", "/v1/enrollments"),
             "https://api.burd.cloud/v1/enrollments"
+        );
+    }
+
+    #[test]
+    fn rejected_request_errors_preserve_status_and_code() {
+        let error = ControlPlaneRequestError::Rejected {
+            status: 403,
+            code: "revoked".to_string(),
+            message: "device has been revoked".to_string(),
+        };
+        assert!(error.is_code("revoked"));
+        assert!(!error.is_code("expired"));
+        assert_eq!(
+            error.to_string(),
+            "control plane revoked: device has been revoked"
         );
     }
 }
