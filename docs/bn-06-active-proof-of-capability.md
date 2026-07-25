@@ -81,8 +81,10 @@ The production executor currently requires:
 - cuBLAS when `tensor_gemm_microbenchmark` is required;
 - a reachable Ollama API when `llm_short_inference` or LLM thresholds are
   required;
-- an installed Ollama model whose reported digest exactly equals
-  `model_artifact_hash`.
+- an installed Ollama model whose SHA-256 digest exactly equals
+  `model_artifact_hash`. The Agent canonicalizes Ollama's raw 64-hex inventory
+  value and the protocol's `sha256:<64 hex>` representation before comparison;
+  shortened IDs, other algorithms, and different hashes remain invalid.
 
 `OLLAMA_HOST` may override the default `http://127.0.0.1:11434` endpoint. It is
 local runtime configuration, not a backend authorization signal.

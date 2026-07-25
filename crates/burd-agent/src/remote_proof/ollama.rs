@@ -17,7 +17,7 @@ struct OllamaTagsResponse {
     models: Vec<OllamaModel>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct OllamaModel {
     name: String,
     digest: String,
@@ -117,6 +117,10 @@ pub(super) fn run_inference(
 }
 
 fn find_model(base_url: &str, required_digest: &str) -> Result<String, String> {
+    select_model(list_models(base_url)?, required_digest)
+}
+
+fn list_models(base_url: &str) -> Result<Vec<OllamaModel>, String> {
     let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
     let response = ureq::get(&url)
         .config()
@@ -130,13 +134,47 @@ fn find_model(base_url: &str, required_digest: &str) -> Result<String, String> {
         .map_err(|error| format!("Ollama model inventory returned invalid JSON: {error}"))?;
     tags.models
         .sort_by(|left, right| left.name.cmp(&right.name));
-    tags.models
+    Ok(tags.models)
+}
+
+fn select_model(models: Vec<OllamaModel>, required_digest: &str) -> Result<String, String> {
+    let required_digest = normalize_required_sha256_digest(required_digest)?;
+    models
         .into_iter()
-        .find(|model| model.digest.eq_ignore_ascii_case(required_digest))
+        .find(|model| {
+            normalize_sha256_digest(&model.digest).is_ok_and(|digest| digest == required_digest)
+        })
         .map(|model| model.name)
         .ok_or_else(|| {
-            format!("no local Ollama model matches required artifact digest {required_digest}")
+            format!(
+                "no local Ollama model matches required artifact digest sha256:{required_digest}"
+            )
         })
+}
+
+fn normalize_required_sha256_digest(value: &str) -> Result<String, String> {
+    let Some((algorithm, _)) = value.trim().split_once(':') else {
+        return Err("proof challenge model artifact hash must use sha256:<64 hex>".to_string());
+    };
+    if !algorithm.eq_ignore_ascii_case("sha256") {
+        return Err("proof challenge model artifact hash must use sha256".to_string());
+    }
+    normalize_sha256_digest(value)
+}
+
+fn normalize_sha256_digest(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let digest = match value.split_once(':') {
+        Some((algorithm, digest)) if algorithm.eq_ignore_ascii_case("sha256") => digest,
+        Some(_) => return Err("Ollama model digest must use sha256".to_string()),
+        None => value,
+    };
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(
+            "Ollama model digest must contain exactly 64 hexadecimal characters".to_string(),
+        );
+    }
+    Ok(digest.to_ascii_lowercase())
 }
 
 fn proof_prompt(challenge: &ProofCapabilityChallenge) -> String {
@@ -158,6 +196,9 @@ mod tests {
     use burd_protocol::PROOF_CHALLENGE_SCHEMA_VERSION;
     use chrono::Utc;
 
+    const TEST_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const OTHER_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
     #[test]
     fn proof_prompt_binds_nonce_and_seed() {
         let challenge = challenge();
@@ -166,6 +207,85 @@ mod tests {
         assert!(prompt.contains(&challenge.prompt_seed));
         assert_eq!(stable_prompt_seed("seed_1"), stable_prompt_seed("seed_1"));
         assert_ne!(stable_prompt_seed("seed_1"), stable_prompt_seed("seed_2"));
+    }
+
+    #[test]
+    fn model_binding_accepts_prefixed_challenge_and_raw_ollama_digest() {
+        let selected = select_model(
+            vec![model("model:test", TEST_DIGEST)],
+            &format!("sha256:{TEST_DIGEST}"),
+        )
+        .unwrap();
+        assert_eq!(selected, "model:test");
+
+        let selected = select_model(
+            vec![model(
+                "model:test",
+                &format!("SHA256:{}", TEST_DIGEST.to_uppercase()),
+            )],
+            &format!("sha256:{TEST_DIGEST}"),
+        )
+        .unwrap();
+        assert_eq!(selected, "model:test");
+    }
+
+    #[test]
+    fn model_binding_rejects_short_invalid_and_different_digests() {
+        assert!(select_model(vec![model("model:test", TEST_DIGEST)], TEST_DIGEST).is_err());
+        assert!(
+            select_model(
+                vec![model("model:test", TEST_DIGEST)],
+                "sha256:a80c4f17acd5"
+            )
+            .is_err()
+        );
+        assert!(
+            select_model(
+                vec![model("model:test", TEST_DIGEST)],
+                &format!("sha512:{TEST_DIGEST}"),
+            )
+            .is_err()
+        );
+        assert!(
+            select_model(
+                vec![model("model:test", OTHER_DIGEST)],
+                &format!("sha256:{TEST_DIGEST}"),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a running local Ollama service with at least one installed model"]
+    fn live_ollama_inference_binds_prefixed_inventory_digest() {
+        let base_url =
+            std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
+        let model = list_models(&base_url)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("the compatibility test requires at least one installed Ollama model");
+        let digest = normalize_sha256_digest(&model.digest).unwrap();
+        let mut challenge = challenge();
+        challenge.model_artifact_hash = format!("sha256:{digest}");
+        challenge.min_tokens_per_second = 0.0;
+        challenge.max_ttft_ms = 0;
+
+        assert_eq!(
+            find_model(&base_url, &challenge.model_artifact_hash).unwrap(),
+            model.name
+        );
+        let result = run_inference(&challenge).unwrap();
+        assert!(result.tokens_per_second.is_finite());
+        assert!(result.tokens_per_second > 0.0);
+        assert!(result.ttft_ms > 0);
+    }
+
+    fn model(name: &str, digest: &str) -> OllamaModel {
+        OllamaModel {
+            name: name.to_string(),
+            digest: digest.to_string(),
+        }
     }
 
     fn challenge() -> ProofCapabilityChallenge {

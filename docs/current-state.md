@@ -418,8 +418,10 @@ starting the API server or depending on host state:
   foreground worker. It dynamically loads the CUDA driver/runtime and cuBLAS,
   binds CUDA and NVIDIA telemetry UUIDs, holds real VRAM residency, measures
   SGEMM, and runs short Ollama inference only against an exact installed model
-  digest. Missing runtime dependencies produce an explicit local failure; no
-  metric is fabricated.
+  digest. Ollama's raw 64-hex inventory digest and the protocol's
+  `sha256:<64 hex>` value are normalized before exact comparison; shortened IDs
+  and mismatches are rejected. Missing runtime dependencies produce an explicit
+  local failure; no metric is fabricated.
 - Proof execution forces a fresh signed telemetry batch while VRAM remains
   resident, recalculates the current hardware fingerprint, then canonicalizes,
   hashes, signs, and submits the independent response. `--proofs` implies
