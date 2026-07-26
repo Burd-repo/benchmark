@@ -96,8 +96,9 @@ Clippy reported only existing warnings in `burd-bench` and
 
 - The Agent is still a foreground command. There is no Windows Service,
   systemd unit, installer, autostart, OS health manager, or release updater.
-- The state has no cross-process file lock. Running multiple Agent processes for
-  the same state directory remains unsupported.
+- At the time of this pass, the state had no cross-process lock. The later
+  `agent-single-instance-lock.md` pass prevents duplicate remote-session
+  processes for the same canonical state directory.
 - A failed attempt stores a coarse outcome, not a free-form local error. This is
   intentional to keep the file bounded and avoid persisting sensitive backend
   or runtime messages.
@@ -111,7 +112,7 @@ Clippy reported only existing warnings in `burd-bench` and
 
 1. Run the existing production executor on controlled NVIDIA Windows and Linux
    hosts and record the CUDA compatibility matrix.
-2. Add an explicit single-instance lock before packaging the foreground command
-   as an operating-system service.
+2. Completed by `agent-single-instance-lock.md`: add an explicit remote-session
+   single-instance lock before service packaging.
 3. Add OS service packaging only after startup, shutdown, credential refresh,
    state corruption, and update policies are frozen.
