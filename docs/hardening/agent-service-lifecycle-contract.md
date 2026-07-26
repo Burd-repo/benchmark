@@ -192,6 +192,7 @@ protected Windows DACL. It was not counted as a valid test result. The required
 direct `cargo test --workspace` invocation passed that DACL test. The live
 Ollama test was not run because it requires a local service with an installed
 model and does not replace the physical NVIDIA compatibility matrix.
+
 ## Remaining Limitations
 
 - The Agent is still a foreground command, not an operating-system service.
