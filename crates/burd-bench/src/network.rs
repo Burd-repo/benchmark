@@ -1,4 +1,4 @@
-use burd_protocol::default_state_dir;
+use burd_protocol::{default_state_dir, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::net::ToSocketAddrs;
@@ -102,13 +102,8 @@ pub fn run_network_benchmark(options: NetworkBenchmarkOptions) -> NetworkBenchma
 
 pub fn save_latest_network_benchmark(report: &NetworkBenchmarkReport) -> Result<(), String> {
     let path = latest_network_path();
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
-    }
-    let json = serde_json::to_string_pretty(report)
-        .map_err(|error| format!("failed to serialize latest network benchmark: {error}"))?;
-    fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+    write_json_atomic(&path, report)
+        .map_err(|error| format!("failed to persist latest network benchmark: {error}"))
 }
 
 pub fn load_latest_network_benchmark() -> Result<NetworkBenchmarkReport, String> {

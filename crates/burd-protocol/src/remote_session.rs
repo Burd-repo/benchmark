@@ -1,4 +1,4 @@
-use crate::{default_state_dir, random_token};
+use crate::{default_state_dir, random_token, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -236,14 +236,8 @@ fn show_remote_session_from(state: &RemoteSessionState) -> RemoteSessionStateSta
 
 fn write_remote_session(state: &RemoteSessionState) -> Result<(), String> {
     let path = remote_session_path();
-    let parent = path
-        .parent()
-        .ok_or_else(|| "remote session state path has no parent".to_string())?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
-    let bytes = serde_json::to_vec_pretty(state)
-        .map_err(|error| format!("failed to serialize remote session: {error}"))?;
-    fs::write(&path, bytes).map_err(|error| format!("failed to write {}: {error}", path.display()))
+    write_json_atomic(&path, state)
+        .map_err(|error| format!("failed to persist remote session: {error}"))
 }
 
 pub fn new_resume_token() -> Result<String, String> {

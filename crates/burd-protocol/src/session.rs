@@ -1,4 +1,5 @@
 use crate::identity::default_state_dir;
+use crate::local_state::write_json_atomic;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -104,13 +105,8 @@ pub fn new_provider_session_id() -> String {
 
 pub fn save_provider_session(session: &ProviderSession) -> Result<(), String> {
     let path = provider_session_path();
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
-    }
-    let json = serde_json::to_string_pretty(session)
-        .map_err(|error| format!("failed to serialize provider session: {error}"))?;
-    fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+    write_json_atomic(&path, session)
+        .map_err(|error| format!("failed to persist provider session: {error}"))
 }
 
 pub fn load_provider_session() -> Result<Option<ProviderSession>, String> {

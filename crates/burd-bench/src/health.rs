@@ -5,7 +5,7 @@ use burd_hardware::{
 };
 use burd_protocol::{
     ProviderHeartbeatSummary, ProviderSessionStatus, default_state_dir,
-    heartbeat_summary_from_session, save_provider_session,
+    heartbeat_summary_from_session, save_provider_session, write_json_atomic,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -314,13 +314,8 @@ pub fn load_uptime_history() -> Result<UptimeHistory, String> {
 
 pub fn save_uptime_history(history: &UptimeHistory) -> Result<(), String> {
     let path = uptime_path();
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
-    }
-    let json = serde_json::to_string_pretty(history)
-        .map_err(|error| format!("failed to serialize uptime JSON: {error}"))?;
-    fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+    write_json_atomic(&path, history)
+        .map_err(|error| format!("failed to persist uptime history: {error}"))
 }
 
 pub fn clear_uptime_history(confirm: bool) -> Result<UptimeSummary, String> {

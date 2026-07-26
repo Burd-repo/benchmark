@@ -1,4 +1,4 @@
-use burd_protocol::default_state_dir;
+use burd_protocol::{default_state_dir, write_json_atomic};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -127,13 +127,8 @@ fn load_json<T: for<'de> Deserialize<'de>>(path: PathBuf) -> Result<T, String> {
 }
 
 fn save_json<T: Serialize>(path: PathBuf, value: &T) -> Result<(), String> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
-    }
-    let json = serde_json::to_string_pretty(value)
-        .map_err(|error| format!("failed to serialize JSON: {error}"))?;
-    fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+    write_json_atomic(&path, value)
+        .map_err(|error| format!("failed to persist local action state: {error}"))
 }
 
 #[cfg(test)]
