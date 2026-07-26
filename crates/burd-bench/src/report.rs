@@ -20,7 +20,7 @@ use burd_protocol::{
     ReportSignature, SIGNED_REPORT_TTL_SECONDS, SignedReport, VerifyReportResult,
     default_state_dir, evidence_freshness, evidence_freshness_at, hash_canonical, load_identity,
     load_latest_challenge_output, load_private_key, placeholder_signature, sign_message,
-    verify_message,
+    verify_message, write_json_atomic,
 };
 use chrono::{DateTime, Utc};
 use std::fs;
@@ -307,24 +307,14 @@ pub(crate) fn verify_signed_report_at(
 
 pub fn save_latest_report(report: &FullReport) -> Result<(), String> {
     let path = default_state_dir().join("latest-report.json");
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
-    }
-    let json = serde_json::to_string_pretty(report)
-        .map_err(|error| format!("failed to serialize latest report: {error}"))?;
-    fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+    write_json_atomic(&path, report)
+        .map_err(|error| format!("failed to persist latest report: {error}"))
 }
 
 pub fn save_latest_signed_report(report: &SignedReport) -> Result<(), String> {
     let path = default_state_dir().join("latest-signed-report.json");
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
-    }
-    let json = serde_json::to_string_pretty(report)
-        .map_err(|error| format!("failed to serialize latest signed report: {error}"))?;
-    fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+    write_json_atomic(&path, report)
+        .map_err(|error| format!("failed to persist latest signed report: {error}"))
 }
 
 pub fn load_latest_signed_report() -> Result<SignedReport, String> {

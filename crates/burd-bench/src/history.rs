@@ -1,5 +1,7 @@
 use burd_hardware::SystemReport;
-use burd_protocol::{FullReport, SignedReport, default_state_dir, hash_canonical};
+use burd_protocol::{
+    FullReport, SignedReport, default_state_dir, hash_canonical, write_json_atomic,
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -120,15 +122,8 @@ pub fn clear_history(confirm: bool) -> Result<BenchmarkHistoryClearResult, Strin
     let removed = load_history_entries()
         .map(|entries| entries.len())
         .unwrap_or(0);
-    if path.exists() {
-        fs::write(&path, "[]")
-            .map_err(|error| format!("failed to clear {}: {error}", path.display()))?;
-    } else if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
-        fs::write(&path, "[]")
-            .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
-    }
+    write_json_atomic(&path, &Vec::<BenchmarkHistoryEntry>::new())
+        .map_err(|error| format!("failed to clear benchmark history: {error}"))?;
     Ok(BenchmarkHistoryClearResult {
         path: path.display().to_string(),
         cleared: true,
@@ -196,13 +191,8 @@ fn load_history_entries() -> Result<Vec<BenchmarkHistoryEntry>, String> {
 
 fn save_history_entries(entries: &[BenchmarkHistoryEntry]) -> Result<(), String> {
     let path = history_path();
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
-    }
-    let json = serde_json::to_string_pretty(entries)
-        .map_err(|error| format!("failed to serialize benchmark history: {error}"))?;
-    fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+    write_json_atomic(&path, entries)
+        .map_err(|error| format!("failed to persist benchmark history: {error}"))
 }
 
 fn entry_from_report(

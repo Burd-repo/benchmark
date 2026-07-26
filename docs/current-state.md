@@ -435,10 +435,15 @@ starting the API server or depending on host state:
   across restarts. `remote-session connect` now also holds an exclusive local
   state-directory lock, preventing duplicate foreground session processes before
   local sequence or proof state can race. Critical identity, enrollment,
-  credential, and local API-token maintenance operations now use the same lock. It still
-  lacks operating-system service packaging, production artifact distribution,
-  and broad physical-GPU compatibility validation. BN-07 adds recurring verification state and an admin sweep. The
-  sweep now requires a complete deployment profile with an exact Ollama digest
+  credential, and local API-token maintenance operations now use the same lock.
+  Canonical identity, enrollment, session, proof-attempt, report, history, action,
+  uptime, challenge, and network JSON files use per-file atomic replacement so
+  unlocked readers do not observe partial state. This is not a multi-file
+  transaction or general lost-update protection. The Agent still lacks
+  operating-system service packaging, production artifact distribution, and broad
+  physical-GPU compatibility validation. BN-07 adds recurring verification state
+  and an admin sweep. The sweep requires a complete deployment profile with an
+  exact Ollama digest
   and positive TPS/TTFT thresholds; recurrence is disabled by default instead of
   emitting a non-executable placeholder challenge. Global trust/antifraud
   scoring is owned by BN-09; jobs, scheduler, marketplace, billing, Pix, and

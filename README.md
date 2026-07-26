@@ -207,7 +207,9 @@ O agente mantem uma conexao WebSocket de saida autenticada, com heartbeat
 sequenciado, retomada e backoff. Um lock exclusivo por diretorio de estado
 serializa `remote-session connect` e mudancas criticas de identity, enrollment e
 API token; comandos de status e diagnostico continuam disponiveis. O arquivo de
-lock persistente nao significa que um processo continua ativo. Veja
+lock persistente nao significa que um processo continua ativo. Estados JSON
+canonicos usam substituicao atomica por arquivo; isso evita JSON parcial, mas nao
+forma uma transacao entre arquivos nem impede toda atualizacao concorrente. Veja
 [`docs/bn-03-remote-session.md`](docs/bn-03-remote-session.md).
 O BN-04 adiciona telemetria GPU assinada no control plane; veja [`docs/bn-04-gpu-telemetry.md`](docs/bn-04-gpu-telemetry.md).
 O BN-05 adiciona registry remoto de evidencias assinadas no control plane; veja

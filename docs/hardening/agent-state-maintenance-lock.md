@@ -143,8 +143,9 @@ with an installed model. PostgreSQL validation used the isolated
 
 - The Agent is still a foreground command without Windows Service, systemd,
   installer, autostart, restart, or update policy.
-- Read-only status commands do not take a shared lock. Local state writers
-  should use atomic replacement so readers never observe partial JSON.
+- Read-only status commands do not take a shared lock. Canonical local state
+  writers now use per-file atomic replacement, documented in
+  `docs/hardening/atomic-local-state-persistence.md`.
 - Independent local histories and action logs still have no general
   multi-process write coordination.
 - File-lock guarantees require a local filesystem implementing the Rust
@@ -156,10 +157,7 @@ with an installed model. PostgreSQL validation used the isolated
 
 ## Recommended Next Work
 
-1. Define and test atomic local JSON persistence for identity, enrollment,
-   remote session, action, history, and uptime state without changing signed
-   payload contracts.
-2. Freeze service startup, graceful shutdown, recovery, credential refresh, and
+1. Freeze service startup, graceful shutdown, recovery, credential refresh, and
    update policy before adding Windows Service or systemd packaging.
-3. Run the BN-06 physical compatibility matrix on controlled NVIDIA Windows and
+2. Run the BN-06 physical compatibility matrix on controlled NVIDIA Windows and
    Linux hosts.

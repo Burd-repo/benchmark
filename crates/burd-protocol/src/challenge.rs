@@ -1,4 +1,5 @@
 use crate::identity::default_state_dir;
+use crate::local_state::write_json_atomic;
 use crate::report::SignedReport;
 use crate::signature::{KEY_ALGORITHM, canonical_json, hash_canonical, verify_message};
 use crate::{CHALLENGE_TTL_SECONDS, EvidenceFreshness, evidence_freshness_from_window};
@@ -570,13 +571,8 @@ pub fn verify_challenge_response(
 
 pub fn save_latest_challenge_output(output: &ChallengeRunOutput) -> Result<(), String> {
     let path = default_state_dir().join("latest-challenge-response.json");
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
-    }
-    let json = serde_json::to_string_pretty(output)
-        .map_err(|error| format!("failed to serialize challenge output: {error}"))?;
-    fs::write(&path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+    write_json_atomic(&path, output)
+        .map_err(|error| format!("failed to persist latest challenge output: {error}"))
 }
 
 pub fn load_latest_challenge_output() -> Result<ChallengeRunOutput, String> {

@@ -1,8 +1,7 @@
-use burd_protocol::{default_state_dir, random_token};
+use burd_protocol::{default_state_dir, write_bytes_atomic};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 const PROOF_ATTEMPT_STATE_SCHEMA_VERSION: &str = "1";
@@ -188,54 +187,13 @@ fn parse_timestamp(value: &str) -> Result<DateTime<Utc>, String> {
 }
 
 fn write_state_atomic(path: &Path, state: &ProofAttemptState) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "proof attempt state path has no parent".to_string())?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
     let bytes = serde_json::to_vec_pretty(state)
         .map_err(|error| format!("failed to serialize proof attempt state: {error}"))?;
     if bytes.len() as u64 > PROOF_ATTEMPT_STATE_MAX_BYTES {
         return Err("serialized proof attempt state exceeds its size limit".to_string());
     }
-
-    let temporary_suffix = random_token("proof_state")
-        .map_err(|error| format!("failed to generate proof attempt temporary path: {error}"))?;
-    let temporary = path.with_extension(format!("json.{temporary_suffix}.tmp"));
-    let write_result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-            .map_err(|error| {
-                format!(
-                    "failed to open temporary proof attempt state at {}: {error}",
-                    temporary.display()
-                )
-            })?;
-        file.write_all(&bytes).map_err(|error| {
-            format!(
-                "failed to write temporary proof attempt state at {}: {error}",
-                temporary.display()
-            )
-        })?;
-        file.sync_all().map_err(|error| {
-            format!(
-                "failed to sync temporary proof attempt state at {}: {error}",
-                temporary.display()
-            )
-        })?;
-        fs::rename(&temporary, path).map_err(|error| {
-            format!(
-                "failed to replace proof attempt state at {}: {error}",
-                path.display()
-            )
-        })
-    })();
-    if write_result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    write_result
+    write_bytes_atomic(path, &bytes)
+        .map_err(|error| format!("failed to persist proof attempt state: {error}"))
 }
 
 #[cfg(test)]

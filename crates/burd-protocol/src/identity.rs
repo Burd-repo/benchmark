@@ -1,3 +1,4 @@
+use crate::local_state::write_json_atomic;
 use crate::signature::{
     KEY_ALGORITHM, encode_base64, generate_keypair, sha256_hex, sign_message, verify_message,
 };
@@ -690,16 +691,12 @@ fn identity_status(config: &AgentConfig, config_path: &std::path::Path) -> Ident
 }
 
 fn write_config(path: &std::path::Path, config: &AgentConfig) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(config)
-        .map_err(|error| format!("failed to serialize identity config: {error}"))?;
-    fs::write(path, json).map_err(|error| format!("failed to write {}: {error}", path.display()))
+    write_json_atomic(path, config)
+        .map_err(|error| format!("failed to persist identity config: {error}"))
 }
 
 fn write_private_key(path: &std::path::Path, key: &PrivateKeyFile) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(key)
-        .map_err(|error| format!("failed to serialize private key: {error}"))?;
-    fs::write(path, json)
-        .map_err(|error| format!("failed to write private key at {}: {error}", path.display()))
+    write_json_atomic(path, key).map_err(|error| format!("failed to persist private key: {error}"))
 }
 
 fn default_api_bind_host() -> String {

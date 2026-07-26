@@ -1,4 +1,5 @@
 use crate::identity::default_state_dir;
+use crate::local_state::write_json_atomic;
 use crate::signature::canonical_json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -210,18 +211,8 @@ pub fn remote_enrollment_path() -> PathBuf {
 
 fn write_remote_enrollment(state: &RemoteEnrollmentState) -> Result<(), String> {
     let path = remote_enrollment_path();
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)
-            .map_err(|error| format!("failed to create {}: {error}", dir.display()))?;
-    }
-    let json = serde_json::to_string_pretty(state)
-        .map_err(|error| format!("failed to serialize remote enrollment: {error}"))?;
-    fs::write(&path, json).map_err(|error| {
-        format!(
-            "failed to write remote enrollment at {}: {error}",
-            path.display()
-        )
-    })
+    write_json_atomic(&path, state)
+        .map_err(|error| format!("failed to persist remote enrollment: {error}"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

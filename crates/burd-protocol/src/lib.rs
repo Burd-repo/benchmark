@@ -8,6 +8,7 @@ pub mod gpu_inventory;
 pub mod identity;
 pub mod job;
 pub mod lease;
+pub mod local_state;
 pub mod marketplace;
 pub mod network_probe;
 pub mod remote_session;
@@ -118,6 +119,7 @@ pub use lease::{
     JOB_LEASE_SCHEMA_VERSION, JobLeaseRecord, ListJobLeasesResponse, RunSchedulerRequest,
     RunSchedulerResponse, SchedulerDecisionRecord,
 };
+pub use local_state::{write_bytes_atomic, write_json_atomic};
 pub use marketplace::{
     ListMarketplaceListingsResponse, MARKETPLACE_ENGINE_VERSION,
     MARKETPLACE_LISTING_SCHEMA_VERSION, MarketplaceListingRecord,
