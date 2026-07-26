@@ -153,8 +153,10 @@ The live PostgreSQL test verifies:
 - At the time of this harness, the Agent did not execute backend-issued Proof of
   Capability workloads or bind telemetry capture to execution. The subsequent
   BN-06 Agent runner closes that gap.
-- The foreground Agent command still lacks service supervision and durable
-  retry history.
+- At the time of this harness, the foreground Agent command lacked worker
+  supervision and durable retry history. The later
+  `agent-proof-attempt-state.md` pass adds in-process supervision and bounded,
+  redacted attempt state; operating-system service packaging remains future.
 
 ## Recommended Next PR (Completed)
 

@@ -111,5 +111,5 @@ Clippy reported only pre-existing warnings in `burd-bench` and
    output, model digest, performance metrics, and contention classification.
 3. Keep physical results outside normal CI and label them as local diagnostics,
    never backend verification or attestation.
-4. After the CUDA matrix, add Agent service supervision and durable bounded proof
-   attempt/error state.
+4. Completed by the later `agent-proof-attempt-state.md` pass: foreground worker
+   supervision and bounded, redacted proof-attempt persistence.

@@ -938,7 +938,7 @@ async fn live_agent_executes_and_submits_a_verified_remote_proof() {
     let label = format!("agent_remote_proof_{}", Uuid::new_v4().simple());
     let schema = format!("burd_{label}");
     let object_storage_dir = PathBuf::from(format!("target/test-control-objects/{schema}"));
-    let _agent_state = AgentStateGuard::install(&label);
+    let agent_state = AgentStateGuard::install(&label);
 
     let mut config = ControlPlaneConfig::from_lookup(|key| match key {
         "BURD_CONTROL_DATABASE_URL" => Some(database_url.clone()),
@@ -1136,6 +1136,30 @@ async fn live_agent_executes_and_submits_a_verified_remote_proof() {
         agent_result.is_ok(),
         "unexpected Agent error: {agent_result:?}"
     );
+
+    let proof_attempt_state =
+        std::fs::read_to_string(agent_state.state_dir.join("remote-proof-attempts.json"))
+            .expect("Agent did not persist proof attempt state");
+    let proof_attempts: Value = serde_json::from_str(&proof_attempt_state).unwrap();
+    assert_eq!(proof_attempts["schema_version"], "1");
+    assert_eq!(proof_attempts["attempts"].as_array().unwrap().len(), 1);
+    assert_eq!(proof_attempts["attempts"][0]["challenge_id"], challenge_id);
+    assert_eq!(
+        proof_attempts["attempts"][0]["session_id"],
+        session.session_id
+    );
+    assert_eq!(proof_attempts["attempts"][0]["outcome"], "submitted");
+    assert!(!proof_attempt_state.contains(&challenge_nonce));
+    for forbidden in [
+        "nonce",
+        "resume_token",
+        "credential",
+        "signature",
+        "private_key",
+        "error",
+    ] {
+        assert!(!proof_attempt_state.contains(forbidden));
+    }
 
     server.stop().await;
     db.drop_schema_for_test().await.unwrap();

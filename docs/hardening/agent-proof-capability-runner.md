@@ -131,8 +131,10 @@ hardware attestation or a real performance result.
 
 ## Remaining Limitations
 
-- The command remains foreground-only and has no service supervision.
-- Local failure history and attempted-challenge suppression are in memory only.
+- A later hardening pass added in-process foreground supervision and bounded,
+  redacted `remote-proof-attempts.json` persistence. The command still has no
+  operating-system service packaging, single-instance lock, installer, or
+  automatic restart/update policy.
 - A local execution failure is logged and left for backend expiry; there is no
   signed failure-response contract.
 - A later hardening pass made BN-07 recurrence fail closed and require a real,
@@ -150,5 +152,6 @@ hardware attestation or a real performance result.
    now requires a real, versioned artifact digest and positive thresholds.
 2. Add a controlled physical-GPU test matrix for CUDA library loading, UUID
    binding, residency, SGEMM, Ollama digest binding, and contention behavior.
-3. Add Agent service supervision and durable proof attempt/error state without
+3. Completed by `agent-proof-attempt-state.md`: the foreground process now
+   supervises the proof worker and persists bounded retry suppression without
    changing the signed BN-06 response contract.

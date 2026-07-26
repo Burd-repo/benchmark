@@ -109,6 +109,7 @@ Clippy reported only existing warnings in `burd-bench`, `billing.rs`,
 1. Ollama digest matching was validated by the later
    `ollama-digest-compatibility.md` pass. CUDA UUID binding, VRAM residency,
    cuBLAS, and physical contention still require an NVIDIA test host.
-2. Add Agent service supervision and durable bounded proof-attempt state.
+2. Completed by `agent-proof-attempt-state.md`: add foreground worker supervision
+   and durable bounded proof-attempt state.
 3. Add artifact distribution and profile selection only after the single-profile
    operational path has production evidence.
