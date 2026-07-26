@@ -211,7 +211,10 @@ O BN-05 adiciona registry remoto de evidencias assinadas no control plane; veja
 [`docs/bn-05-remote-evidence-registry.md`](docs/bn-05-remote-evidence-registry.md).
 O BN-06 adiciona o protocolo backend-issued e o runner foreground do Agent para
 Proof of Capability CUDA/VRAM/GEMM/LLM. `--proofs` implica telemetria assinada e
-exige CUDA/Ollama conforme o perfil; veja
+exige CUDA/Ollama conforme o perfil. O processo foreground supervisiona o worker
+e persiste somente metadados limitados e redigidos de tentativas para impedir
+reexecucao do mesmo challenge apos reinicio; isso nao e um daemon ou servico do
+sistema operacional. Veja
 [`docs/bn-06-active-proof-of-capability.md`](docs/bn-06-active-proof-of-capability.md).
 O BN-07 adiciona estado backend-owned para verificacao recorrente e baseada em risco; veja
 [`docs/bn-07-recurring-risk-verification.md`](docs/bn-07-recurring-risk-verification.md).

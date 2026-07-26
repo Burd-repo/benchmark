@@ -36,7 +36,8 @@ Implemented:
 
 Not implemented:
 
-- a supervised/background Agent daemon or durable Agent-side retry history;
+- an operating-system supervised/background Agent service, single-instance lock,
+  installer, or automatic restart/update policy;
 - a separate Agent-to-backend `running` transition;
 - production model artifact distribution or prefetch;
 - automatic selection of a model profile by GPU family or model distribution;
@@ -54,6 +55,11 @@ Start the foreground control channel and proof worker with:
 ```powershell
 burd-agent remote-session connect --proofs --telemetry-batch-samples 8
 ```
+
+The foreground process supervises the control loop and proof worker together.
+A bounded, redacted `remote-proof-attempts.json` file in the canonical Agent
+state directory preserves failed-challenge suppression across restarts. This is
+local operational state, not signed evidence or backend verification.
 
 `--proofs` implies signed GPU telemetry. The Agent keeps one WebSocket writer so
 heartbeat and telemetry control sequences remain ordered. The proof worker polls

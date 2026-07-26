@@ -180,7 +180,7 @@ after the June 2026 reliability pass.
 
 ## Still Mocked Or Future
 
-- Production Agent service supervision and durable proof retry state, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
+- Production operating-system service packaging, single-instance enforcement, automatic Agent restart/update policy, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
 - Production antifraud operations, case review, admin resolution, and automated enforcement.
 - Marketplace checkout/orchestration beyond single-listing reservation, autonomous/background scheduling, paid job container execution, byte-level data-plane transfer, billing-grade metering enforcement, and external financial settlement.
 - Real Pix gateway capture, bank payout execution, earnings settlement, refunds, disputes, tax workflows, and production financial reconciliation.
@@ -430,9 +430,11 @@ starting the API server or depending on host state:
   compute and telemetry while exercising real enrollment, WebSocket sequencing,
   signing, persistence, challenge pickup, response verification, and telemetry
   linkage. It does not claim physical CUDA/Ollama execution.
-- BN-06 still lacks a supervised Agent daemon, durable local retry state,
-  production artifact distribution, and broad physical-GPU compatibility
-  validation. BN-07 adds recurring verification state and an admin sweep. The
+- The BN-06 foreground process now supervises its proof worker and persists a
+  bounded, redacted local attempt history so failed challenges remain suppressed
+  across restarts. It still lacks operating-system service packaging,
+  single-instance enforcement, production artifact distribution, and broad
+  physical-GPU compatibility validation. BN-07 adds recurring verification state and an admin sweep. The
   sweep now requires a complete deployment profile with an exact Ollama digest
   and positive TPS/TTFT thresholds; recurrence is disabled by default instead of
   emitting a non-executable placeholder challenge. Global trust/antifraud

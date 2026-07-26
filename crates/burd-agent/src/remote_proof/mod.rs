@@ -1,6 +1,8 @@
 mod cuda;
 mod ollama;
+mod state;
 
+use self::state::{ProofAttemptOutcome, ProofAttemptStore};
 use crate::remote_enrollment::{ControlPlaneRequestError, join_url};
 use burd_bench::build_registration_payload;
 use burd_protocol::{
@@ -81,42 +83,34 @@ struct ProofExecutionReady {
 
 pub type ProofExecutor = fn(ProofExecutionRequest) -> Result<ProofExecution, String>;
 
-#[derive(Debug)]
-struct AttemptedChallenge {
-    session_id: String,
-    expires_at: DateTime<Utc>,
-}
-
 pub(crate) async fn run_worker(
     agent_version: String,
     telemetry: mpsc::Sender<ProofTelemetryRequest>,
     executor: ProofExecutor,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let mut attempted: Option<AttemptedChallenge> = None;
+    let mut attempts = tokio::task::spawn_blocking(ProofAttemptStore::load_default)
+        .await
+        .map_err(|error| format!("failed to load proof attempt state task: {error}"))??;
     loop {
         if *shutdown.borrow() {
             return Ok(());
         }
-        if let Some(previous) = attempted.as_ref() {
-            let current_session = tokio::task::spawn_blocking(load_remote_session)
-                .await
-                .map_err(|error| format!("failed to load proof session task: {error}"))?;
-            let same_session = current_session
-                .as_ref()
-                .is_ok_and(|session| session.session_id == previous.session_id);
-            if same_session && previous.expires_at > Utc::now() {
+
+        let current_session = tokio::task::spawn_blocking(load_remote_session)
+            .await
+            .map_err(|error| format!("failed to load proof session task: {error}"))?;
+        let current_session = match current_session {
+            Ok(session) => session,
+            Err(_) => {
                 wait_for_poll_or_shutdown(&mut shutdown).await;
                 continue;
             }
-            attempted = None;
-        }
-
-        let session_ready = tokio::task::spawn_blocking(load_remote_session)
-            .await
-            .map_err(|error| format!("failed to load proof session task: {error}"))?
-            .is_ok();
-        if !session_ready {
+        };
+        if attempts
+            .active_suppression(&current_session.session_id, Utc::now())
+            .is_some()
+        {
             wait_for_poll_or_shutdown(&mut shutdown).await;
             continue;
         }
@@ -150,10 +144,17 @@ pub(crate) async fn run_worker(
                     Some(&challenge.challenge_id),
                     &error,
                 );
-                attempted = Some(AttemptedChallenge {
-                    session_id: challenge.session_id.clone(),
-                    expires_at: parse_utc(&challenge.expires_at).unwrap_or_else(|_| Utc::now()),
-                });
+                let recorded_at = Utc::now();
+                let suppress_until = suppression_deadline(&challenge.expires_at, recorded_at);
+                attempts = persist_attempt(
+                    attempts,
+                    challenge.challenge_id,
+                    challenge.session_id,
+                    ProofAttemptOutcome::RejectedLocally,
+                    recorded_at,
+                    suppress_until,
+                )
+                .await?;
                 continue;
             }
         };
@@ -171,16 +172,66 @@ pub(crate) async fn run_worker(
                         "response_hash": response.response_hash,
                     })
                 );
+                let recorded_at = Utc::now();
+                attempts = persist_attempt(
+                    attempts,
+                    challenge_id,
+                    session_id,
+                    ProofAttemptOutcome::Submitted,
+                    recorded_at,
+                    recorded_at,
+                )
+                .await?;
             }
             Err(error) => {
                 log_proof_event("remote_proof_execution_failed", Some(&challenge_id), &error);
-                attempted = Some(AttemptedChallenge {
+                let recorded_at = Utc::now();
+                let suppress_until = if expires_at > recorded_at {
+                    expires_at
+                } else {
+                    recorded_at + chrono::Duration::seconds(PROOF_POLL_INTERVAL.as_secs() as i64)
+                };
+                attempts = persist_attempt(
+                    attempts,
+                    challenge_id,
                     session_id,
-                    expires_at,
-                });
+                    ProofAttemptOutcome::AttemptFailed,
+                    recorded_at,
+                    suppress_until,
+                )
+                .await?;
             }
         }
     }
+}
+
+async fn persist_attempt(
+    mut store: ProofAttemptStore,
+    challenge_id: String,
+    session_id: String,
+    outcome: ProofAttemptOutcome,
+    recorded_at: DateTime<Utc>,
+    suppress_until: DateTime<Utc>,
+) -> Result<ProofAttemptStore, String> {
+    tokio::task::spawn_blocking(move || {
+        store.record(
+            challenge_id,
+            session_id,
+            outcome,
+            recorded_at,
+            suppress_until,
+        )?;
+        Ok(store)
+    })
+    .await
+    .map_err(|error| format!("failed to persist proof attempt state task: {error}"))?
+}
+
+fn suppression_deadline(value: &str, recorded_at: DateTime<Utc>) -> DateTime<Utc> {
+    parse_utc(value)
+        .ok()
+        .filter(|expires_at| *expires_at > recorded_at)
+        .unwrap_or(recorded_at + chrono::Duration::seconds(PROOF_POLL_INTERVAL.as_secs() as i64))
 }
 
 async fn execute_and_submit_challenge(
@@ -588,6 +639,20 @@ mod tests {
             .is_ok()
         );
         assert!(validate_telemetry_window(&window, "GPU-other", started_at).is_err());
+    }
+    #[test]
+    fn malformed_or_expired_challenge_deadlines_still_throttle_polling() {
+        let recorded_at = Utc::now();
+        let expected =
+            recorded_at + chrono::Duration::seconds(PROOF_POLL_INTERVAL.as_secs() as i64);
+        assert_eq!(suppression_deadline("invalid", recorded_at), expected);
+        assert_eq!(
+            suppression_deadline(
+                &(recorded_at - chrono::Duration::seconds(1)).to_rfc3339(),
+                recorded_at,
+            ),
+            expected
+        );
     }
 
     fn sample(gpu_uuid: &str) -> GpuTelemetrySample {

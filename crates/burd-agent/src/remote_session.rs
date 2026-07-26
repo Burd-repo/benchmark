@@ -156,19 +156,19 @@ async fn run_control_and_proof(
     telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
     proof_agent_version: Option<String>,
     proof_executor: ProofExecutor,
-    shutdown: watch::Receiver<bool>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let (proof_telemetry_tx, mut proof_telemetry_rx) = mpsc::channel(1);
-    let (proof_shutdown_tx, proof_shutdown_rx) = watch::channel(false);
+    let (session_shutdown_tx, session_shutdown_rx) = watch::channel(false);
     let proof_worker = proof_agent_version.map(|proof_agent_version| {
         tokio::spawn(run_worker(
             proof_agent_version,
             proof_telemetry_tx,
             proof_executor,
-            proof_shutdown_rx,
+            session_shutdown_rx.clone(),
         ))
     });
-    let result = run_control_loop(
+    let control = run_control_loop(
         ControlLoopRuntime {
             agent_version,
             max_reconnect_delay_seconds,
@@ -180,19 +180,71 @@ async fn run_control_and_proof(
             },
         },
         &mut proof_telemetry_rx,
-        shutdown,
-    )
-    .await;
-    let _ = proof_shutdown_tx.send(true);
-    if let Some(worker) = proof_worker {
-        match worker.await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) if result.is_ok() => return Err(error),
-            Ok(Err(error)) => log_proof_worker_shutdown_error(&error),
-            Err(error) => log_proof_worker_shutdown_error(&error.to_string()),
+        session_shutdown_rx,
+    );
+    tokio::pin!(control);
+
+    match proof_worker {
+        Some(mut worker) => {
+            tokio::select! {
+                _ = wait_for_shutdown(&mut shutdown) => {
+                    let _ = session_shutdown_tx.send(true);
+                    let result = control.await;
+                    finish_proof_worker(worker, result).await
+                }
+                result = &mut control => {
+                    let _ = session_shutdown_tx.send(true);
+                    finish_proof_worker(worker, result).await
+                }
+                worker_result = &mut worker => {
+                    let _ = session_shutdown_tx.send(true);
+                    let control_result = control.await;
+                    if let Err(error) = control_result {
+                        log_proof_worker_shutdown_error(&error);
+                    }
+                    Err(unexpected_proof_worker_exit(worker_result))
+                }
+            }
+        }
+        None => {
+            tokio::select! {
+                _ = wait_for_shutdown(&mut shutdown) => {
+                    let _ = session_shutdown_tx.send(true);
+                    control.await
+                }
+                result = &mut control => result,
+            }
         }
     }
-    result
+}
+
+async fn finish_proof_worker(
+    worker: tokio::task::JoinHandle<Result<(), String>>,
+    control_result: Result<(), String>,
+) -> Result<(), String> {
+    match worker.await {
+        Ok(Ok(())) => control_result,
+        Ok(Err(error)) if control_result.is_ok() => Err(error),
+        Ok(Err(error)) => {
+            log_proof_worker_shutdown_error(&error);
+            control_result
+        }
+        Err(error) if control_result.is_ok() => Err(format!("remote proof worker failed: {error}")),
+        Err(error) => {
+            log_proof_worker_shutdown_error(&error.to_string());
+            control_result
+        }
+    }
+}
+
+fn unexpected_proof_worker_exit(
+    result: Result<Result<(), String>, tokio::task::JoinError>,
+) -> String {
+    match result {
+        Ok(Ok(())) => "remote proof worker stopped unexpectedly".to_string(),
+        Ok(Err(error)) => format!("remote proof worker failed: {error}"),
+        Err(error) => format!("remote proof worker task failed: {error}"),
+    }
 }
 fn validate_telemetry_batch_samples(telemetry_batch_samples: usize) -> Result<(), String> {
     if !(1..=64).contains(&telemetry_batch_samples) {
@@ -1187,6 +1239,26 @@ mod tests {
         .await
         .unwrap();
         assert!(shutdown_requested(&shutdown_rx));
+    }
+    #[tokio::test]
+    async fn proof_worker_exit_is_propagated_by_the_supervisor() {
+        let clean_worker = tokio::spawn(async { Ok(()) });
+        assert!(finish_proof_worker(clean_worker, Ok(())).await.is_ok());
+
+        let failed_worker = tokio::spawn(async { Err("state unavailable".to_string()) });
+        let error = finish_proof_worker(failed_worker, Ok(()))
+            .await
+            .unwrap_err();
+        assert_eq!(error, "state unavailable");
+
+        assert_eq!(
+            unexpected_proof_worker_exit(Ok(Ok(()))),
+            "remote proof worker stopped unexpectedly"
+        );
+        assert_eq!(
+            unexpected_proof_worker_exit(Ok(Err("state unavailable".to_string()))),
+            "remote proof worker failed: state unavailable"
+        );
     }
 
     #[test]
