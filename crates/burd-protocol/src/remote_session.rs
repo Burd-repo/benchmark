@@ -2,7 +2,7 @@ use crate::{default_state_dir, random_token, write_json_atomic};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -170,10 +170,16 @@ pub fn remote_session_path() -> PathBuf {
 
 pub fn load_remote_session() -> Result<RemoteSessionState, String> {
     let path = remote_session_path();
-    let bytes =
-        fs::read(&path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| format!("failed to parse {}: {error}", path.display()))
+    load_remote_session_optional_from(&path)?.ok_or_else(|| {
+        format!(
+            "failed to read {}: remote session state does not exist",
+            path.display()
+        )
+    })
+}
+
+pub fn load_remote_session_optional() -> Result<Option<RemoteSessionState>, String> {
+    load_remote_session_optional_from(&remote_session_path())
 }
 
 pub fn save_remote_session(
@@ -240,6 +246,17 @@ fn write_remote_session(state: &RemoteSessionState) -> Result<(), String> {
         .map_err(|error| format!("failed to persist remote session: {error}"))
 }
 
+fn load_remote_session_optional_from(path: &Path) -> Result<Option<RemoteSessionState>, String> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| format!("failed to parse {}: {error}", path.display()))
+}
+
 pub fn new_resume_token() -> Result<String, String> {
     random_token("session_resume")
 }
@@ -272,5 +289,23 @@ mod tests {
         assert_eq!(value["resume_token_present"], true);
         assert!(value.get("resume_token").is_none());
         assert!(!value.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn optional_load_distinguishes_missing_state_from_corrupt_state() {
+        let root = std::env::temp_dir().join(format!(
+            "burd-protocol-remote-session-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("remote-session.json");
+
+        assert_eq!(load_remote_session_optional_from(&path).unwrap(), None);
+
+        fs::write(&path, b"{not-json").unwrap();
+        let error = load_remote_session_optional_from(&path).unwrap_err();
+        assert!(error.contains("failed to parse"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

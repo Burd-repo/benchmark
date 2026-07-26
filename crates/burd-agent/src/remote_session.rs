@@ -14,9 +14,10 @@ use burd_protocol::{
     ServerControlMessage, SignedTelemetryBatch, StartRemoteSessionRequest,
     StartRemoteSessionResponse, TELEMETRY_CANONICALIZATION_VERSION, TELEMETRY_SCHEMA_VERSION,
     TelemetryBatchPayload, TelemetryBatchReceipt, clear_remote_session, load_identity,
-    load_private_key, load_remote_enrollment, load_remote_session, save_remote_session,
-    show_remote_session, sign_message, telemetry_batch_hash, telemetry_batch_signature_message,
-    update_remote_session_sequence, update_remote_telemetry_sequence,
+    load_private_key, load_remote_enrollment, load_remote_session, load_remote_session_optional,
+    save_remote_session, show_remote_session, sign_message, telemetry_batch_hash,
+    telemetry_batch_signature_message, update_remote_session_sequence,
+    update_remote_telemetry_sequence,
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use futures_util::{SinkExt, StreamExt};
@@ -297,7 +298,23 @@ fn start_or_resume(
     let enrollment = load_remote_enrollment().map_err(|error| {
         ReconnectFailure::terminal("local_state", format!("failed to load enrollment: {error}"))
     })?;
-    let persisted = load_remote_session().ok();
+    let mut persisted = load_remote_session_optional().map_err(|error| {
+        ReconnectFailure::terminal(
+            "local_state",
+            format!("failed to load remote session: {error}"),
+        )
+    })?;
+    if persisted.as_ref().is_some_and(|state| {
+        !session_belongs_to_control_plane(state, &enrollment.control_plane_url)
+    }) {
+        clear_remote_session().map_err(|error| {
+            ReconnectFailure::terminal(
+                "local_state",
+                format!("failed to clear remote session from another control plane: {error}"),
+            )
+        })?;
+        persisted = None;
+    }
     let request = StartRemoteSessionRequest {
         provider_id: enrollment.provider_id.clone(),
         device_id: enrollment.device_id.clone(),
@@ -335,6 +352,10 @@ fn start_or_resume(
             format!("failed to persist remote session: {error}"),
         )
     })
+}
+
+fn session_belongs_to_control_plane(session: &RemoteSessionState, control_plane_url: &str) -> bool {
+    session.control_plane_url.trim_end_matches('/') == control_plane_url.trim_end_matches('/')
 }
 
 struct ControlLoopRuntime {
@@ -1355,5 +1376,29 @@ mod tests {
             message: "control plane rejected request".to_string(),
         };
         assert!(persisted_session_should_restart(&missing_without_envelope));
+    }
+
+    #[test]
+    fn persisted_sessions_are_bound_to_the_enrollment_control_plane() {
+        let session = RemoteSessionState {
+            control_plane_url: "https://api.burd.cloud".to_string(),
+            session_id: "session_1".to_string(),
+            resume_token: "secret".to_string(),
+            expires_at: "2026-08-01T00:00:00Z".to_string(),
+            heartbeat_interval_seconds: 15,
+            missed_heartbeat_limit: 3,
+            sequence_last: 4,
+            telemetry_sequence_last: 2,
+            control_url: "wss://api.burd.cloud/v1/sessions/session_1/control".to_string(),
+        };
+
+        assert!(session_belongs_to_control_plane(
+            &session,
+            "https://api.burd.cloud/"
+        ));
+        assert!(!session_belongs_to_control_plane(
+            &session,
+            "https://staging-api.burd.cloud"
+        ));
     }
 }
