@@ -325,9 +325,11 @@ starting the API server or depending on host state:
   jitter, and reset only after an acknowledged heartbeat. Hardware registration
   runs during blocking connection preparation, and the resulting fingerprint is
   reused for periodic heartbeats and telemetry. Revoked/invalid credentials stop;
-  missing/expired sessions are recreated. Retry state remains
-  in-memory and is not a supervised daemon. `remote-session status` reads
-  backend state.
+  missing/expired sessions are recreated. Malformed or unreadable session state
+  fails closed, persisted sessions are resumed only against the enrolled Control
+  Plane, and successful enrollment invalidates old local session credentials.
+  Retry state remains in-memory and is not a supervised daemon.
+  `remote-session status` reads backend state.
 - PostgreSQL integration coverage exercises start, duplicate rejection,
   heartbeat, degradation, resume, and revocation. One ignored harness runs the
   real Agent loop against Axum and isolated PostgreSQL, injects socket loss and
@@ -440,10 +442,13 @@ starting the API server or depending on host state:
   uptime, challenge, and network JSON files use per-file atomic replacement so
   unlocked readers do not observe partial state. This is not a multi-file
   transaction or general lost-update protection. The Agent still lacks
-  operating-system service packaging, production artifact distribution, and broad
-  physical-GPU compatibility validation. BN-07 adds recurring verification state
-  and an admin sweep. The sweep requires a complete deployment profile with an
-  exact Ollama digest
+  operating-system service packaging, cooperatively bounded shutdown for all
+  blocking CUDA/Ollama/startup work, automatic signed updates, production
+  artifact distribution, and broad physical-GPU compatibility validation. The
+  foreground lifecycle and service-readiness gates are documented in
+  `docs/hardening/agent-service-lifecycle-contract.md`. BN-07 adds recurring
+  verification state and an admin sweep. The sweep requires a complete deployment
+  profile with an exact Ollama digest
   and positive TPS/TTFT thresholds; recurrence is disabled by default instead of
   emitting a non-executable placeholder challenge. Global trust/antifraud
   scoring is owned by BN-09; jobs, scheduler, marketplace, billing, Pix, and

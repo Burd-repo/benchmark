@@ -126,7 +126,8 @@ with an installed model. The PostgreSQL suite used the isolated
 
 1. Completed by `agent-state-maintenance-lock.md`: freeze critical maintenance
    commands and coordinate them with the existing lock.
-2. Define service startup, graceful shutdown, recovery, credential refresh, and
-   update policy before adding Windows Service or systemd packaging.
+2. Completed by `agent-service-lifecycle-contract.md`: define service startup,
+   graceful shutdown, recovery, credential refresh, and update policy before
+   adding Windows Service or systemd packaging.
 3. Run the existing BN-06 physical compatibility matrix on controlled NVIDIA
    hosts independently of service packaging.

@@ -135,9 +135,9 @@ pub use remote_session::{
     ClientControlMessage, HeartbeatPayload, HeartbeatReceipt, RemoteSessionRecord,
     RemoteSessionResume, RemoteSessionRevocationResponse, RemoteSessionState,
     RemoteSessionStateStatus, RemoteSessionStatus, ServerControlMessage, StartRemoteSessionRequest,
-    StartRemoteSessionResponse, clear_remote_session, load_remote_session, new_resume_token,
-    remote_session_path, save_remote_session, show_remote_session, update_remote_session_sequence,
-    update_remote_telemetry_sequence,
+    StartRemoteSessionResponse, clear_remote_session, load_remote_session,
+    load_remote_session_optional, new_resume_token, remote_session_path, save_remote_session,
+    show_remote_session, update_remote_session_sequence, update_remote_telemetry_sequence,
 };
 pub use report::{FullReport, ReportSignature, SignedReport, VerifyReportResult};
 pub use secure_runtime::{

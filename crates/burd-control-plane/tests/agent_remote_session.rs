@@ -568,6 +568,28 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
         .await
         .unwrap()
         .unwrap();
+    let stale_session_url = control_plane_url.clone();
+    tokio::task::spawn_blocking(move || {
+        burd_protocol::save_remote_session(
+            &stale_session_url,
+            &burd_protocol::StartRemoteSessionResponse {
+                request_id: "request_stale".to_string(),
+                session_id: "session_stale".to_string(),
+                resume_token: "resume_stale".to_string(),
+                status: burd_protocol::RemoteSessionStatus::Offline,
+                expires_at: (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+                heartbeat_interval_seconds: 1,
+                missed_heartbeat_limit: 2,
+                sequence_start: 0,
+                telemetry_sequence_start: 0,
+                control_url: "ws://127.0.0.1/stale".to_string(),
+            },
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(burd_protocol::remote_session_path().is_file());
     let enrollment_url = control_plane_url.clone();
     let enrollment = tokio::task::spawn_blocking(move || {
         burd_agent::remote_enrollment::enroll(
@@ -580,6 +602,10 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
     .unwrap()
     .unwrap();
     assert_eq!(enrollment.provider_id, expected_provider_id);
+    assert!(
+        !burd_protocol::remote_session_path().exists(),
+        "successful enrollment must invalidate persisted session credentials"
+    );
 
     let client = schema_client(&database_url, &schema).await;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

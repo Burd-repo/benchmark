@@ -149,8 +149,9 @@ compatibility unless a real local model service is used.
 
 ## Recommended Next Work
 
-1. Freeze Agent service startup, shutdown, recovery, credential refresh, and
-   update policy before adding operating-system service packaging.
+1. Completed by `agent-service-lifecycle-contract.md`: freeze Agent service
+   startup, shutdown, recovery, credential refresh, and update policy before
+   adding operating-system service packaging.
 2. Add explicit coordination only where a demonstrated read-modify-write race
    exists; do not turn every diagnostic command into a global critical section.
 3. Run the BN-06 physical CUDA/Ollama compatibility matrix on controlled NVIDIA

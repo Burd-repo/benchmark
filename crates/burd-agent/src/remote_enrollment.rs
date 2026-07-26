@@ -1,7 +1,7 @@
 use burd_bench::build_registration_payload;
 use burd_protocol::{
     DeviceCredentialResponse, EnrollmentProofRequest, EnrollmentProofResponse,
-    RemoteEnrollmentStatus, StartEnrollmentRequest, StartEnrollmentResponse,
+    RemoteEnrollmentStatus, StartEnrollmentRequest, StartEnrollmentResponse, clear_remote_session,
     enrollment_proof_message, load_identity, load_private_key, load_remote_enrollment,
     save_remote_enrollment, sign_message, update_remote_credential,
 };
@@ -90,6 +90,7 @@ pub fn enroll(
         &proof,
         None,
     )?;
+    clear_remote_session()?;
     save_remote_enrollment(control_plane_url, &response)
 }
 

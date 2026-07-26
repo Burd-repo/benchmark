@@ -62,7 +62,10 @@ and session resume in `~/.burd/remote-session.json`. Transient transport, HTTP
 `408`/`429`/`5xx`, and conflict failures retry with a bounded exponential
 ceiling and per-agent jitter. The failure counter resets only after a heartbeat
 acknowledgement proves the connection is usable. Revoked or invalid credentials stop
-the command; missing or expired sessions are recreated. Retry attempts are in-memory
+the command; missing or expired sessions are recreated. Malformed or unreadable
+local session state stops instead of being treated as absent. Resume is allowed
+only for the Control Plane recorded by the current enrollment, and successful
+re-enrollment invalidates the previous local session. Retry attempts are in-memory
 and reset when the process restarts. An ignored PostgreSQL integration test runs the
 real Agent loop through enrollment, heartbeat acknowledgement, socket loss, resume,
 server-side expiry, replacement session creation, and administrative revocation.
@@ -80,4 +83,5 @@ The backend periodically expires stale sessions independently of requests.
 BN-03 itself introduced heartbeat messages on the control channel. BN-04 extends
 that channel with signed telemetry. A supervised agent daemon, durable retry
 attempt state, backend challenge execution, jobs, and scheduling remain outside
-this hardening scope.
+this hardening scope. The lifecycle and service-packaging gates are frozen in
+[`hardening/agent-service-lifecycle-contract.md`](hardening/agent-service-lifecycle-contract.md).
