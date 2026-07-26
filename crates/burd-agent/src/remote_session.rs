@@ -1,4 +1,3 @@
-use crate::instance_lock::RemoteSessionInstanceLock;
 use crate::remote_enrollment::{
     ControlPlaneRequestError, join_url, post_json_checked, refresh_credential,
     refresh_credential_checked,
@@ -6,6 +5,7 @@ use crate::remote_enrollment::{
 use crate::remote_proof::{
     ProofExecutor, ProofTelemetryRequest, ProofTelemetryWindow, execute_remote_proof, run_worker,
 };
+use crate::{AgentStateLock, AgentStateLockOperation};
 use burd_bench::{ProviderRegistrationPayload, build_registration_payload};
 use burd_hardware::{NvidiaTelemetryCollection, collect_nvidia_telemetry};
 use burd_protocol::{
@@ -35,7 +35,7 @@ pub fn connect(
     proofs: bool,
 ) -> Result<RemoteSessionStateStatus, String> {
     validate_telemetry_batch_samples(telemetry_batch_samples)?;
-    let _instance_lock = RemoteSessionInstanceLock::acquire()?;
+    let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)?;
     let identity = load_identity()?;
     let telemetry_enabled = proofs || telemetry || identity.telemetry_enabled;
     let proof_agent_version = proofs.then(|| agent_version.to_string());
@@ -94,7 +94,7 @@ pub async fn connect_until_shutdown_with_telemetry_collector(
     shutdown: watch::Receiver<bool>,
 ) -> Result<RemoteSessionStateStatus, String> {
     validate_telemetry_batch_samples(telemetry_batch_samples)?;
-    let _instance_lock = RemoteSessionInstanceLock::acquire()?;
+    let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)?;
     let identity = tokio::task::spawn_blocking(load_identity)
         .await
         .map_err(|error| format!("failed to load identity task: {error}"))??;
@@ -128,7 +128,7 @@ pub async fn connect_until_shutdown_with_test_runtime(
     shutdown: watch::Receiver<bool>,
 ) -> Result<RemoteSessionStateStatus, String> {
     validate_telemetry_batch_samples(telemetry_batch_samples)?;
-    let _instance_lock = RemoteSessionInstanceLock::acquire()?;
+    let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)?;
     let identity = tokio::task::spawn_blocking(load_identity)
         .await
         .map_err(|error| format!("failed to load identity task: {error}"))??;

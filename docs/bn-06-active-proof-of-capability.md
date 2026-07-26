@@ -61,9 +61,10 @@ A bounded, redacted `remote-proof-attempts.json` file in the canonical Agent
 state directory preserves failed-challenge suppression across restarts. An
 exclusive `remote-session.lock` allows only one connect process to use that state
 directory at a time and is released by the operating system when its file handle
-closes. The persistent file is metadata, not evidence that a process is active.
-These files are local operational state, not signed evidence or backend
-verification.
+closes. Critical identity, enrollment, credential, and local API-token mutations
+contend on the same lock, while status and diagnostic commands remain available.
+The persistent file is metadata, not evidence that a process is active. These
+files are local operational state, not signed evidence or backend verification.
 
 `--proofs` implies signed GPU telemetry. The Agent keeps one WebSocket writer so
 heartbeat and telemetry control sequences remain ordered. The proof worker polls

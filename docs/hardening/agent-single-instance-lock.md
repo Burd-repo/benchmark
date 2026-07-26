@@ -110,9 +110,10 @@ with an installed model. The PostgreSQL suite used the isolated
 
 - The Agent remains a foreground command. This does not add Windows Service,
   systemd, installer, autostart, health management, or update policy.
-- The lock coordinates remote-session processes only. Concurrent identity,
-  enrollment, or other state-mutating CLI commands are not yet coordinated with
-  a running session.
+- At the time of this pass, the lock coordinated remote-session processes only.
+  The later `agent-state-maintenance-lock.md` pass coordinates critical identity,
+  enrollment, credential, and local API-token mutations with the running
+  session.
 - File-lock guarantees depend on a local filesystem that implements the Rust
   standard library lock contract. Network/shared state directories are not a
   supported deployment model.
@@ -123,9 +124,8 @@ with an installed model. The PostgreSQL suite used the isolated
 
 ## Recommended Next Work
 
-1. Freeze which state-mutating maintenance commands may run while the future
-   service is active, then either share this lock or add explicit maintenance
-   coordination.
+1. Completed by `agent-state-maintenance-lock.md`: freeze critical maintenance
+   commands and coordinate them with the existing lock.
 2. Define service startup, graceful shutdown, recovery, credential refresh, and
    update policy before adding Windows Service or systemd packaging.
 3. Run the existing BN-06 physical compatibility matrix on controlled NVIDIA
