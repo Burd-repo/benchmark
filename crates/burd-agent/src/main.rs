@@ -1,7 +1,7 @@
 mod cli;
 
 use anyhow::Result;
-use burd_agent::{remote_enrollment, remote_session};
+use burd_agent::{AgentStateLock, AgentStateLockOperation, remote_enrollment, remote_session};
 use burd_bench::{
     DiskBenchmarkOptions, LlmBenchmarkOptions, NetworkBenchmarkOptions, ReportRunOptions,
     SecureRuntimePlanOptions, append_report_history, append_signed_report_history,
@@ -48,6 +48,10 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+    let _maintenance_lock = maintenance_lock_operation(&cli.command)
+        .map(AgentStateLock::acquire)
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
     match cli.command {
         Commands::System { json: _ } => {
             let report = detect_system_report(AGENT_VERSION);
@@ -650,6 +654,33 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+fn maintenance_lock_operation(command: &Commands) -> Option<AgentStateLockOperation> {
+    match command {
+        Commands::Identity {
+            command: IdentityCommands::Init,
+        } => Some(AgentStateLockOperation::IdentityInit),
+        Commands::Identity {
+            command: IdentityCommands::Migrate { .. },
+        } => Some(AgentStateLockOperation::IdentityMigrate),
+        Commands::Identity {
+            command: IdentityCommands::RotateKey { .. },
+        } => Some(AgentStateLockOperation::IdentityRotateKey),
+        Commands::Enrollment {
+            command: EnrollmentCommands::Enroll { .. },
+        } => Some(AgentStateLockOperation::EnrollmentEnroll),
+        Commands::Enrollment {
+            command: EnrollmentCommands::RefreshCredential { .. },
+        } => Some(AgentStateLockOperation::EnrollmentRefreshCredential),
+        Commands::ApiToken {
+            command: ApiTokenCommands::Create { .. },
+        } => Some(AgentStateLockOperation::ApiTokenCreate),
+        Commands::ApiToken {
+            command: ApiTokenCommands::Rotate { .. },
+        } => Some(AgentStateLockOperation::ApiTokenRotate),
+        _ => None,
+    }
+}
+
 fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
@@ -829,4 +860,64 @@ fn run_challenge(challenge: Challenge) -> Result<ChallengeRunOutput> {
         output.verification.errors.clone(),
     );
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn critical_state_mutations_require_the_maintenance_lock() {
+        let cases: &[(&[&str], AgentStateLockOperation)] = &[
+            (&["identity", "init"], AgentStateLockOperation::IdentityInit),
+            (
+                &["identity", "migrate"],
+                AgentStateLockOperation::IdentityMigrate,
+            ),
+            (
+                &["identity", "rotate-key"],
+                AgentStateLockOperation::IdentityRotateKey,
+            ),
+            (
+                &["enrollment", "enroll"],
+                AgentStateLockOperation::EnrollmentEnroll,
+            ),
+            (
+                &["enrollment", "refresh-credential"],
+                AgentStateLockOperation::EnrollmentRefreshCredential,
+            ),
+            (
+                &["api-token", "create"],
+                AgentStateLockOperation::ApiTokenCreate,
+            ),
+            (
+                &["api-token", "rotate"],
+                AgentStateLockOperation::ApiTokenRotate,
+            ),
+        ];
+
+        for (args, expected) in cases {
+            assert_eq!(operation_for(args), Some(*expected), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn read_only_and_self_locked_commands_remain_available() {
+        for args in [
+            &["identity", "show"][..],
+            &["enrollment", "status"][..],
+            &["remote-session", "status"][..],
+            &["remote-session", "connect"][..],
+            &["api-token", "show"][..],
+            &["system"][..],
+        ] {
+            assert_eq!(operation_for(args), None, "{args:?}");
+        }
+    }
+
+    fn operation_for(args: &[&str]) -> Option<AgentStateLockOperation> {
+        let cli =
+            Cli::try_parse_from(std::iter::once("burd-agent").chain(args.iter().copied())).unwrap();
+        maintenance_lock_operation(&cli.command)
+    }
 }

@@ -180,7 +180,7 @@ after the June 2026 reliability pass.
 
 ## Still Mocked Or Future
 
-- Production operating-system service packaging, maintenance-command coordination, automatic Agent restart/update policy, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
+- Production operating-system service packaging, automatic Agent restart/update policy, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
 - Production antifraud operations, case review, admin resolution, and automated enforcement.
 - Marketplace checkout/orchestration beyond single-listing reservation, autonomous/background scheduling, paid job container execution, byte-level data-plane transfer, billing-grade metering enforcement, and external financial settlement.
 - Real Pix gateway capture, bank payout execution, earnings settlement, refunds, disputes, tax workflows, and production financial reconciliation.
@@ -434,8 +434,9 @@ starting the API server or depending on host state:
   bounded, redacted local attempt history so failed challenges remain suppressed
   across restarts. `remote-session connect` now also holds an exclusive local
   state-directory lock, preventing duplicate foreground session processes before
-  local sequence or proof state can race. It still lacks operating-system service
-  packaging, maintenance-command coordination, production artifact distribution,
+  local sequence or proof state can race. Critical identity, enrollment,
+  credential, and local API-token maintenance operations now use the same lock. It still
+  lacks operating-system service packaging, production artifact distribution,
   and broad physical-GPU compatibility validation. BN-07 adds recurring verification state and an admin sweep. The
   sweep now requires a complete deployment profile with an exact Ollama digest
   and positive TPS/TTFT thresholds; recurrence is disabled by default instead of
