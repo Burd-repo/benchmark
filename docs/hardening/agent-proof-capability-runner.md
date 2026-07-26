@@ -133,8 +133,9 @@ hardware attestation or a real performance result.
 
 - A later hardening pass added in-process foreground supervision and bounded,
   redacted `remote-proof-attempts.json` persistence. The command still has no
-  operating-system service packaging, single-instance lock, installer, or
-  automatic restart/update policy.
+  operating-system service packaging, installer, or automatic restart/update
+  policy. The later `agent-single-instance-lock.md` pass prevents duplicate
+  remote-session processes for one state directory.
 - A local execution failure is logged and left for backend expiry; there is no
   signed failure-response contract.
 - A later hardening pass made BN-07 recurrence fail closed and require a real,

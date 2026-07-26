@@ -36,8 +36,8 @@ Implemented:
 
 Not implemented:
 
-- an operating-system supervised/background Agent service, single-instance lock,
-  installer, or automatic restart/update policy;
+- an operating-system supervised/background Agent service, installer, or
+  automatic restart/update policy;
 - a separate Agent-to-backend `running` transition;
 - production model artifact distribution or prefetch;
 - automatic selection of a model profile by GPU family or model distribution;
@@ -58,8 +58,12 @@ burd-agent remote-session connect --proofs --telemetry-batch-samples 8
 
 The foreground process supervises the control loop and proof worker together.
 A bounded, redacted `remote-proof-attempts.json` file in the canonical Agent
-state directory preserves failed-challenge suppression across restarts. This is
-local operational state, not signed evidence or backend verification.
+state directory preserves failed-challenge suppression across restarts. An
+exclusive `remote-session.lock` allows only one connect process to use that state
+directory at a time and is released by the operating system when its file handle
+closes. The persistent file is metadata, not evidence that a process is active.
+These files are local operational state, not signed evidence or backend
+verification.
 
 `--proofs` implies signed GPU telemetry. The Agent keeps one WebSocket writer so
 heartbeat and telemetry control sequences remain ordered. The proof worker polls
