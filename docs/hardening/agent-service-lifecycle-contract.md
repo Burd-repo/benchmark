@@ -75,14 +75,18 @@ They are not all cooperatively cancellable yet.
   telemetry production.
 - The supervisor signals the proof worker and waits for both control and proof
   tasks before returning.
+- An active proof now observes the same shutdown signal while waiting for
+  readiness, telemetry, or executor completion. The supervisor requests
+  cancellation, releases the telemetry gate, and waits up to five seconds for
+  cooperative proof completion.
 - The state lock is released when the foreground process exits.
 
 Graceful shutdown is not yet bounded in every phase. Blocking connection
 preparation cannot currently observe the shutdown signal while it is running.
-An active CUDA/Ollama proof can also remain inside blocking vendor/runtime work
-until that call returns. Operating-system service packaging must therefore
-define and implement cooperative cancellation or a tested grace deadline before
-claiming reliable stop/restart behavior.
+An active CUDA/Ollama proof checks cancellation between expensive operations,
+but a blocking vendor/runtime call already in progress can continue until that
+call returns or reaches its existing timeout. The five-second grace period
+bounds supervisor waiting, not native work or total process exit time.
 
 ### Crash Recovery
 
@@ -144,8 +148,10 @@ Added or extended coverage verifies:
 
 Before adding Windows Service or systemd packaging:
 
-1. Add cooperative cancellation or a tested maximum shutdown grace period for
-   hardware registration, credential requests, CUDA, cuBLAS, and Ollama calls.
+1. Extend the proof worker's cooperative cancellation to blocking startup,
+   hardware registration, credential requests, and vendor calls where the
+   underlying API supports interruption. The proof supervisor now has a
+   five-second grace period, but native calls are not force-cancellable.
 2. Define stable process exit categories for operator-requested stop,
    recoverable outage, invalid local state, invalid credentials, and revocation.
 3. Expose a local lifecycle/readiness state that distinguishes starting,
@@ -196,9 +202,12 @@ model and does not replace the physical NVIDIA compatibility matrix.
 ## Remaining Limitations
 
 - The Agent is still a foreground command, not an operating-system service.
-- Startup preparation and active proof execution are not fully cancellable.
-- WebSocket close and proof-worker completion do not yet have a global shutdown
-  deadline.
+- Startup preparation is not cooperatively cancellable.
+- Active proof execution checks cancellation at explicit CUDA, cuBLAS, and
+  Ollama checkpoints. In-flight native or blocking HTTP calls may continue until
+  they return; the five-second proof-worker grace period only bounds supervisor
+  waiting.
+- WebSocket close does not yet have a global process shutdown deadline.
 - Retry history and last terminal failure are not durably exposed to a service
   manager.
 - No automatic update, release signature verification, rollback, or installer

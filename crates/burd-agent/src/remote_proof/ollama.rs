@@ -39,10 +39,13 @@ struct OllamaStreamResponse {
 
 pub(super) fn run_inference(
     challenge: &ProofCapabilityChallenge,
+    cancellation_requested: impl Fn() -> bool,
 ) -> Result<LlmProofResult, String> {
+    ensure_not_cancelled(&cancellation_requested)?;
     let base_url =
         std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string());
     let model = find_model(&base_url, &challenge.model_artifact_hash)?;
+    ensure_not_cancelled(&cancellation_requested)?;
     let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
     let body = serde_json::json!({
         "model": model,
@@ -63,6 +66,7 @@ pub(super) fn run_inference(
         .build()
         .send_json(body)
         .map_err(|error| format!("Ollama proof request failed: {error}"))?;
+    ensure_not_cancelled(&cancellation_requested)?;
     if !response.status().is_success() {
         return Err(format!(
             "Ollama proof request returned HTTP {}",
@@ -74,6 +78,7 @@ pub(super) fn run_inference(
     let mut final_response = None;
     let reader = BufReader::new(response.into_body().into_reader());
     for line in reader.lines() {
+        ensure_not_cancelled(&cancellation_requested)?;
         let line = line.map_err(|error| format!("Ollama proof stream read failed: {error}"))?;
         if line.trim().is_empty() {
             continue;
@@ -107,15 +112,24 @@ pub(super) fn run_inference(
         return Err("Ollama proof tokens per second is invalid".to_string());
     }
     let ttft_ms = ttft_ms.ok_or_else(|| "Ollama proof produced no output token".to_string())?;
+    ensure_not_cancelled(&cancellation_requested)?;
     if find_model(&base_url, &challenge.model_artifact_hash)? != model {
         return Err("Ollama model tag changed during proof execution".to_string());
     }
+    ensure_not_cancelled(&cancellation_requested)?;
     Ok(LlmProofResult {
         tokens_per_second,
         ttft_ms,
     })
 }
 
+fn ensure_not_cancelled(cancellation_requested: &impl Fn() -> bool) -> Result<(), String> {
+    if cancellation_requested() {
+        Err("proof execution cancelled by Agent shutdown".to_string())
+    } else {
+        Ok(())
+    }
+}
 fn find_model(base_url: &str, required_digest: &str) -> Result<String, String> {
     select_model(list_models(base_url)?, required_digest)
 }
@@ -275,7 +289,7 @@ mod tests {
             find_model(&base_url, &challenge.model_artifact_hash).unwrap(),
             model.name
         );
-        let result = run_inference(&challenge).unwrap();
+        let result = run_inference(&challenge, || false).unwrap();
         assert!(result.tokens_per_second.is_finite());
         assert!(result.tokens_per_second > 0.0);
         assert!(result.ttft_ms > 0);

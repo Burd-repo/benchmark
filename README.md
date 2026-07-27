@@ -213,9 +213,14 @@ forma uma transacao entre arquivos nem impede toda atualizacao concorrente. Veja
 [`docs/bn-03-remote-session.md`](docs/bn-03-remote-session.md).
 O contrato de lifecycle agora falha fechado para estado de sessao corrompido,
 impede resume token de atravessar Control Planes e invalida a sessao local apos
-novo enrollment. O Agent continua foreground e ainda nao tem shutdown
-cooperativo completo para CUDA/Ollama, daemon ou atualizador automatico. Veja
-[`docs/hardening/agent-service-lifecycle-contract.md`](docs/hardening/agent-service-lifecycle-contract.md).
+novo enrollment. O Agent continua foreground. O Proof of Capability agora
+recebe cancelamento cooperativo e um grace period de cinco segundos no
+supervisor, mas chamadas nativas/HTTP bloqueantes em andamento nao sao
+forcadamente interrompidas; isso ainda nao e um daemon nem um limite global de
+saida do processo. Veja
+[`docs/hardening/agent-service-lifecycle-contract.md`](docs/hardening/agent-service-lifecycle-contract.md)
+e
+[`docs/hardening/agent-cooperative-proof-shutdown.md`](docs/hardening/agent-cooperative-proof-shutdown.md).
 O BN-04 adiciona telemetria GPU assinada no control plane; veja [`docs/bn-04-gpu-telemetry.md`](docs/bn-04-gpu-telemetry.md).
 O BN-05 adiciona registry remoto de evidencias assinadas no control plane; veja
 [`docs/bn-05-remote-evidence-registry.md`](docs/bn-05-remote-evidence-registry.md).
