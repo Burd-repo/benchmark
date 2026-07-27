@@ -441,11 +441,15 @@ starting the API server or depending on host state:
   Canonical identity, enrollment, session, proof-attempt, report, history, action,
   uptime, challenge, and network JSON files use per-file atomic replacement so
   unlocked readers do not observe partial state. This is not a multi-file
-  transaction or general lost-update protection. The Agent still lacks
-  operating-system service packaging, cooperatively bounded shutdown for all
-  blocking CUDA/Ollama/startup work, automatic signed updates, production
-  artifact distribution, and broad physical-GPU compatibility validation. The
-  foreground lifecycle and service-readiness gates are documented in
+  transaction or general lost-update protection. Active proof execution now
+  observes foreground shutdown around readiness, telemetry, CUDA/cuBLAS
+  checkpoints, and Ollama stream processing, with a five-second cooperative
+  worker grace period. In-flight native or blocking HTTP calls are not
+  force-cancelled, so this does not bound total process exit time. The Agent
+  still lacks operating-system service packaging, cancellable startup work,
+  automatic signed updates, production artifact distribution, and broad
+  physical-GPU compatibility validation. The foreground lifecycle and
+  service-readiness gates are documented in
   `docs/hardening/agent-service-lifecycle-contract.md`. BN-07 adds recurring
   verification state and an admin sweep. The sweep requires a complete deployment
   profile with an exact Ollama digest

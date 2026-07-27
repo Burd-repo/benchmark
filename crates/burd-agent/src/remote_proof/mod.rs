@@ -16,6 +16,10 @@ use burd_protocol::{
 use chrono::{DateTime, Utc};
 use std::collections::BTreeSet;
 use std::sync::mpsc as std_mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -24,6 +28,7 @@ pub(crate) use cuda::execute_remote_proof;
 const PROOF_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const TELEMETRY_CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 const EXECUTION_GATE_TIMEOUT: Duration = Duration::from_secs(30);
+const PROOF_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone)]
 pub(crate) struct ProofTelemetryWindow {
     pub(crate) batch_hash: String,
@@ -41,10 +46,20 @@ pub struct ProofExecutionRequest {
     pub challenge: ProofCapabilityChallenge,
     ready: Option<oneshot::Sender<ProofExecutionReady>>,
     continue_execution: std_mpsc::Receiver<bool>,
+    cancellation: ProofCancellation,
 }
 
 impl ProofExecutionRequest {
+    pub fn cancellation_requested(&self) -> bool {
+        self.cancellation.requested()
+    }
+
+    pub fn ensure_not_cancelled(&self) -> Result<(), String> {
+        self.cancellation.ensure_not_cancelled()
+    }
+
     pub fn hold_residency_for_telemetry(&mut self, gpu_uuid: String) -> Result<(), String> {
+        self.ensure_not_cancelled()?;
         let ready = self
             .ready
             .take()
@@ -53,7 +68,7 @@ impl ProofExecutionRequest {
             .send(ProofExecutionReady { gpu_uuid })
             .map_err(|_| "proof worker stopped before telemetry capture".to_string())?;
         match self.continue_execution.recv_timeout(EXECUTION_GATE_TIMEOUT) {
-            Ok(true) => Ok(()),
+            Ok(true) => self.ensure_not_cancelled(),
             Ok(false) => {
                 Err("proof execution cancelled because telemetry was not accepted".to_string())
             }
@@ -63,6 +78,29 @@ impl ProofExecutionRequest {
             Err(std_mpsc::RecvTimeoutError::Disconnected) => {
                 Err("proof worker disconnected during telemetry capture".to_string())
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProofCancellation {
+    requested: Arc<AtomicBool>,
+}
+
+impl ProofCancellation {
+    fn cancel(&self) {
+        self.requested.store(true, Ordering::Release);
+    }
+
+    fn requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+
+    fn ensure_not_cancelled(&self) -> Result<(), String> {
+        if self.requested() {
+            Err("proof execution cancelled by Agent shutdown".to_string())
+        } else {
+            Ok(())
         }
     }
 }
@@ -161,8 +199,8 @@ pub(crate) async fn run_worker(
 
         let challenge_id = challenge.challenge_id.clone();
         let session_id = challenge.session_id.clone();
-        match execute_and_submit_challenge(challenge, &telemetry, executor).await {
-            Ok(response) => {
+        match execute_and_submit_challenge(challenge, &telemetry, executor, &mut shutdown).await {
+            Ok(Some(response)) => {
                 eprintln!(
                     "{}",
                     serde_json::json!({
@@ -183,6 +221,7 @@ pub(crate) async fn run_worker(
                 )
                 .await?;
             }
+            Ok(None) => return Ok(()),
             Err(error) => {
                 log_proof_event("remote_proof_execution_failed", Some(&challenge_id), &error);
                 let recorded_at = Utc::now();
@@ -238,29 +277,51 @@ async fn execute_and_submit_challenge(
     challenge: ProofCapabilityChallenge,
     telemetry: &mpsc::Sender<ProofTelemetryRequest>,
     executor: ProofExecutor,
-) -> Result<SubmitProofChallengeResponse, String> {
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<Option<SubmitProofChallengeResponse>, String> {
     let started_at = Utc::now();
     let (ready_tx, ready_rx) = oneshot::channel();
     let (continue_tx, continue_rx) = std_mpsc::channel();
+    let cancellation = ProofCancellation::default();
     let execution_request = ProofExecutionRequest {
         challenge: challenge.clone(),
         ready: Some(ready_tx),
         continue_execution: continue_rx,
+        cancellation: cancellation.clone(),
     };
-    let execution_task = tokio::task::spawn_blocking(move || executor(execution_request));
+    let mut execution_task = tokio::task::spawn_blocking(move || executor(execution_request));
 
-    let ready = match tokio::time::timeout(TELEMETRY_CAPTURE_TIMEOUT, ready_rx).await {
+    let ready_result = tokio::select! {
+        biased;
+        _ = wait_for_shutdown(shutdown) => {
+            stop_proof_execution(
+                &cancellation,
+                &continue_tx,
+                &mut execution_task,
+                &challenge.challenge_id,
+            ).await;
+            return Ok(None);
+        }
+        result = tokio::time::timeout(TELEMETRY_CAPTURE_TIMEOUT, ready_rx) => result,
+    };
+    let ready = match ready_result {
         Ok(Ok(ready)) => ready,
         Ok(Err(_)) => {
-            let result = execution_task
-                .await
-                .map_err(|error| format!("proof executor task failed: {error}"))?;
-            return match result {
-                Ok(_) => Err("proof executor completed without telemetry readiness".to_string()),
-                Err(error) => Err(error),
+            let Some(_) = await_proof_execution_or_shutdown(
+                &cancellation,
+                &continue_tx,
+                &mut execution_task,
+                &challenge.challenge_id,
+                shutdown,
+            )
+            .await?
+            else {
+                return Ok(None);
             };
+            return Err("proof executor completed without telemetry readiness".to_string());
         }
         Err(_) => {
+            cancellation.cancel();
             let _ = continue_tx.send(false);
             return Err(
                 "proof executor did not establish VRAM residency before timeout".to_string(),
@@ -270,6 +331,7 @@ async fn execute_and_submit_challenge(
     if let Some(required) = challenge.required_gpu_uuid.as_deref()
         && !required.eq_ignore_ascii_case(&ready.gpu_uuid)
     {
+        cancellation.cancel();
         let _ = continue_tx.send(false);
         return Err(format!(
             "CUDA executor selected GPU {} but challenge requires {required}",
@@ -278,33 +340,61 @@ async fn execute_and_submit_challenge(
     }
 
     let (response_tx, response_rx) = oneshot::channel();
-    if telemetry
-        .send(ProofTelemetryRequest {
-            required_gpu_uuid: ready.gpu_uuid.clone(),
-            response: response_tx,
-        })
-        .await
-        .is_err()
-    {
+    let telemetry_send = telemetry.send(ProofTelemetryRequest {
+        required_gpu_uuid: ready.gpu_uuid.clone(),
+        response: response_tx,
+    });
+    let telemetry_send = tokio::select! {
+        biased;
+        _ = wait_for_shutdown(shutdown) => {
+            stop_proof_execution(
+                &cancellation,
+                &continue_tx,
+                &mut execution_task,
+                &challenge.challenge_id,
+            ).await;
+            return Ok(None);
+        }
+        result = telemetry_send => result,
+    };
+    if telemetry_send.is_err() {
+        cancellation.cancel();
         let _ = continue_tx.send(false);
         return Err("remote session telemetry channel is unavailable".to_string());
     }
-    let window = match tokio::time::timeout(TELEMETRY_CAPTURE_TIMEOUT, response_rx).await {
+    let response_result = tokio::select! {
+        biased;
+        _ = wait_for_shutdown(shutdown) => {
+            stop_proof_execution(
+                &cancellation,
+                &continue_tx,
+                &mut execution_task,
+                &challenge.challenge_id,
+            ).await;
+            return Ok(None);
+        }
+        result = tokio::time::timeout(TELEMETRY_CAPTURE_TIMEOUT, response_rx) => result,
+    };
+    let window = match response_result {
         Ok(Ok(Ok(window))) => window,
         Ok(Ok(Err(error))) => {
+            cancellation.cancel();
             let _ = continue_tx.send(false);
             return Err(error);
         }
         Ok(Err(_)) => {
+            cancellation.cancel();
             let _ = continue_tx.send(false);
             return Err("remote session dropped the proof telemetry response".to_string());
         }
         Err(_) => {
+            cancellation.cancel();
             let _ = continue_tx.send(false);
             return Err("proof telemetry capture timed out".to_string());
         }
     };
     if let Err(error) = validate_telemetry_window(&window, &ready.gpu_uuid, started_at) {
+        cancellation.cancel();
         let _ = continue_tx.send(false);
         return Err(error);
     }
@@ -312,9 +402,17 @@ async fn execute_and_submit_challenge(
         .send(true)
         .map_err(|_| "proof executor stopped before telemetry was accepted".to_string())?;
 
-    let mut execution = execution_task
-        .await
-        .map_err(|error| format!("proof executor task failed: {error}"))??;
+    let Some(mut execution) = await_proof_execution_or_shutdown(
+        &cancellation,
+        &continue_tx,
+        &mut execution_task,
+        &challenge.challenge_id,
+        shutdown,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
     if !execution.gpu_uuid.eq_ignore_ascii_case(&ready.gpu_uuid) {
         return Err("proof executor GPU changed after telemetry capture".to_string());
     }
@@ -339,8 +437,50 @@ async fn execute_and_submit_challenge(
         .await
         .map_err(|error| format!("proof response submission task failed: {error}"))?
         .map_err(|error| error.to_string())
+        .map(Some)
 }
 
+async fn await_proof_execution_or_shutdown(
+    cancellation: &ProofCancellation,
+    continue_tx: &std_mpsc::Sender<bool>,
+    execution_task: &mut tokio::task::JoinHandle<Result<ProofExecution, String>>,
+    challenge_id: &str,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<Option<ProofExecution>, String> {
+    tokio::select! {
+        biased;
+        _ = wait_for_shutdown(shutdown) => {
+            stop_proof_execution(cancellation, continue_tx, execution_task, challenge_id).await;
+            Ok(None)
+        }
+        result = &mut *execution_task => {
+            result
+                .map_err(|error| format!("proof executor task failed: {error}"))?
+                .map(Some)
+        }
+    }
+}
+
+async fn stop_proof_execution(
+    cancellation: &ProofCancellation,
+    continue_tx: &std_mpsc::Sender<bool>,
+    execution_task: &mut tokio::task::JoinHandle<Result<ProofExecution, String>>,
+    challenge_id: &str,
+) {
+    cancellation.cancel();
+    let _ = continue_tx.send(false);
+    if tokio::time::timeout(PROOF_SHUTDOWN_GRACE, &mut *execution_task)
+        .await
+        .is_err()
+    {
+        execution_task.abort();
+        log_proof_event(
+            "remote_proof_shutdown_grace_exceeded",
+            Some(challenge_id),
+            "proof executor did not stop within the cooperative shutdown grace period",
+        );
+    }
+}
 fn validate_challenge_context(
     challenge: &ProofCapabilityChallenge,
     expected_fingerprint: &str,
@@ -587,6 +727,14 @@ async fn wait_for_poll_or_shutdown(shutdown: &mut watch::Receiver<bool>) {
     }
 }
 
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    while !*shutdown.borrow() {
+        if shutdown.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 fn log_proof_event(event: &str, challenge_id: Option<&str>, error: &str) {
     eprintln!(
         "{}",
@@ -655,6 +803,90 @@ mod tests {
         );
     }
 
+    static COOPERATIVE_EXECUTOR_PASSED_GATE: AtomicBool = AtomicBool::new(false);
+
+    #[tokio::test]
+    async fn active_proof_execution_stops_cooperatively_on_shutdown() {
+        COOPERATIVE_EXECUTOR_PASSED_GATE.store(false, Ordering::SeqCst);
+        let (telemetry_tx, mut telemetry_rx) = mpsc::channel::<ProofTelemetryRequest>(1);
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let responder = tokio::spawn(async move {
+            let request = telemetry_rx
+                .recv()
+                .await
+                .expect("proof telemetry request was not sent");
+            request
+                .response
+                .send(Ok(ProofTelemetryWindow {
+                    batch_hash: "sha256:cooperative-shutdown".to_string(),
+                    samples: vec![sample("GPU-cooperative-shutdown")],
+                }))
+                .expect("proof telemetry response was dropped");
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !COOPERATIVE_EXECUTOR_PASSED_GATE.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("proof executor did not pass the telemetry gate");
+            shutdown_tx
+                .send(true)
+                .expect("proof shutdown receiver was dropped");
+        });
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            execute_and_submit_challenge(
+                proof_challenge(),
+                &telemetry_tx,
+                cooperative_shutdown_executor,
+                &mut shutdown_rx,
+            ),
+        )
+        .await
+        .expect("proof shutdown exceeded the test deadline")
+        .expect("proof shutdown returned an execution failure");
+
+        assert!(outcome.is_none());
+        responder.await.unwrap();
+    }
+
+    fn cooperative_shutdown_executor(
+        mut request: ProofExecutionRequest,
+    ) -> Result<ProofExecution, String> {
+        request.hold_residency_for_telemetry("GPU-cooperative-shutdown".to_string())?;
+        COOPERATIVE_EXECUTOR_PASSED_GATE.store(true, Ordering::SeqCst);
+        while !request.cancellation_requested() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        request.ensure_not_cancelled()?;
+        Err("proof executor ignored cancellation".to_string())
+    }
+
+    fn proof_challenge() -> ProofCapabilityChallenge {
+        ProofCapabilityChallenge {
+            schema_version: PROOF_CHALLENGE_SCHEMA_VERSION.to_string(),
+            challenge_id: "challenge_cooperative_shutdown".to_string(),
+            nonce: "nonce_cooperative_shutdown".to_string(),
+            provider_id: "provider_test".to_string(),
+            device_id: "device_test".to_string(),
+            session_id: "session_test".to_string(),
+            profile_version: "profile_test".to_string(),
+            required_fingerprint: "sha256:fingerprint".to_string(),
+            required_gpu_uuid: Some("GPU-cooperative-shutdown".to_string()),
+            required_backend: "cuda".to_string(),
+            model_artifact_hash: "sha256:model".to_string(),
+            prompt_seed: "prompt_seed".to_string(),
+            required_proofs: PROOF_CAPABILITY_REQUIRED_PROOFS
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            min_tokens_per_second: 0.0,
+            max_ttft_ms: 0,
+            issued_at: (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
+            expires_at: (Utc::now() + chrono::Duration::minutes(1)).to_rfc3339(),
+        }
+    }
     fn sample(gpu_uuid: &str) -> GpuTelemetrySample {
         GpuTelemetrySample {
             sample_sequence: 1,

@@ -27,8 +27,11 @@ pub(crate) fn execute_remote_proof(
 fn execute_remote_proof_inner(
     mut request: ProofExecutionRequest,
 ) -> Result<ProofExecution, String> {
+    request.ensure_not_cancelled()?;
     ensure_cuda_libraries(&request.challenge)?;
+    request.ensure_not_cancelled()?;
     let baseline = collect_nvidia_telemetry(1)?;
+    request.ensure_not_cancelled()?;
     let (context, sample) = select_cuda_device(
         &baseline.samples,
         request.challenge.required_gpu_uuid.as_deref(),
@@ -61,11 +64,13 @@ fn execute_remote_proof_inner(
     context
         .synchronize()
         .map_err(|error| format!("CUDA VRAM residency synchronization failed: {error}"))?;
+    request.ensure_not_cancelled()?;
 
     request.hold_residency_for_telemetry(gpu_uuid.clone())?;
+    request.ensure_not_cancelled()?;
 
     let gemm_gflops = if requires(&request.challenge, "tensor_gemm_microbenchmark") {
-        Some(run_gemm_microbenchmark(&context)?)
+        Some(run_gemm_microbenchmark(&context, &request)?)
     } else {
         None
     };
@@ -73,11 +78,13 @@ fn execute_remote_proof_inner(
         || request.challenge.min_tokens_per_second > 0.0
         || request.challenge.max_ttft_ms > 0
     {
-        let result = super::ollama::run_inference(&request.challenge)?;
+        let result =
+            super::ollama::run_inference(&request.challenge, || request.cancellation_requested())?;
         (Some(result.tokens_per_second), Some(result.ttft_ms))
     } else {
         (None, None)
     };
+    request.ensure_not_cancelled()?;
     let contention_detected = sample_has_contention(&sample);
     drop(residency);
 
@@ -158,7 +165,11 @@ fn select_cuda_device(
     }
 }
 
-fn run_gemm_microbenchmark(context: &Arc<CudaContext>) -> Result<f64, String> {
+fn run_gemm_microbenchmark(
+    context: &Arc<CudaContext>,
+    request: &ProofExecutionRequest,
+) -> Result<f64, String> {
+    request.ensure_not_cancelled()?;
     let stream = context.default_stream();
     let blas = CudaBlas::new(stream.clone())
         .map_err(|error| format!("cuBLAS initialization failed: {error}"))?;
@@ -190,14 +201,17 @@ fn run_gemm_microbenchmark(context: &Arc<CudaContext>) -> Result<f64, String> {
     context
         .synchronize()
         .map_err(|error| format!("cuBLAS GEMM warmup synchronization failed: {error}"))?;
+    request.ensure_not_cancelled()?;
     let started = Instant::now();
     for _ in 0..GEMM_ITERATIONS {
+        request.ensure_not_cancelled()?;
         unsafe { blas.gemm(config, &a, &b, &mut c) }
             .map_err(|error| format!("cuBLAS GEMM execution failed: {error}"))?;
     }
     context
         .synchronize()
         .map_err(|error| format!("cuBLAS GEMM synchronization failed: {error}"))?;
+    request.ensure_not_cancelled()?;
     let elapsed = started.elapsed().as_secs_f64();
     if elapsed <= 0.0 {
         return Err("cuBLAS GEMM elapsed time is not measurable".to_string());
