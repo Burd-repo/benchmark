@@ -1,6 +1,6 @@
 # Agent Service Lifecycle Contract
 
-Date: 2026-07-26
+Date: 2026-07-27
 
 ## Summary
 
@@ -29,7 +29,9 @@ scheduler worker, job runtime, or new remote protocol.
 
 Identity loading, credential refresh, hardware registration, local signing, and
 proof execution use blocking tasks so they do not block Tokio worker threads.
-They are not all cooperatively cancellable yet.
+Connection preparation and active credential refresh receive a cooperative
+shutdown token and check it before and after blocking boundaries. A native or
+HTTP call already in progress cannot be force-cancelled.
 
 ### Session Authority And Recovery
 
@@ -71,6 +73,7 @@ They are not all cooperatively cancellable yet.
 - `Ctrl+C` and the integration-test shutdown channel use the same internal
   signal.
 - Shutdown interrupts retry sleeps and the active control loop.
+- Shutdown races WebSocket connection and `session_ready` waits.
 - The control channel attempts a WebSocket close and stops heartbeat and
   telemetry production.
 - The supervisor signals the proof worker and waits for both control and proof
@@ -79,14 +82,17 @@ They are not all cooperatively cancellable yet.
   readiness, telemetry, or executor completion. The supervisor requests
   cancellation, releases the telemetry gate, and waits up to five seconds for
   cooperative proof completion.
+- Connection preparation and active credential refresh use the same pattern:
+  request cooperative cancellation and wait up to five seconds for their
+  blocking task.
 - The state lock is released when the foreground process exits.
 
-Graceful shutdown is not yet bounded in every phase. Blocking connection
-preparation cannot currently observe the shutdown signal while it is running.
-An active CUDA/Ollama proof checks cancellation between expensive operations,
-but a blocking vendor/runtime call already in progress can continue until that
-call returns or reaches its existing timeout. The five-second grace period
-bounds supervisor waiting, not native work or total process exit time.
+Graceful shutdown is not yet bounded in every phase. Connection preparation,
+credential refresh, and active CUDA/Ollama proof check cancellation between
+expensive operations, but a blocking vendor/runtime or HTTP call already in
+progress can continue until it returns or reaches its existing timeout. The
+five-second grace period bounds supervisor waiting, not native work or total
+process exit time.
 
 ### Crash Recovery
 
@@ -94,6 +100,11 @@ bounds supervisor waiting, not native work or total process exit time.
   related local JSON files use atomic replacement per file.
 - The operating system releases the process lock after a crash; the persistent
   lock file is metadata, not evidence that the process is alive.
+- `agent-lifecycle.json` is an atomic local snapshot. A separate
+  `agent-lifecycle.lock` is held for the lifetime of the foreground process.
+  Readers that find a persisted active phase without that OS lock report
+  `stopped`, `ready=false`, `process_active=false`, and preserve the stale phase
+  only as `last_observed_phase`.
 - On restart, the Agent reloads identity and enrollment, re-evaluates credential
   freshness and hardware registration, and resumes only a valid session bound to
   the same Control Plane.
@@ -128,6 +139,8 @@ operation.
 - Fixed: successful enrollment previously retained the prior local resume token.
 - Preserved: private keys, device credentials, resume tokens, and authorization
   headers are not added to lifecycle or retry logs.
+- Added: lifecycle failures persist only a bounded lowercase category token;
+  error text, credentials, and request headers are not persisted.
 - Preserved: backend session status, credential revocation, and device
   revocation remain authoritative.
 
@@ -142,20 +155,25 @@ Added or extended coverage verifies:
 - successful live enrollment removes stale local session credentials before the
   Agent connects;
 - the existing live PostgreSQL/WebSocket flow still covers heartbeat,
-  reconnect, resume, expiry replacement, and revocation.
+  reconnect, backend outage, resume, expiry replacement, and revocation;
+- lifecycle snapshots move through online, degraded, recovered online,
+  terminal failure, and clean stopped states;
+- shutdown cancels a deterministic active connection-preparation task without
+  waiting for its full synthetic workload.
 
 ## Service Packaging Gates
 
 Before adding Windows Service or systemd packaging:
 
-1. Extend the proof worker's cooperative cancellation to blocking startup,
-   hardware registration, credential requests, and vendor calls where the
-   underlying API supports interruption. The proof supervisor now has a
-   five-second grace period, but native calls are not force-cancellable.
+1. Extend cooperative cancellation into native/vendor and HTTP clients where
+   their APIs support interruption. Startup, credential refresh, and proof
+   supervisors now request cancellation and use a five-second grace period, but
+   in-flight blocking calls are not force-cancellable.
 2. Define stable process exit categories for operator-requested stop,
    recoverable outage, invalid local state, invalid credentials, and revocation.
-3. Expose a local lifecycle/readiness state that distinguishes starting,
-   connecting, online, degraded, stopping, and terminal failure.
+3. Keep the implemented local lifecycle/readiness contract stable and integrate
+   it with future service-manager health checks. It distinguishes starting,
+   connecting, online, degraded, stopping, terminal failure, and stopped.
 4. Define service-account permissions for identity keys, enrollment state,
    object artifacts, logs, and GPU/runtime access.
 5. Implement the signed update and rollback policy above.
@@ -182,10 +200,10 @@ cargo test -p burd-control-plane -- --ignored
 Results:
 
 - format and workspace build passed;
-- workspace tests passed with 254 tests and 25 environment-dependent tests
+- workspace tests passed with 260 tests and 25 environment-dependent tests
   ignored;
 - focused protocol tests passed with 36 tests;
-- focused Agent library tests passed with 26 tests and one live Ollama test
+- focused Agent library tests passed with 32 tests and one live Ollama test
   ignored;
 - the Agent remote-session PostgreSQL harness compiled;
 - protocol and Agent Clippy passed; pre-existing warnings remain in
@@ -202,13 +220,13 @@ model and does not replace the physical NVIDIA compatibility matrix.
 ## Remaining Limitations
 
 - The Agent is still a foreground command, not an operating-system service.
-- Startup preparation is not cooperatively cancellable.
-- Active proof execution checks cancellation at explicit CUDA, cuBLAS, and
-  Ollama checkpoints. In-flight native or blocking HTTP calls may continue until
-  they return; the five-second proof-worker grace period only bounds supervisor
-  waiting.
+- Startup preparation, credential refresh, and active proof execution check
+  cooperative cancellation at explicit boundaries. In-flight native or
+  blocking HTTP calls may continue until they return; each five-second grace
+  period only bounds supervisor waiting.
 - WebSocket close does not yet have a global process shutdown deadline.
-- Retry history and last terminal failure are not durably exposed to a service
+- The latest local lifecycle phase and bounded failure category are durable, but
+  retry history and a stable process exit taxonomy are not exposed to a service
   manager.
 - No automatic update, release signature verification, rollback, or installer
   exists.

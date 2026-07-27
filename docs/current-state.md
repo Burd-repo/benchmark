@@ -328,12 +328,21 @@ starting the API server or depending on host state:
   missing/expired sessions are recreated. Malformed or unreadable session state
   fails closed, persisted sessions are resumed only against the enrolled Control
   Plane, and successful enrollment invalidates old local session credentials.
-  Retry state remains in-memory and is not a supervised daemon.
-  `remote-session status` reads backend state.
+  Retry state remains in-memory and is not a supervised daemon. Startup
+  preparation and active credential refresh observe cooperative shutdown before
+  and after blocking work; the supervisor waits up to five seconds, but cannot
+  force-cancel a native or HTTP call already in progress.
+- `remote-session status` reads backend-authoritative session state.
+  `remote-session lifecycle` reads a separate local foreground-process contract:
+  `starting`, `connecting`, `online`, `degraded`, `stopping`,
+  `terminal_failure`, or `stopped`. Local readiness is true only while online.
+  A dedicated OS-held liveness lock prevents a stale snapshot after crash from
+  reporting an active or ready process.
 - PostgreSQL integration coverage exercises start, duplicate rejection,
   heartbeat, degradation, resume, and revocation. One ignored harness runs the
   real Agent loop against Axum and isolated PostgreSQL, injects socket loss and
-  backend unavailability, and verifies resume, expiry replacement, and revocation.
+  backend unavailability, and verifies local online/degraded/recovered/terminal
+  lifecycle states, resume, expiry replacement, and revocation.
 - A second ignored Agent harness injects deterministic test-only NVIDIA samples
   through the production signing and WebSocket path. It verifies canonical hashes,
   Ed25519 signatures, control/sample sequence continuity after reconnect, local ACK
@@ -445,10 +454,12 @@ starting the API server or depending on host state:
   observes foreground shutdown around readiness, telemetry, CUDA/cuBLAS
   checkpoints, and Ollama stream processing, with a five-second cooperative
   worker grace period. In-flight native or blocking HTTP calls are not
-  force-cancelled, so this does not bound total process exit time. The Agent
-  still lacks operating-system service packaging, cancellable startup work,
-  automatic signed updates, production artifact distribution, and broad
-  physical-GPU compatibility validation. The foreground lifecycle and
+  force-cancelled, so this does not bound total process exit time. Connection
+  preparation and active credential refresh now receive the same cooperative
+  cancellation signal and five-second supervisor grace period. The Agent still
+  lacks operating-system service packaging, force-cancellable native/HTTP
+  startup calls, automatic signed updates, production artifact distribution,
+  and broad physical-GPU compatibility validation. The foreground lifecycle and
   service-readiness gates are documented in
   `docs/hardening/agent-service-lifecycle-contract.md`. BN-07 adds recurring
   verification state and an admin sweep. The sweep requires a complete deployment

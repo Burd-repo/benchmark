@@ -1,4 +1,5 @@
 use axum::Router;
+use burd_agent::lifecycle::{AgentLifecyclePhase, AgentLifecycleStatus, lifecycle_status};
 use burd_agent::remote_proof::{ProofExecution, ProofExecutionRequest};
 use burd_control_plane::{AppState, ControlPlaneConfig, Database, router};
 use burd_hardware::NvidiaTelemetryCollection;
@@ -519,6 +520,27 @@ where
     }
 }
 
+async fn wait_for_lifecycle(
+    phase: AgentLifecyclePhase,
+    process_active: bool,
+) -> AgentLifecycleStatus {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = tokio::task::spawn_blocking(lifecycle_status)
+            .await
+            .unwrap()
+            .unwrap();
+        if status.phase == phase && status.process_active == process_active {
+            return status;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for lifecycle {phase:?}/{process_active}; last status: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 async fn schema_client(database_url: &str, schema: &str) -> Client {
     let (client, connection) = tokio_postgres::connect(database_url, NoTls).await.unwrap();
     tokio::spawn(async move {
@@ -626,6 +648,8 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
         })
         .await;
     let initial = initial_rows[0].clone();
+    let online_lifecycle = wait_for_lifecycle(AgentLifecyclePhase::Online, true).await;
+    assert!(online_lifecycle.ready);
 
     proxy.drop_connections();
     let resumed_rows =
@@ -647,6 +671,12 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
 
     let proxy_addr = proxy.addr;
     proxy.stop().await;
+    let degraded_lifecycle = wait_for_lifecycle(AgentLifecyclePhase::Degraded, true).await;
+    assert!(!degraded_lifecycle.ready);
+    assert_eq!(
+        degraded_lifecycle.failure_kind.as_deref(),
+        Some("connection_error")
+    );
     tokio::time::sleep(Duration::from_secs(10)).await;
     proxy = TestTcpProxy::start_on(proxy_addr, server.addr).await;
 
@@ -670,6 +700,8 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
         .unwrap()
         .clone();
     assert_ne!(restarted.session_id, initial.session_id);
+    let restarted_lifecycle = wait_for_lifecycle(AgentLifecyclePhase::Online, true).await;
+    assert!(restarted_lifecycle.ready);
 
     let (status, revoked) = post_json(
         format!(
@@ -695,6 +727,10 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
                 (true, joined)
             }
         };
+    let terminal_lifecycle = tokio::task::spawn_blocking(lifecycle_status)
+        .await
+        .unwrap()
+        .unwrap();
 
     proxy.stop().await;
     server.stop().await;
@@ -702,6 +738,16 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
     let _ = std::fs::remove_dir_all(&object_storage_dir);
 
     assert!(!timed_out, "Agent ignored remote session revocation");
+    assert_eq!(
+        terminal_lifecycle.phase,
+        AgentLifecyclePhase::TerminalFailure
+    );
+    assert!(!terminal_lifecycle.ready);
+    assert!(!terminal_lifecycle.process_active);
+    assert_eq!(
+        terminal_lifecycle.failure_kind.as_deref(),
+        Some("session_revoked")
+    );
     let error = agent_result.expect_err("revocation must terminate the Agent control loop");
     assert!(
         error.contains("revoked"),
@@ -945,12 +991,20 @@ async fn live_agent_signed_telemetry_persists_ack_resumes_and_handles_rejection(
         agent_result.is_ok(),
         "unexpected Agent error: {agent_result:?}"
     );
+    let stopped_lifecycle = tokio::task::spawn_blocking(lifecycle_status)
+        .await
+        .unwrap()
+        .unwrap();
 
     proxy.stop().await;
     server.stop().await;
     db.drop_schema_for_test().await.unwrap();
     let _ = std::fs::remove_dir_all(&object_storage_dir);
     TELEMETRY_MODE.store(TELEMETRY_MODE_VALID, Ordering::SeqCst);
+
+    assert_eq!(stopped_lifecycle.phase, AgentLifecyclePhase::Stopped);
+    assert!(!stopped_lifecycle.ready);
+    assert!(!stopped_lifecycle.process_active);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

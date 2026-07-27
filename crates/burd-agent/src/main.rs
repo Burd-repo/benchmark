@@ -1,7 +1,9 @@
 mod cli;
 
 use anyhow::Result;
-use burd_agent::{AgentStateLock, AgentStateLockOperation, remote_enrollment, remote_session};
+use burd_agent::{
+    AgentStateLock, AgentStateLockOperation, lifecycle, remote_enrollment, remote_session,
+};
 use burd_bench::{
     DiskBenchmarkOptions, LlmBenchmarkOptions, NetworkBenchmarkOptions, ReportRunOptions,
     SecureRuntimePlanOptions, append_report_history, append_signed_report_history,
@@ -367,6 +369,9 @@ fn run() -> Result<()> {
             }
             RemoteSessionCommands::Status { json: _ } => {
                 print_json(&remote_session::status().map_err(anyhow::Error::msg)?)?;
+            }
+            RemoteSessionCommands::Lifecycle { json: _ } => {
+                print_json(&lifecycle::lifecycle_status().map_err(anyhow::Error::msg)?)?;
             }
         },
         Commands::Challenge { command } => match command {
@@ -907,6 +912,7 @@ mod tests {
             &["identity", "show"][..],
             &["enrollment", "status"][..],
             &["remote-session", "status"][..],
+            &["remote-session", "lifecycle"][..],
             &["remote-session", "connect"][..],
             &["api-token", "show"][..],
             &["system"][..],
