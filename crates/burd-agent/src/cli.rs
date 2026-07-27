@@ -351,6 +351,11 @@ pub enum RemoteSessionCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Read the local foreground process lifecycle and readiness state.
+    Lifecycle {
+        #[arg(long)]
+        json: bool,
+    },
 }
 #[derive(Debug, Subcommand)]
 pub enum ChallengeCommands {

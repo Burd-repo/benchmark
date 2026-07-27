@@ -201,24 +201,31 @@ burd-agent remote-session connect
 burd-agent remote-session connect --telemetry --telemetry-batch-samples 8
 burd-agent remote-session connect --proofs --telemetry-batch-samples 8
 burd-agent remote-session status --json
+burd-agent remote-session lifecycle --json
 ```
 
 O agente mantem uma conexao WebSocket de saida autenticada, com heartbeat
 sequenciado, retomada e backoff. Um lock exclusivo por diretorio de estado
 serializa `remote-session connect` e mudancas criticas de identity, enrollment e
-API token; comandos de status e diagnostico continuam disponiveis. O arquivo de
-lock persistente nao significa que um processo continua ativo. Estados JSON
-canonicos usam substituicao atomica por arquivo; isso evita JSON parcial, mas nao
-forma uma transacao entre arquivos nem impede toda atualizacao concorrente. Veja
+API token; comandos de status e diagnostico continuam disponiveis.
+`remote-session status` consulta o estado autoritativo do backend, enquanto
+`remote-session lifecycle` le o ciclo local do processo foreground (`starting`,
+`connecting`, `online`, `degraded`, `stopping`, `terminal_failure` ou
+`stopped`). Readiness local so e verdadeira em `online`; um lock de liveness
+mantido pelo processo impede que um snapshot obsoleto apos crash seja exposto
+como ativo. Estados JSON canonicos usam substituicao atomica por arquivo; isso
+evita JSON parcial, mas nao forma uma transacao entre arquivos nem impede toda
+atualizacao concorrente. Veja
 [`docs/bn-03-remote-session.md`](docs/bn-03-remote-session.md).
 O contrato de lifecycle agora falha fechado para estado de sessao corrompido,
 impede resume token de atravessar Control Planes e invalida a sessao local apos
-novo enrollment. O Agent continua foreground. O Proof of Capability agora
-recebe cancelamento cooperativo e um grace period de cinco segundos no
-supervisor, mas chamadas nativas/HTTP bloqueantes em andamento nao sao
-forcadamente interrompidas; isso ainda nao e um daemon nem um limite global de
-saida do processo. Veja
-[`docs/hardening/agent-service-lifecycle-contract.md`](docs/hardening/agent-service-lifecycle-contract.md)
+novo enrollment. Preparacao de conexao e refresh de credencial recebem
+cancelamento cooperativo e um grace period de cinco segundos no supervisor,
+assim como o Proof of Capability. Chamadas nativas/HTTP bloqueantes que ja
+estiverem em andamento nao sao forcadamente interrompidas; o Agent continua
+foreground, sem daemon ou limite global de saida do processo. Veja
+[`docs/hardening/agent-service-lifecycle-contract.md`](docs/hardening/agent-service-lifecycle-contract.md),
+[`docs/hardening/agent-lifecycle-readiness.md`](docs/hardening/agent-lifecycle-readiness.md)
 e
 [`docs/hardening/agent-cooperative-proof-shutdown.md`](docs/hardening/agent-cooperative-proof-shutdown.md).
 O BN-04 adiciona telemetria GPU assinada no control plane; veja [`docs/bn-04-gpu-telemetry.md`](docs/bn-04-gpu-telemetry.md).

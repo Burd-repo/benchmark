@@ -1,3 +1,4 @@
+use crate::lifecycle::{AgentLifecyclePhase, LifecycleReporter};
 use crate::remote_enrollment::{
     ControlPlaneRequestError, join_url, post_json_checked, refresh_credential,
     refresh_credential_checked,
@@ -21,12 +22,18 @@ use burd_protocol::{
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use futures_util::{SinkExt, StreamExt};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
+
+const SESSION_OPERATION_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 pub fn connect(
     agent_version: &str,
@@ -37,33 +44,84 @@ pub fn connect(
 ) -> Result<RemoteSessionStateStatus, String> {
     validate_telemetry_batch_samples(telemetry_batch_samples)?;
     let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)?;
-    let identity = load_identity()?;
-    let telemetry_enabled = proofs || telemetry || identity.telemetry_enabled;
-    let proof_agent_version = proofs.then(|| agent_version.to_string());
-
-    let retry_seed = stable_retry_seed(&identity.machine_id);
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|error| format!("failed to start remote session runtime: {error}"))?;
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    runtime.block_on(async move {
-        tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            let _ = shutdown_tx.send(true);
-        });
-        run_control_and_proof(
-            agent_version.to_string(),
-            max_reconnect_delay_seconds.max(1),
-            retry_seed,
-            telemetry_enabled,
-            telemetry_batch_samples,
-            collect_nvidia_telemetry,
-            proof_agent_version,
-            execute_remote_proof,
-            shutdown_rx,
-        )
-        .await
-    })?;
+    let lifecycle = LifecycleReporter::start()?;
+    let result = (|| {
+        let identity = load_identity()?;
+        let telemetry_enabled = proofs || telemetry || identity.telemetry_enabled;
+        let proof_agent_version = proofs.then(|| agent_version.to_string());
+        let retry_seed = stable_retry_seed(&identity.machine_id);
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|error| format!("failed to start remote session runtime: {error}"))?;
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let runtime_lifecycle = lifecycle.clone();
+        runtime.block_on(async move {
+            tokio::spawn(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                let _ = shutdown_tx.send(true);
+            });
+            run_control_and_proof(
+                agent_version.to_string(),
+                max_reconnect_delay_seconds.max(1),
+                retry_seed,
+                telemetry_enabled,
+                telemetry_batch_samples,
+                collect_nvidia_telemetry,
+                proof_agent_version,
+                execute_remote_proof,
+                prepare_connection,
+                runtime_lifecycle,
+                shutdown_rx,
+            )
+            .await
+        })
+    })();
+    complete_lifecycle(&lifecycle, &result)?;
+    result?;
     show_remote_session()
+}
+
+fn complete_lifecycle(
+    lifecycle: &LifecycleReporter,
+    result: &Result<(), String>,
+) -> Result<(), String> {
+    match result {
+        Ok(()) => lifecycle.transition(AgentLifecyclePhase::Stopped, None),
+        Err(_) if lifecycle.phase()? == AgentLifecyclePhase::TerminalFailure => Ok(()),
+        Err(_) => lifecycle.transition(
+            AgentLifecyclePhase::TerminalFailure,
+            Some("session_runtime"),
+        ),
+    }
+}
+
+#[cfg(feature = "integration-test-support")]
+async fn complete_lifecycle_async(
+    lifecycle: &LifecycleReporter,
+    result: &Result<(), String>,
+) -> Result<(), String> {
+    match result {
+        Ok(()) => transition_lifecycle(lifecycle, AgentLifecyclePhase::Stopped, None).await,
+        Err(_) if lifecycle.phase()? == AgentLifecyclePhase::TerminalFailure => Ok(()),
+        Err(_) => {
+            transition_lifecycle(
+                lifecycle,
+                AgentLifecyclePhase::TerminalFailure,
+                Some("session_runtime"),
+            )
+            .await
+        }
+    }
+}
+
+async fn transition_lifecycle(
+    lifecycle: &LifecycleReporter,
+    phase: AgentLifecyclePhase,
+    failure_kind: Option<&'static str>,
+) -> Result<(), String> {
+    let lifecycle = lifecycle.clone();
+    tokio::task::spawn_blocking(move || lifecycle.transition(phase, failure_kind))
+        .await
+        .map_err(|error| format!("Agent lifecycle transition task failed: {error}"))?
 }
 
 #[cfg(feature = "integration-test-support")]
@@ -96,23 +154,33 @@ pub async fn connect_until_shutdown_with_telemetry_collector(
 ) -> Result<RemoteSessionStateStatus, String> {
     validate_telemetry_batch_samples(telemetry_batch_samples)?;
     let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)?;
-    let identity = tokio::task::spawn_blocking(load_identity)
+    let lifecycle = tokio::task::spawn_blocking(LifecycleReporter::start)
         .await
-        .map_err(|error| format!("failed to load identity task: {error}"))??;
-    let telemetry_enabled = telemetry || identity.telemetry_enabled;
-    let retry_seed = stable_retry_seed(&identity.machine_id);
-    run_control_and_proof(
-        agent_version.to_string(),
-        max_reconnect_delay_seconds.max(1),
-        retry_seed,
-        telemetry_enabled,
-        telemetry_batch_samples,
-        telemetry_collector,
-        None,
-        execute_remote_proof,
-        shutdown,
-    )
-    .await?;
+        .map_err(|error| format!("failed to start Agent lifecycle task: {error}"))??;
+    let result = async {
+        let identity = tokio::task::spawn_blocking(load_identity)
+            .await
+            .map_err(|error| format!("failed to load identity task: {error}"))??;
+        let telemetry_enabled = telemetry || identity.telemetry_enabled;
+        let retry_seed = stable_retry_seed(&identity.machine_id);
+        run_control_and_proof(
+            agent_version.to_string(),
+            max_reconnect_delay_seconds.max(1),
+            retry_seed,
+            telemetry_enabled,
+            telemetry_batch_samples,
+            telemetry_collector,
+            None,
+            execute_remote_proof,
+            prepare_connection,
+            lifecycle.clone(),
+            shutdown,
+        )
+        .await
+    }
+    .await;
+    complete_lifecycle_async(&lifecycle, &result).await?;
+    result?;
     tokio::task::spawn_blocking(show_remote_session)
         .await
         .map_err(|error| format!("failed to load remote session status task: {error}"))?
@@ -130,22 +198,32 @@ pub async fn connect_until_shutdown_with_test_runtime(
 ) -> Result<RemoteSessionStateStatus, String> {
     validate_telemetry_batch_samples(telemetry_batch_samples)?;
     let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)?;
-    let identity = tokio::task::spawn_blocking(load_identity)
+    let lifecycle = tokio::task::spawn_blocking(LifecycleReporter::start)
         .await
-        .map_err(|error| format!("failed to load identity task: {error}"))??;
-    let retry_seed = stable_retry_seed(&identity.machine_id);
-    run_control_and_proof(
-        agent_version.to_string(),
-        max_reconnect_delay_seconds.max(1),
-        retry_seed,
-        true,
-        telemetry_batch_samples,
-        telemetry_collector,
-        Some(agent_version.to_string()),
-        proof_executor,
-        shutdown,
-    )
-    .await?;
+        .map_err(|error| format!("failed to start Agent lifecycle task: {error}"))??;
+    let result = async {
+        let identity = tokio::task::spawn_blocking(load_identity)
+            .await
+            .map_err(|error| format!("failed to load identity task: {error}"))??;
+        let retry_seed = stable_retry_seed(&identity.machine_id);
+        run_control_and_proof(
+            agent_version.to_string(),
+            max_reconnect_delay_seconds.max(1),
+            retry_seed,
+            true,
+            telemetry_batch_samples,
+            telemetry_collector,
+            Some(agent_version.to_string()),
+            proof_executor,
+            prepare_connection,
+            lifecycle.clone(),
+            shutdown,
+        )
+        .await
+    }
+    .await;
+    complete_lifecycle_async(&lifecycle, &result).await?;
+    result?;
     tokio::task::spawn_blocking(show_remote_session)
         .await
         .map_err(|error| format!("failed to load remote session status task: {error}"))?
@@ -161,6 +239,8 @@ async fn run_control_and_proof(
     telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
     proof_agent_version: Option<String>,
     proof_executor: ProofExecutor,
+    preparation_executor: PreparationExecutor,
+    lifecycle: LifecycleReporter,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let (proof_telemetry_tx, mut proof_telemetry_rx) = mpsc::channel(1);
@@ -183,6 +263,8 @@ async fn run_control_and_proof(
                 batch_samples: telemetry_batch_samples,
                 collector: telemetry_collector,
             },
+            preparation_executor,
+            lifecycle: lifecycle.clone(),
         },
         &mut proof_telemetry_rx,
         session_shutdown_rx,
@@ -193,8 +275,14 @@ async fn run_control_and_proof(
         Some(mut worker) => {
             tokio::select! {
                 _ = wait_for_shutdown(&mut shutdown) => {
+                    let lifecycle_result = transition_lifecycle(
+                        &lifecycle,
+                        AgentLifecyclePhase::Stopping,
+                        None,
+                    ).await;
                     let _ = session_shutdown_tx.send(true);
                     let result = control.await;
+                    lifecycle_result?;
                     finish_proof_worker(worker, result).await
                 }
                 result = &mut control => {
@@ -214,8 +302,15 @@ async fn run_control_and_proof(
         None => {
             tokio::select! {
                 _ = wait_for_shutdown(&mut shutdown) => {
+                    let lifecycle_result = transition_lifecycle(
+                        &lifecycle,
+                        AgentLifecyclePhase::Stopping,
+                        None,
+                    ).await;
                     let _ = session_shutdown_tx.send(true);
-                    control.await
+                    let result = control.await;
+                    lifecycle_result?;
+                    result
                 }
                 result = &mut control => result,
             }
@@ -294,10 +389,13 @@ pub fn status() -> Result<RemoteSessionRecord, String> {
 fn start_or_resume(
     agent_version: &str,
     registration: &ProviderRegistrationPayload,
+    cancellation: &SessionOperationCancellation,
 ) -> Result<RemoteSessionStateStatus, ReconnectFailure> {
+    ensure_session_not_cancelled(cancellation)?;
     let enrollment = load_remote_enrollment().map_err(|error| {
         ReconnectFailure::terminal("local_state", format!("failed to load enrollment: {error}"))
     })?;
+    ensure_session_not_cancelled(cancellation)?;
     let mut persisted = load_remote_session_optional().map_err(|error| {
         ReconnectFailure::terminal(
             "local_state",
@@ -315,6 +413,7 @@ fn start_or_resume(
         })?;
         persisted = None;
     }
+    ensure_session_not_cancelled(cancellation)?;
     let request = StartRemoteSessionRequest {
         provider_id: enrollment.provider_id.clone(),
         device_id: enrollment.device_id.clone(),
@@ -328,11 +427,13 @@ fn start_or_resume(
             resume_token: state.resume_token.clone(),
         }),
     };
+    ensure_session_not_cancelled(cancellation)?;
     let result: Result<StartRemoteSessionResponse, ControlPlaneRequestError> = post_json_checked(
         &join_url(&enrollment.control_plane_url, "/v1/sessions"),
         &request,
         Some(&enrollment.credential),
     );
+    // Persist a successful backend side effect before the caller honors shutdown.
     let response = match result {
         Ok(response) => response,
         Err(error) if persisted.is_some() && persisted_session_should_restart(&error) => {
@@ -342,7 +443,7 @@ fn start_or_resume(
                     format!("failed to clear expired remote session: {error}"),
                 )
             })?;
-            return start_or_resume(agent_version, registration);
+            return start_or_resume(agent_version, registration, cancellation);
         }
         Err(error) => return Err(classify_control_plane_error(error)),
     };
@@ -354,8 +455,166 @@ fn start_or_resume(
     })
 }
 
+fn ensure_session_not_cancelled(
+    cancellation: &SessionOperationCancellation,
+) -> Result<(), ReconnectFailure> {
+    cancellation
+        .ensure_not_cancelled()
+        .map_err(|error| ReconnectFailure::retry("preparation_cancelled", error))
+}
+
 fn session_belongs_to_control_plane(session: &RemoteSessionState, control_plane_url: &str) -> bool {
     session.control_plane_url.trim_end_matches('/') == control_plane_url.trim_end_matches('/')
+}
+
+type PreparationExecutor = fn(PreparationRequest) -> Result<PreparedConnection, ReconnectFailure>;
+
+struct PreparedConnection {
+    enrollment: RemoteEnrollmentState,
+    session: RemoteSessionState,
+    hardware_fingerprint: String,
+}
+
+struct PreparationRequest {
+    agent_version: String,
+    cancellation: SessionOperationCancellation,
+}
+
+impl PreparationRequest {
+    fn ensure_not_cancelled(&self) -> Result<(), ReconnectFailure> {
+        self.cancellation
+            .ensure_not_cancelled()
+            .map_err(|error| ReconnectFailure::retry("preparation_cancelled", error))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct SessionOperationCancellation {
+    requested: Arc<AtomicBool>,
+}
+
+impl SessionOperationCancellation {
+    fn cancel(&self) {
+        self.requested.store(true, Ordering::Release);
+    }
+
+    fn ensure_not_cancelled(&self) -> Result<(), String> {
+        if self.requested.load(Ordering::Acquire) {
+            Err("remote session operation cancelled by Agent shutdown".to_string())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn prepare_connection(request: PreparationRequest) -> Result<PreparedConnection, ReconnectFailure> {
+    request.ensure_not_cancelled()?;
+    let enrollment = ensure_credential_fresh(&request.cancellation)?;
+    request.ensure_not_cancelled()?;
+    let registration = build_registration_payload(&request.agent_version);
+    request.ensure_not_cancelled()?;
+    let hardware_fingerprint = registration.hardware_fingerprint.clone();
+    start_or_resume(&request.agent_version, &registration, &request.cancellation)?;
+    request.ensure_not_cancelled()?;
+    let session = load_remote_session().map_err(|error| {
+        ReconnectFailure::terminal(
+            "local_state",
+            format!("failed to load remote session: {error}"),
+        )
+    })?;
+    Ok(PreparedConnection {
+        enrollment,
+        session,
+        hardware_fingerprint,
+    })
+}
+
+async fn run_preparation_or_shutdown(
+    agent_version: String,
+    executor: PreparationExecutor,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<Option<PreparedConnection>, ReconnectFailure> {
+    let cancellation = SessionOperationCancellation::default();
+    let request = PreparationRequest {
+        agent_version,
+        cancellation: cancellation.clone(),
+    };
+    let mut task = tokio::task::spawn_blocking(move || executor(request));
+    tokio::select! {
+        biased;
+        _ = wait_for_shutdown(shutdown) => {
+            stop_session_operation(
+                &cancellation,
+                &mut task,
+                "connection_preparation",
+            ).await;
+            Ok(None)
+        }
+        result = &mut task => {
+            result
+                .map_err(|error| {
+                    ReconnectFailure::terminal(
+                        "internal_task",
+                        format!("remote session preparation task failed: {error}"),
+                    )
+                })?
+                .map(Some)
+        }
+    }
+}
+
+async fn stop_session_operation<T, E>(
+    cancellation: &SessionOperationCancellation,
+    task: &mut tokio::task::JoinHandle<Result<T, E>>,
+    operation: &'static str,
+) where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    cancellation.cancel();
+    if tokio::time::timeout(SESSION_OPERATION_SHUTDOWN_GRACE, &mut *task)
+        .await
+        .is_err()
+    {
+        task.abort();
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "event": "remote_session_operation_shutdown_grace_exceeded",
+                "operation": operation,
+                "grace_seconds": SESSION_OPERATION_SHUTDOWN_GRACE.as_secs(),
+            })
+        );
+    }
+}
+
+async fn refresh_credential_or_shutdown(
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<Option<RemoteEnrollmentState>, String> {
+    let cancellation = SessionOperationCancellation::default();
+    let worker_cancellation = cancellation.clone();
+    let mut task = tokio::task::spawn_blocking(move || {
+        worker_cancellation.ensure_not_cancelled()?;
+        refresh_credential()?;
+        worker_cancellation.ensure_not_cancelled()?;
+        load_remote_enrollment()
+    });
+    tokio::select! {
+        biased;
+        _ = wait_for_shutdown(shutdown) => {
+            stop_session_operation(
+                &cancellation,
+                &mut task,
+                "credential_refresh",
+            ).await;
+            Ok(None)
+        }
+        result = &mut task => {
+            result
+                .map_err(|error| format!("credential refresh task failed: {error}"))?
+                .map(Some)
+        }
+    }
 }
 
 struct ControlLoopRuntime {
@@ -363,6 +622,8 @@ struct ControlLoopRuntime {
     max_reconnect_delay_seconds: u64,
     retry_seed: u64,
     telemetry: TelemetryRuntime,
+    preparation_executor: PreparationExecutor,
+    lifecycle: LifecycleReporter,
 }
 
 async fn run_control_loop(
@@ -376,11 +637,12 @@ async fn run_control_loop(
         if shutdown_requested(&shutdown) {
             return Ok(());
         }
+        transition_lifecycle(&runtime.lifecycle, AgentLifecyclePhase::Connecting, None).await?;
         match attempt_connection(
             runtime.agent_version.clone(),
-            runtime.telemetry.enabled,
-            runtime.telemetry.batch_samples,
-            runtime.telemetry.collector,
+            runtime.telemetry,
+            runtime.preparation_executor,
+            &runtime.lifecycle,
             proof_telemetry,
             &mut shutdown,
         )
@@ -388,14 +650,32 @@ async fn run_control_loop(
         {
             Ok(()) => return Ok(()),
             Err(failure) => {
-                match failure.disposition {
-                    ReconnectDisposition::Stop => return Err(failure.message),
-                    ReconnectDisposition::RestartSession => {
-                        clear_remote_session().map_err(|error| {
-                            format!("failed to clear remote session before restart: {error}")
-                        })?;
-                    }
-                    ReconnectDisposition::Retry => {}
+                if failure.disposition == ReconnectDisposition::Stop {
+                    transition_lifecycle(
+                        &runtime.lifecycle,
+                        AgentLifecyclePhase::TerminalFailure,
+                        Some(failure.kind),
+                    )
+                    .await?;
+                    return Err(failure.message);
+                }
+                transition_lifecycle(
+                    &runtime.lifecycle,
+                    AgentLifecyclePhase::Degraded,
+                    Some(failure.kind),
+                )
+                .await?;
+                if failure.disposition == ReconnectDisposition::RestartSession
+                    && let Err(error) = clear_remote_session()
+                {
+                    let message = format!("failed to clear remote session before restart: {error}");
+                    transition_lifecycle(
+                        &runtime.lifecycle,
+                        AgentLifecyclePhase::TerminalFailure,
+                        Some("local_state"),
+                    )
+                    .await?;
+                    return Err(message);
                 }
                 let delay = retry_policy.delay_after_failure(failure.connection_was_stable);
                 eprintln!(
@@ -422,48 +702,26 @@ async fn run_control_loop(
 
 async fn attempt_connection(
     agent_version: String,
-    telemetry_enabled: bool,
-    telemetry_batch_samples: usize,
-    telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
+    telemetry: TelemetryRuntime,
+    preparation_executor: PreparationExecutor,
+    lifecycle: &LifecycleReporter,
     proof_telemetry: &mut mpsc::Receiver<ProofTelemetryRequest>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<(), ReconnectFailure> {
     if shutdown_requested(shutdown) {
         return Ok(());
     }
-    let prepared = tokio::task::spawn_blocking(move || {
-        let enrollment = ensure_credential_fresh()?;
-        let registration = build_registration_payload(&agent_version);
-        let hardware_fingerprint = registration.hardware_fingerprint.clone();
-        start_or_resume(&agent_version, &registration)?;
-        let session = load_remote_session().map_err(|error| {
-            ReconnectFailure::terminal(
-                "local_state",
-                format!("failed to load remote session: {error}"),
-            )
-        })?;
-        Ok::<_, ReconnectFailure>((enrollment, session, hardware_fingerprint))
-    })
-    .await
-    .map_err(|error| {
-        ReconnectFailure::terminal(
-            "internal_task",
-            format!("remote session preparation task failed: {error}"),
-        )
-    })??;
-
-    let (enrollment, session, hardware_fingerprint) = prepared;
+    let Some(prepared) =
+        run_preparation_or_shutdown(agent_version, preparation_executor, shutdown).await?
+    else {
+        return Ok(());
+    };
     let mut connection_was_stable = false;
     match run_one_connection(
-        enrollment,
-        session,
-        hardware_fingerprint,
-        TelemetryRuntime {
-            enabled: telemetry_enabled,
-            batch_samples: telemetry_batch_samples,
-            collector: telemetry_collector,
-        },
+        prepared,
+        telemetry,
         &mut connection_was_stable,
+        lifecycle,
         proof_telemetry,
         shutdown,
     )
@@ -694,14 +952,18 @@ struct TelemetryRuntime {
 }
 
 async fn run_one_connection(
-    mut enrollment: RemoteEnrollmentState,
-    session: RemoteSessionState,
-    hardware_fingerprint: String,
+    prepared: PreparedConnection,
     telemetry: TelemetryRuntime,
     connection_was_stable: &mut bool,
+    lifecycle: &LifecycleReporter,
     proof_telemetry: &mut mpsc::Receiver<ProofTelemetryRequest>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<ConnectionOutcome, String> {
+    let PreparedConnection {
+        mut enrollment,
+        session,
+        hardware_fingerprint,
+    } = prepared;
     let mut request = session
         .control_url
         .clone()
@@ -723,7 +985,12 @@ async fn run_one_connection(
         HeaderValue::from_str(&enrollment.device_id)
             .map_err(|error| format!("invalid device ID header: {error}"))?,
     );
-    let (mut socket, _) = match connect_async(request).await {
+    let connection = tokio::select! {
+        biased;
+        _ = wait_for_shutdown(shutdown) => return Ok(ConnectionOutcome::Stopped),
+        result = connect_async(request) => result,
+    };
+    let (mut socket, _) = match connection {
         Ok(connected) => connected,
         Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
             if let Some(outcome) = websocket_http_outcome(response.status().as_u16()) {
@@ -737,13 +1004,21 @@ async fn run_one_connection(
         Err(error) => return Err(format!("control channel connection failed: {error}")),
     };
 
-    let ready = receive_server_message(&mut socket, Duration::from_secs(10)).await?;
+    let ready = tokio::select! {
+        biased;
+        _ = wait_for_shutdown(shutdown) => {
+            let _ = socket.close(None).await;
+            return Ok(ConnectionOutcome::Stopped);
+        }
+        result = receive_server_message(&mut socket, Duration::from_secs(10)) => result?,
+    };
     if ready.message_type != "session_ready" {
         return Err(format!(
             "control channel expected session_ready, received {}",
             ready.message_type
         ));
     }
+    transition_lifecycle(lifecycle, AgentLifecyclePhase::Online, None).await?;
     let mut sequence = ready.sequence_ack.max(session.sequence_last);
     let interval = Duration::from_secs(u64::from(session.heartbeat_interval_seconds).max(1));
     let response_timeout = Duration::from_secs(
@@ -943,12 +1218,10 @@ async fn run_one_connection(
         }
 
         if credential_refresh_due(&enrollment)? {
-            enrollment = tokio::task::spawn_blocking(|| {
-                refresh_credential()?;
-                load_remote_enrollment()
-            })
-            .await
-            .map_err(|error| format!("credential refresh task failed: {error}"))??;
+            let Some(refreshed) = refresh_credential_or_shutdown(shutdown).await? else {
+                return Ok(ConnectionOutcome::Stopped);
+            };
+            enrollment = refreshed;
         }
     }
 }
@@ -1201,13 +1474,17 @@ where
     }
 }
 
-fn ensure_credential_fresh() -> Result<RemoteEnrollmentState, ReconnectFailure> {
+fn ensure_credential_fresh(
+    cancellation: &SessionOperationCancellation,
+) -> Result<RemoteEnrollmentState, ReconnectFailure> {
+    ensure_session_not_cancelled(cancellation)?;
     let state = load_remote_enrollment().map_err(|error| {
         ReconnectFailure::terminal(
             "local_state",
             format!("failed to load remote enrollment: {error}"),
         )
     })?;
+    ensure_session_not_cancelled(cancellation)?;
     let refresh_due = credential_refresh_due(&state).map_err(|error| {
         ReconnectFailure::terminal(
             "local_state",
@@ -1215,7 +1492,9 @@ fn ensure_credential_fresh() -> Result<RemoteEnrollmentState, ReconnectFailure> 
         )
     })?;
     if refresh_due {
+        ensure_session_not_cancelled(cancellation)?;
         refresh_credential_checked().map_err(classify_control_plane_error)?;
+        ensure_session_not_cancelled(cancellation)?;
         load_remote_enrollment().map_err(|error| {
             ReconnectFailure::terminal(
                 "local_state",
@@ -1284,6 +1563,50 @@ mod tests {
             unexpected_proof_worker_exit(Ok(Err("state unavailable".to_string()))),
             "remote proof worker failed: state unavailable"
         );
+    }
+
+    static PREPARATION_EXECUTOR_STARTED: AtomicBool = AtomicBool::new(false);
+
+    #[tokio::test]
+    async fn shutdown_cancels_active_connection_preparation() {
+        PREPARATION_EXECUTOR_STARTED.store(false, Ordering::SeqCst);
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let shutdown_task = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !PREPARATION_EXECUTOR_STARTED.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("connection preparation did not start");
+            shutdown_tx
+                .send(true)
+                .expect("preparation shutdown receiver was dropped");
+        });
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_preparation_or_shutdown(
+                "burd-agent-test".to_string(),
+                cooperative_preparation_executor,
+                &mut shutdown_rx,
+            ),
+        )
+        .await
+        .expect("connection preparation ignored shutdown")
+        .expect("connection preparation returned an unexpected failure");
+        assert!(outcome.is_none());
+        shutdown_task.await.unwrap();
+    }
+
+    fn cooperative_preparation_executor(
+        request: PreparationRequest,
+    ) -> Result<PreparedConnection, ReconnectFailure> {
+        PREPARATION_EXECUTOR_STARTED.store(true, Ordering::SeqCst);
+        while request.cancellation.ensure_not_cancelled().is_ok() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        request.ensure_not_cancelled()?;
+        unreachable!("cancelled preparation executor continued")
     }
 
     #[test]
