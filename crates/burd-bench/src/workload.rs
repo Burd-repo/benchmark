@@ -88,7 +88,7 @@ pub fn calculate_workload_eligibility(
         .map(|workload| {
             evaluate_workload(
                 &workload,
-                &system,
+                system,
                 fit,
                 score,
                 verification,
@@ -255,8 +255,8 @@ fn evaluate_workload(
     } else {
         marketplace_workload_status(
             workload,
-            &system,
-            &score,
+            system,
+            score,
             reliability,
             capability,
             trust,
@@ -389,8 +389,7 @@ fn marketplace_policy(system: &SystemReport) -> MarketplaceGpuPolicy {
 fn normalize(value: &str) -> String {
     value
         .to_lowercase()
-        .replace('/', " ")
-        .replace('-', " ")
+        .replace(['/', '-'], " ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")

@@ -61,7 +61,7 @@ pub(crate) fn build_raw_data_from_provider(
         ],
         latest_report: latest_report(),
         latest_signed_report_summary: signed_report_summary(),
-        provider_details: serde_json::to_value(&provider)
+        provider_details: serde_json::to_value(provider)
             .unwrap_or_else(|_| serde_json::json!({"error": "provider serialization failed"})),
         session: load_provider_session().ok().flatten(),
         heartbeat,
