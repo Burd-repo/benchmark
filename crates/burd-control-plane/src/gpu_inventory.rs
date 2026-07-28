@@ -581,7 +581,6 @@ mod tests {
         gpu_index: i32,
         status: &str,
         observed_at: &str,
-        server_received_at: &str,
     ) {
         client
             .execute(
@@ -593,7 +592,7 @@ mod tests {
                     &gpu_index,
                     &status,
                     &observed_at,
-                    &server_received_at,
+                    &observed_at,
                 ],
             )
             .await
@@ -614,7 +613,6 @@ mod tests {
             0,
             "active",
             &now,
-            &now,
         )
         .await;
         insert_inventory_row(
@@ -624,7 +622,6 @@ mod tests {
             "GPU-2",
             1,
             "active",
-            &now,
             &now,
         )
         .await;
@@ -656,7 +653,6 @@ mod tests {
             0,
             "active",
             &first,
-            &first,
         )
         .await;
         insert_inventory_row(
@@ -666,7 +662,6 @@ mod tests {
             "GPU-stale",
             0,
             "inactive",
-            &second,
             &second,
         )
         .await;

@@ -544,7 +544,7 @@ fn detect_heartbeat_system_report(agent_version: &str) -> burd_hardware::SystemR
         let mut system = crate::test_fixtures::system_report();
         system.agent_version = agent_version.to_string();
         system.timestamp = crate::test_fixtures::FIXTURE_TIMESTAMP.to_string();
-        return system;
+        system
     }
 
     #[cfg(not(test))]

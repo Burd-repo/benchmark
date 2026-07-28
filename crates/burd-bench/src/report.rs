@@ -90,7 +90,7 @@ pub(crate) fn generate_full_report_from_snapshot(
     }
 
     let score = calculate_score(
-        &system,
+        system,
         Some(fit),
         llm_benchmark.as_ref(),
         stability.as_ref(),

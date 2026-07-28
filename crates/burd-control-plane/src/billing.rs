@@ -1060,13 +1060,13 @@ fn assert_confirmed_pix_matches_request(
                 .to_string(),
         ));
     }
-    if let Some(paid_at) = request.paid_at.as_deref() {
-        if before.confirmed_at.as_deref() != Some(paid_at) {
-            return Err(SessionError::Conflict(
-                "confirmed Pix payment intent cannot be reconfirmed with a different paid_at"
-                    .to_string(),
-            ));
-        }
+    if let Some(paid_at) = request.paid_at.as_deref()
+        && before.confirmed_at.as_deref() != Some(paid_at)
+    {
+        return Err(SessionError::Conflict(
+            "confirmed Pix payment intent cannot be reconfirmed with a different paid_at"
+                .to_string(),
+        ));
     }
     Ok(())
 }

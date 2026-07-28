@@ -88,12 +88,11 @@ pub fn build_provider_session_start(
         );
     }
 
-    if let Some(existing) = load_provider_session()? {
-        if existing.status == ProviderSessionStatus::Active
-            && parse_timestamp(&existing.expires_at)? > now
-        {
-            return Err("provider session is already active".to_string());
-        }
+    if let Some(existing) = load_provider_session()?
+        && existing.status == ProviderSessionStatus::Active
+        && parse_timestamp(&existing.expires_at)? > now
+    {
+        return Err("provider session is already active".to_string());
     }
 
     let readiness_at_start = build_session_readiness_snapshot(session_mode, &warnings);
@@ -331,7 +330,7 @@ fn detect_session_system_report(agent_version: &str) -> burd_hardware::SystemRep
         let mut system = crate::test_fixtures::system_report();
         system.agent_version = agent_version.to_string();
         system.timestamp = crate::test_fixtures::FIXTURE_TIMESTAMP.to_string();
-        return system;
+        system
     }
 
     #[cfg(not(test))]

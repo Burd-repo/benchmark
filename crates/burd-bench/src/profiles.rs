@@ -15,57 +15,57 @@ pub struct BenchmarkProfile {
 
 pub fn all_profiles() -> Vec<BenchmarkProfile> {
     vec![
-        profile(
-            "profile_8gb",
-            8.0,
-            "llama3.2:1b",
-            "ollama",
-            3,
-            4096,
-            &["LLM leve", "embeddings", "Whisper", "agentes simples"],
-            20.0,
-            &["Perfil de entrada para validacao de GPU pequena."],
-        ),
-        profile(
-            "profile_12gb",
-            12.0,
-            "llama3.2:3b",
-            "ollama",
-            3,
-            8192,
-            &[
+        profile(ProfileDefinition {
+            id: "profile_8gb",
+            min_vram_gb: 8.0,
+            suggested_model: "llama3.2:1b",
+            suggested_runtime: "ollama",
+            default_runs: 3,
+            default_context: 4096,
+            workloads: &["LLM leve", "embeddings", "Whisper", "agentes simples"],
+            min_avg_tps: 20.0,
+            notes: &["Perfil de entrada para validacao de GPU pequena."],
+        }),
+        profile(ProfileDefinition {
+            id: "profile_12gb",
+            min_vram_gb: 12.0,
+            suggested_model: "llama3.2:3b",
+            suggested_runtime: "ollama",
+            default_runs: 3,
+            default_context: 8192,
+            workloads: &[
                 "LLMs pequenos quantizados",
                 "Stable Diffusion basico",
                 "Whisper",
                 "embeddings",
                 "bots/agentes leves",
             ],
-            18.0,
-            &["Boa base para workloads leves e medios quantizados."],
-        ),
-        profile(
-            "profile_16gb",
-            16.0,
-            "qwen2.5:7b",
-            "ollama",
-            3,
-            8192,
-            &[
+            min_avg_tps: 18.0,
+            notes: &["Boa base para workloads leves e medios quantizados."],
+        }),
+        profile(ProfileDefinition {
+            id: "profile_16gb",
+            min_vram_gb: 16.0,
+            suggested_model: "qwen2.5:7b",
+            suggested_runtime: "ollama",
+            default_runs: 3,
+            default_context: 8192,
+            workloads: &[
                 "LLMs medios quantizados",
                 "ComfyUI basico",
                 "batch inference pequeno",
             ],
-            14.0,
-            &["Perfil intermediario para modelos 7B quantizados."],
-        ),
-        profile(
-            "profile_24gb",
-            24.0,
-            "qwen2.5:14b",
-            "ollama",
-            3,
-            8192,
-            &[
+            min_avg_tps: 14.0,
+            notes: &["Perfil intermediario para modelos 7B quantizados."],
+        }),
+        profile(ProfileDefinition {
+            id: "profile_24gb",
+            min_vram_gb: 24.0,
+            suggested_model: "qwen2.5:14b",
+            suggested_runtime: "ollama",
+            default_runs: 3,
+            default_context: 8192,
+            workloads: &[
                 "SDXL",
                 "ComfyUI",
                 "LLMs medios quantizados",
@@ -73,41 +73,41 @@ pub fn all_profiles() -> Vec<BenchmarkProfile> {
                 "inferencia rapida",
                 "batch pequeno",
             ],
-            10.0,
-            &["Perfil forte para GPUs como RTX 3090 e RTX 4090."],
-        ),
-        profile(
-            "profile_48gb",
-            48.0,
-            "qwen2.5:32b",
-            "vllm",
-            3,
-            8192,
-            &[
+            min_avg_tps: 10.0,
+            notes: &["Perfil forte para GPUs como RTX 3090 e RTX 4090."],
+        }),
+        profile(ProfileDefinition {
+            id: "profile_48gb",
+            min_vram_gb: 48.0,
+            suggested_model: "qwen2.5:32b",
+            suggested_runtime: "vllm",
+            default_runs: 3,
+            default_context: 8192,
+            workloads: &[
                 "LLMs maiores",
                 "batch inference",
                 "ComfyUI avancado",
                 "workloads enterprise leves",
             ],
-            8.0,
-            &["Perfil multiusuario ou de alto volume."],
-        ),
-        profile(
-            "profile_80gb",
-            80.0,
-            "Qwen/Qwen2.5-72B-Instruct",
-            "vllm",
-            3,
-            8192,
-            &[
+            min_avg_tps: 8.0,
+            notes: &["Perfil multiusuario ou de alto volume."],
+        }),
+        profile(ProfileDefinition {
+            id: "profile_80gb",
+            min_vram_gb: 80.0,
+            suggested_model: "Qwen/Qwen2.5-72B-Instruct",
+            suggested_runtime: "vllm",
+            default_runs: 3,
+            default_context: 8192,
+            workloads: &[
                 "fine-tuning",
                 "batch inference",
                 "modelos maiores",
                 "workloads enterprise",
             ],
-            6.0,
-            &["Perfil datacenter para A100/H100 e workloads enterprise."],
-        ),
+            min_avg_tps: 6.0,
+            notes: &["Perfil datacenter para A100/H100 e workloads enterprise."],
+        }),
     ]
 }
 
@@ -121,27 +121,37 @@ pub fn profile_for_vram(vram_gb: f64) -> BenchmarkProfile {
     selected
 }
 
-fn profile(
-    id: &str,
+struct ProfileDefinition<'a> {
+    id: &'a str,
     min_vram_gb: f64,
-    suggested_model: &str,
-    suggested_runtime: &str,
+    suggested_model: &'a str,
+    suggested_runtime: &'a str,
     default_runs: usize,
     default_context: u32,
-    workloads: &[&str],
+    workloads: &'a [&'a str],
     min_avg_tps: f64,
-    notes: &[&str],
-) -> BenchmarkProfile {
+    notes: &'a [&'a str],
+}
+
+fn profile(definition: ProfileDefinition<'_>) -> BenchmarkProfile {
     BenchmarkProfile {
-        id: id.to_string(),
-        min_vram_gb,
-        suggested_model: suggested_model.to_string(),
-        suggested_runtime: suggested_runtime.to_string(),
-        default_runs,
-        default_context,
-        recommended_workloads: workloads.iter().map(|item| item.to_string()).collect(),
-        min_avg_tps,
-        notes: notes.iter().map(|item| item.to_string()).collect(),
+        id: definition.id.to_string(),
+        min_vram_gb: definition.min_vram_gb,
+        suggested_model: definition.suggested_model.to_string(),
+        suggested_runtime: definition.suggested_runtime.to_string(),
+        default_runs: definition.default_runs,
+        default_context: definition.default_context,
+        recommended_workloads: definition
+            .workloads
+            .iter()
+            .map(|item| item.to_string())
+            .collect(),
+        min_avg_tps: definition.min_avg_tps,
+        notes: definition
+            .notes
+            .iter()
+            .map(|item| item.to_string())
+            .collect(),
     }
 }
 
