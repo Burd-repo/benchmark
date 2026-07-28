@@ -228,6 +228,14 @@ foreground, sem daemon ou limite global de saida do processo. Veja
 [`docs/hardening/agent-lifecycle-readiness.md`](docs/hardening/agent-lifecycle-readiness.md)
 e
 [`docs/hardening/agent-cooperative-proof-shutdown.md`](docs/hardening/agent-cooperative-proof-shutdown.md).
+O processo foreground tambem emite o evento redigido `burd.agent.exit.v1` e
+usa codigos estaveis para parada solicitada (`0`), argumentos semanticos
+invalidos (`2`), estado local (`10`), credencial (`11`), revogacao (`12`),
+rejeicao remota (`13`), contrato remoto (`14`) e falha interna (`15`). Outage
+recuperavel nao encerra o Agent: permanece `degraded` com retry. Outros comandos
+ainda usam o codigo legado `1`; erros sintaticos do Clap continuam no formato
+nativo com codigo `2`. Veja
+[`docs/hardening/agent-exit-status-contract.md`](docs/hardening/agent-exit-status-contract.md).
 O BN-04 adiciona telemetria GPU assinada no control plane; veja [`docs/bn-04-gpu-telemetry.md`](docs/bn-04-gpu-telemetry.md).
 O BN-05 adiciona registry remoto de evidencias assinadas no control plane; veja
 [`docs/bn-05-remote-evidence-registry.md`](docs/bn-05-remote-evidence-registry.md).

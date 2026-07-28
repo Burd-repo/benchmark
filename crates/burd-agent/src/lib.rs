@@ -2,6 +2,7 @@ mod instance_lock;
 
 pub use instance_lock::{AgentStateLock, AgentStateLockOperation};
 
+pub mod exit_status;
 pub mod lifecycle;
 
 pub mod remote_enrollment;

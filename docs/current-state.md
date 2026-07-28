@@ -338,6 +338,12 @@ starting the API server or depending on host state:
   `terminal_failure`, or `stopped`. Local readiness is true only while online.
   A dedicated OS-held liveness lock prevents a stale snapshot after crash from
   reporting an active or ready process.
+- `remote-session connect` emits the redacted `burd.agent.exit.v1` event with
+  stable codes for operator stop, semantic invalid invocation, local state,
+  authorization, revocation, remote rejection/contract, and internal failure.
+  Recoverable outages remain `degraded` and retry instead of exiting. Other
+  commands retain legacy code `1`, while Clap syntax failures retain native code
+  `2`; this is not yet a process-wide typed error migration.
 - PostgreSQL integration coverage exercises start, duplicate rejection,
   heartbeat, degradation, resume, and revocation. One ignored harness runs the
   real Agent loop against Axum and isolated PostgreSQL, injects socket loss and

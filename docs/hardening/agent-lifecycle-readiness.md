@@ -129,7 +129,7 @@ Results:
 
 - The Agent remains a foreground command.
 - No Windows Service or systemd packaging exists.
-- No stable process exit-code taxonomy exists yet.
+- `remote-session connect` has a stable typed exit taxonomy; other commands still use legacy code `1`.
 - Blocking native/HTTP work is cooperative only at explicit boundaries.
 - WebSocket close and total process shutdown have no single global deadline.
 - Physical NVIDIA/CUDA/Ollama stop/restart matrices remain environment work.

@@ -2,7 +2,9 @@ mod cli;
 
 use anyhow::Result;
 use burd_agent::{
-    AgentStateLock, AgentStateLockOperation, lifecycle, remote_enrollment, remote_session,
+    AgentStateLock, AgentStateLockOperation,
+    exit_status::{AgentExitError, AgentExitEvent},
+    lifecycle, remote_enrollment, remote_session,
 };
 use burd_bench::{
     DiskBenchmarkOptions, LlmBenchmarkOptions, NetworkBenchmarkOptions, ReportRunOptions,
@@ -37,14 +39,38 @@ use cli::{
 };
 use serde::Deserialize;
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::Duration;
 
 const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn main() {
-    if let Err(error) = run() {
-        eprintln!("Error: {error}");
-        std::process::exit(1);
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            let exit_code = exit_code_for_error(&error);
+            if let Some(error) = error.downcast_ref::<AgentExitError>() {
+                write_exit_event(&error.event());
+            } else {
+                eprintln!("Error: {error}");
+            }
+            ExitCode::from(exit_code)
+        }
+    }
+}
+
+fn exit_code_for_error(error: &anyhow::Error) -> u8 {
+    error
+        .downcast_ref::<AgentExitError>()
+        .map_or(1, AgentExitError::exit_code)
+}
+
+fn write_exit_event(event: &AgentExitEvent) {
+    match serde_json::to_string(event) {
+        Ok(json) => eprintln!("{json}"),
+        Err(_) => eprintln!(
+            "{{\"schema_version\":\"burd.agent.exit.v1\",\"event\":\"agent_exit\",\"category\":\"internal\",\"exit_code\":15,\"failure_kind\":\"exit_serialization\",\"message\":\"Agent terminated because of an internal runtime failure.\"}}"
+        ),
     }
 }
 
@@ -363,9 +389,11 @@ fn run() -> Result<()> {
                     telemetry,
                     telemetry_batch_samples,
                     proofs,
-                )
-                .map_err(anyhow::Error::msg)?;
-                print_json(&result)?;
+                )?;
+                if let Some(result) = result {
+                    print_json(&result)?;
+                }
+                write_exit_event(&AgentExitEvent::operator_requested());
             }
             RemoteSessionCommands::Status { json: _ } => {
                 print_json(&remote_session::status().map_err(anyhow::Error::msg)?)?;
@@ -870,6 +898,18 @@ fn run_challenge(challenge: Challenge) -> Result<ChallengeRunOutput> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_remote_session_errors_select_stable_process_codes() {
+        let revoked = anyhow::Error::new(AgentExitError::from_failure_kind(
+            "session_revoked",
+            "private diagnostic",
+        ));
+        assert_eq!(exit_code_for_error(&revoked), 12);
+
+        let generic = anyhow::anyhow!("legacy command failure");
+        assert_eq!(exit_code_for_error(&generic), 1);
+    }
 
     #[test]
     fn critical_state_mutations_require_the_maintenance_lock() {

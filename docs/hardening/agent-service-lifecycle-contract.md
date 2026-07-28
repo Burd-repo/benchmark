@@ -169,8 +169,9 @@ Before adding Windows Service or systemd packaging:
    their APIs support interruption. Startup, credential refresh, and proof
    supervisors now request cancellation and use a five-second grace period, but
    in-flight blocking calls are not force-cancellable.
-2. Define stable process exit categories for operator-requested stop,
-   recoverable outage, invalid local state, invalid credentials, and revocation.
+2. Keep the implemented `burd.agent.exit.v1` remote-session categories stable
+   and migrate other commands only when their error boundaries are typed.
+   Recoverable outage intentionally remains `degraded` and does not exit.
 3. Keep the implemented local lifecycle/readiness contract stable and integrate
    it with future service-manager health checks. It distinguishes starting,
    connecting, online, degraded, stopping, terminal failure, and stopped.
@@ -225,9 +226,10 @@ model and does not replace the physical NVIDIA compatibility matrix.
   blocking HTTP calls may continue until they return; each five-second grace
   period only bounds supervisor waiting.
 - WebSocket close does not yet have a global process shutdown deadline.
-- The latest local lifecycle phase and bounded failure category are durable, but
-  retry history and a stable process exit taxonomy are not exposed to a service
-  manager.
+- The remote-session foreground command exposes stable typed exit categories,
+  but other commands still use legacy code `1`, Clap syntax failures keep native
+  code `2`, and no service manager consumes the contract yet.
+- Retry history is not durably exposed to a service manager.
 - No automatic update, release signature verification, rollback, or installer
   exists.
 - Physical CUDA/Ollama compatibility remains dependent on controlled hardware
