@@ -1,3 +1,4 @@
+use crate::exit_status::AgentExitError;
 use crate::lifecycle::{AgentLifecyclePhase, LifecycleReporter};
 use crate::remote_enrollment::{
     ControlPlaneRequestError, join_url, post_json_checked, refresh_credential,
@@ -41,17 +42,25 @@ pub fn connect(
     telemetry: bool,
     telemetry_batch_samples: usize,
     proofs: bool,
-) -> Result<RemoteSessionStateStatus, String> {
-    validate_telemetry_batch_samples(telemetry_batch_samples)?;
-    let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)?;
-    let lifecycle = LifecycleReporter::start()?;
-    let result = (|| {
-        let identity = load_identity()?;
+) -> Result<Option<RemoteSessionStateStatus>, AgentExitError> {
+    validate_telemetry_batch_samples(telemetry_batch_samples)
+        .map_err(|error| AgentExitError::invalid_invocation("telemetry_config", error))?;
+    let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)
+        .map_err(|error| AgentExitError::local_state("state_lock", error))?;
+    let lifecycle = LifecycleReporter::start()
+        .map_err(|error| AgentExitError::local_state("lifecycle_state", error))?;
+    let result: Result<(), AgentExitError> = (|| {
+        let identity =
+            load_identity().map_err(|error| AgentExitError::local_state("local_state", error))?;
         let telemetry_enabled = proofs || telemetry || identity.telemetry_enabled;
         let proof_agent_version = proofs.then(|| agent_version.to_string());
         let retry_seed = stable_retry_seed(&identity.machine_id);
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|error| format!("failed to start remote session runtime: {error}"))?;
+        let runtime = tokio::runtime::Runtime::new().map_err(|error| {
+            AgentExitError::internal(
+                "session_runtime",
+                format!("failed to start remote session runtime: {error}"),
+            )
+        })?;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let runtime_lifecycle = lifecycle.clone();
         runtime.block_on(async move {
@@ -77,39 +86,65 @@ pub fn connect(
     })();
     complete_lifecycle(&lifecycle, &result)?;
     result?;
+    let persisted = load_remote_session_optional()
+        .map_err(|error| AgentExitError::local_state("local_state", error))?;
+    if persisted.is_none() {
+        return Ok(None);
+    }
     show_remote_session()
+        .map(Some)
+        .map_err(|error| AgentExitError::local_state("local_state", error))
 }
 
 fn complete_lifecycle(
     lifecycle: &LifecycleReporter,
-    result: &Result<(), String>,
-) -> Result<(), String> {
+    result: &Result<(), AgentExitError>,
+) -> Result<(), AgentExitError> {
     match result {
-        Ok(()) => lifecycle.transition(AgentLifecyclePhase::Stopped, None),
-        Err(_) if lifecycle.phase()? == AgentLifecyclePhase::TerminalFailure => Ok(()),
-        Err(_) => lifecycle.transition(
-            AgentLifecyclePhase::TerminalFailure,
-            Some("session_runtime"),
-        ),
+        Ok(()) => lifecycle
+            .transition(AgentLifecyclePhase::Stopped, None)
+            .map_err(|error| AgentExitError::local_state("lifecycle_state", error)),
+        Err(_)
+            if lifecycle
+                .phase()
+                .map_err(|error| AgentExitError::local_state("lifecycle_state", error))?
+                == AgentLifecyclePhase::TerminalFailure =>
+        {
+            Ok(())
+        }
+        Err(error) => lifecycle
+            .transition(
+                AgentLifecyclePhase::TerminalFailure,
+                Some(error.failure_kind()),
+            )
+            .map_err(|error| AgentExitError::local_state("lifecycle_state", error)),
     }
 }
 
 #[cfg(feature = "integration-test-support")]
 async fn complete_lifecycle_async(
     lifecycle: &LifecycleReporter,
-    result: &Result<(), String>,
-) -> Result<(), String> {
+    result: &Result<(), AgentExitError>,
+) -> Result<(), AgentExitError> {
     match result {
-        Ok(()) => transition_lifecycle(lifecycle, AgentLifecyclePhase::Stopped, None).await,
-        Err(_) if lifecycle.phase()? == AgentLifecyclePhase::TerminalFailure => Ok(()),
-        Err(_) => {
-            transition_lifecycle(
-                lifecycle,
-                AgentLifecyclePhase::TerminalFailure,
-                Some("session_runtime"),
-            )
+        Ok(()) => transition_lifecycle(lifecycle, AgentLifecyclePhase::Stopped, None)
             .await
+            .map_err(lifecycle_exit_error),
+        Err(_)
+            if lifecycle
+                .phase()
+                .map_err(|error| AgentExitError::local_state("lifecycle_state", error))?
+                == AgentLifecyclePhase::TerminalFailure =>
+        {
+            Ok(())
         }
+        Err(error) => transition_lifecycle(
+            lifecycle,
+            AgentLifecyclePhase::TerminalFailure,
+            Some(error.failure_kind()),
+        )
+        .await
+        .map_err(lifecycle_exit_error),
     }
 }
 
@@ -124,6 +159,10 @@ async fn transition_lifecycle(
         .map_err(|error| format!("Agent lifecycle transition task failed: {error}"))?
 }
 
+fn lifecycle_exit_error(error: String) -> AgentExitError {
+    AgentExitError::local_state("lifecycle_state", error)
+}
+
 #[cfg(feature = "integration-test-support")]
 pub async fn connect_until_shutdown(
     agent_version: &str,
@@ -131,7 +170,7 @@ pub async fn connect_until_shutdown(
     telemetry: bool,
     telemetry_batch_samples: usize,
     shutdown: watch::Receiver<bool>,
-) -> Result<RemoteSessionStateStatus, String> {
+) -> Result<RemoteSessionStateStatus, AgentExitError> {
     connect_until_shutdown_with_telemetry_collector(
         agent_version,
         max_reconnect_delay_seconds,
@@ -151,16 +190,30 @@ pub async fn connect_until_shutdown_with_telemetry_collector(
     telemetry_batch_samples: usize,
     telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
     shutdown: watch::Receiver<bool>,
-) -> Result<RemoteSessionStateStatus, String> {
-    validate_telemetry_batch_samples(telemetry_batch_samples)?;
-    let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)?;
+) -> Result<RemoteSessionStateStatus, AgentExitError> {
+    validate_telemetry_batch_samples(telemetry_batch_samples)
+        .map_err(|error| AgentExitError::invalid_invocation("telemetry_config", error))?;
+    let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)
+        .map_err(|error| AgentExitError::local_state("state_lock", error))?;
     let lifecycle = tokio::task::spawn_blocking(LifecycleReporter::start)
         .await
-        .map_err(|error| format!("failed to start Agent lifecycle task: {error}"))??;
+        .map_err(|error| {
+            AgentExitError::internal(
+                "lifecycle_task",
+                format!("failed to start Agent lifecycle task: {error}"),
+            )
+        })?
+        .map_err(|error| AgentExitError::local_state("lifecycle_state", error))?;
     let result = async {
         let identity = tokio::task::spawn_blocking(load_identity)
             .await
-            .map_err(|error| format!("failed to load identity task: {error}"))??;
+            .map_err(|error| {
+                AgentExitError::internal(
+                    "identity_task",
+                    format!("failed to load identity task: {error}"),
+                )
+            })?
+            .map_err(|error| AgentExitError::local_state("local_state", error))?;
         let telemetry_enabled = telemetry || identity.telemetry_enabled;
         let retry_seed = stable_retry_seed(&identity.machine_id);
         run_control_and_proof(
@@ -183,7 +236,13 @@ pub async fn connect_until_shutdown_with_telemetry_collector(
     result?;
     tokio::task::spawn_blocking(show_remote_session)
         .await
-        .map_err(|error| format!("failed to load remote session status task: {error}"))?
+        .map_err(|error| {
+            AgentExitError::internal(
+                "session_status_task",
+                format!("failed to load remote session status task: {error}"),
+            )
+        })?
+        .map_err(|error| AgentExitError::local_state("local_state", error))
 }
 
 #[cfg(feature = "integration-test-support")]
@@ -195,16 +254,30 @@ pub async fn connect_until_shutdown_with_test_runtime(
     telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
     proof_executor: ProofExecutor,
     shutdown: watch::Receiver<bool>,
-) -> Result<RemoteSessionStateStatus, String> {
-    validate_telemetry_batch_samples(telemetry_batch_samples)?;
-    let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)?;
+) -> Result<RemoteSessionStateStatus, AgentExitError> {
+    validate_telemetry_batch_samples(telemetry_batch_samples)
+        .map_err(|error| AgentExitError::invalid_invocation("telemetry_config", error))?;
+    let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)
+        .map_err(|error| AgentExitError::local_state("state_lock", error))?;
     let lifecycle = tokio::task::spawn_blocking(LifecycleReporter::start)
         .await
-        .map_err(|error| format!("failed to start Agent lifecycle task: {error}"))??;
+        .map_err(|error| {
+            AgentExitError::internal(
+                "lifecycle_task",
+                format!("failed to start Agent lifecycle task: {error}"),
+            )
+        })?
+        .map_err(|error| AgentExitError::local_state("lifecycle_state", error))?;
     let result = async {
         let identity = tokio::task::spawn_blocking(load_identity)
             .await
-            .map_err(|error| format!("failed to load identity task: {error}"))??;
+            .map_err(|error| {
+                AgentExitError::internal(
+                    "identity_task",
+                    format!("failed to load identity task: {error}"),
+                )
+            })?
+            .map_err(|error| AgentExitError::local_state("local_state", error))?;
         let retry_seed = stable_retry_seed(&identity.machine_id);
         run_control_and_proof(
             agent_version.to_string(),
@@ -226,7 +299,13 @@ pub async fn connect_until_shutdown_with_test_runtime(
     result?;
     tokio::task::spawn_blocking(show_remote_session)
         .await
-        .map_err(|error| format!("failed to load remote session status task: {error}"))?
+        .map_err(|error| {
+            AgentExitError::internal(
+                "session_status_task",
+                format!("failed to load remote session status task: {error}"),
+            )
+        })?
+        .map_err(|error| AgentExitError::local_state("local_state", error))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -242,7 +321,7 @@ async fn run_control_and_proof(
     preparation_executor: PreparationExecutor,
     lifecycle: LifecycleReporter,
     mut shutdown: watch::Receiver<bool>,
-) -> Result<(), String> {
+) -> Result<(), AgentExitError> {
     let (proof_telemetry_tx, mut proof_telemetry_rx) = mpsc::channel(1);
     let (session_shutdown_tx, session_shutdown_rx) = watch::channel(false);
     let proof_worker = proof_agent_version.map(|proof_agent_version| {
@@ -282,7 +361,7 @@ async fn run_control_and_proof(
                     ).await;
                     let _ = session_shutdown_tx.send(true);
                     let result = control.await;
-                    lifecycle_result?;
+                    lifecycle_result.map_err(lifecycle_exit_error)?;
                     finish_proof_worker(worker, result).await
                 }
                 result = &mut control => {
@@ -293,7 +372,7 @@ async fn run_control_and_proof(
                     let _ = session_shutdown_tx.send(true);
                     let control_result = control.await;
                     if let Err(error) = control_result {
-                        log_proof_worker_shutdown_error(&error);
+                        log_proof_worker_shutdown_error(error.failure_kind());
                     }
                     Err(unexpected_proof_worker_exit(worker_result))
                 }
@@ -309,7 +388,7 @@ async fn run_control_and_proof(
                     ).await;
                     let _ = session_shutdown_tx.send(true);
                     let result = control.await;
-                    lifecycle_result?;
+                    lifecycle_result.map_err(lifecycle_exit_error)?;
                     result
                 }
                 result = &mut control => result,
@@ -320,18 +399,23 @@ async fn run_control_and_proof(
 
 async fn finish_proof_worker(
     worker: tokio::task::JoinHandle<Result<(), String>>,
-    control_result: Result<(), String>,
-) -> Result<(), String> {
+    control_result: Result<(), AgentExitError>,
+) -> Result<(), AgentExitError> {
     match worker.await {
         Ok(Ok(())) => control_result,
-        Ok(Err(error)) if control_result.is_ok() => Err(error),
-        Ok(Err(error)) => {
-            log_proof_worker_shutdown_error(&error);
+        Ok(Err(error)) if control_result.is_ok() => {
+            Err(AgentExitError::internal("proof_worker", error))
+        }
+        Ok(Err(_error)) => {
+            log_proof_worker_shutdown_error("proof_worker");
             control_result
         }
-        Err(error) if control_result.is_ok() => Err(format!("remote proof worker failed: {error}")),
-        Err(error) => {
-            log_proof_worker_shutdown_error(&error.to_string());
+        Err(error) if control_result.is_ok() => Err(AgentExitError::internal(
+            "proof_worker",
+            format!("remote proof worker failed: {error}"),
+        )),
+        Err(_error) => {
+            log_proof_worker_shutdown_error("proof_worker");
             control_result
         }
     }
@@ -339,12 +423,13 @@ async fn finish_proof_worker(
 
 fn unexpected_proof_worker_exit(
     result: Result<Result<(), String>, tokio::task::JoinError>,
-) -> String {
-    match result {
+) -> AgentExitError {
+    let detail = match result {
         Ok(Ok(())) => "remote proof worker stopped unexpectedly".to_string(),
         Ok(Err(error)) => format!("remote proof worker failed: {error}"),
         Err(error) => format!("remote proof worker task failed: {error}"),
-    }
+    };
+    AgentExitError::internal("proof_worker", detail)
 }
 fn validate_telemetry_batch_samples(telemetry_batch_samples: usize) -> Result<(), String> {
     if !(1..=64).contains(&telemetry_batch_samples) {
@@ -630,14 +715,16 @@ async fn run_control_loop(
     runtime: ControlLoopRuntime,
     proof_telemetry: &mut mpsc::Receiver<ProofTelemetryRequest>,
     mut shutdown: watch::Receiver<bool>,
-) -> Result<(), String> {
+) -> Result<(), AgentExitError> {
     let mut retry_policy =
         ReconnectPolicy::new(runtime.max_reconnect_delay_seconds, runtime.retry_seed);
     loop {
         if shutdown_requested(&shutdown) {
             return Ok(());
         }
-        transition_lifecycle(&runtime.lifecycle, AgentLifecyclePhase::Connecting, None).await?;
+        transition_lifecycle(&runtime.lifecycle, AgentLifecyclePhase::Connecting, None)
+            .await
+            .map_err(lifecycle_exit_error)?;
         match attempt_connection(
             runtime.agent_version.clone(),
             runtime.telemetry,
@@ -656,15 +743,20 @@ async fn run_control_loop(
                         AgentLifecyclePhase::TerminalFailure,
                         Some(failure.kind),
                     )
-                    .await?;
-                    return Err(failure.message);
+                    .await
+                    .map_err(lifecycle_exit_error)?;
+                    return Err(AgentExitError::from_failure_kind(
+                        failure.kind,
+                        failure.message,
+                    ));
                 }
                 transition_lifecycle(
                     &runtime.lifecycle,
                     AgentLifecyclePhase::Degraded,
                     Some(failure.kind),
                 )
-                .await?;
+                .await
+                .map_err(lifecycle_exit_error)?;
                 if failure.disposition == ReconnectDisposition::RestartSession
                     && let Err(error) = clear_remote_session()
                 {
@@ -674,8 +766,9 @@ async fn run_control_loop(
                         AgentLifecyclePhase::TerminalFailure,
                         Some("local_state"),
                     )
-                    .await?;
-                    return Err(message);
+                    .await
+                    .map_err(lifecycle_exit_error)?;
+                    return Err(AgentExitError::local_state("local_state", message));
                 }
                 let delay = retry_policy.delay_after_failure(failure.connection_was_stable);
                 eprintln!(
@@ -688,7 +781,6 @@ async fn run_control_loop(
                         "failure_kind": failure.kind,
                         "action": failure.disposition.as_str(),
                         "connection_was_stable": failure.connection_was_stable,
-                        "error": failure.message,
                     })
                 );
                 tokio::select! {
@@ -728,8 +820,8 @@ async fn attempt_connection(
     .await
     {
         Ok(ConnectionOutcome::Stopped) => Ok(()),
-        Ok(ConnectionOutcome::Terminal(reason)) => {
-            Err(ReconnectFailure::terminal("session_revoked", reason)
+        Ok(ConnectionOutcome::Terminal { kind, reason }) => {
+            Err(ReconnectFailure::terminal(kind, reason)
                 .with_connection_stability(connection_was_stable))
         }
         Ok(ConnectionOutcome::RestartSession(reason)) => {
@@ -922,20 +1014,32 @@ fn classify_control_plane_error(error: ControlPlaneRequestError) -> ReconnectFai
 
 enum ConnectionOutcome {
     Stopped,
-    Terminal(String),
+    Terminal { kind: &'static str, reason: String },
     RestartSession(String),
+}
+
+impl ConnectionOutcome {
+    fn terminal(kind: &'static str, reason: &str) -> Self {
+        Self::Terminal {
+            kind,
+            reason: reason.to_string(),
+        }
+    }
 }
 
 fn websocket_http_outcome(status: u16) -> Option<ConnectionOutcome> {
     match status {
-        400 => Some(ConnectionOutcome::Terminal(
-            "control plane rejected the WebSocket request contract".to_string(),
+        400 => Some(ConnectionOutcome::terminal(
+            "control_plane_contract",
+            "control plane rejected the WebSocket request contract",
         )),
-        401 => Some(ConnectionOutcome::Terminal(
-            "control channel credential is invalid or expired".to_string(),
+        401 => Some(ConnectionOutcome::terminal(
+            "unauthorized",
+            "control channel credential is invalid or expired",
         )),
-        403 => Some(ConnectionOutcome::Terminal(
-            "control channel device or session has been revoked".to_string(),
+        403 => Some(ConnectionOutcome::terminal(
+            "session_revoked",
+            "control channel device or session has been revoked",
         )),
         404 | 410 => Some(ConnectionOutcome::RestartSession(
             "remote session is missing or expired".to_string(),
@@ -1098,8 +1202,9 @@ async fn run_one_connection(
                         *connection_was_stable = true;
                     }
                     "session_revoked" => {
-                        return Ok(ConnectionOutcome::Terminal(
-                            "remote session was revoked by the control plane".to_string(),
+                        return Ok(ConnectionOutcome::terminal(
+                            "session_revoked",
+                            "remote session was revoked by the control plane",
                         ));
                     }
                     "error" => {
@@ -1139,8 +1244,9 @@ async fn run_one_connection(
                             telemetry_active = false;
                         }
                         TelemetryOutcome::SessionRevoked => {
-                            return Ok(ConnectionOutcome::Terminal(
-                                "remote session was revoked by the control plane".to_string(),
+                            return Ok(ConnectionOutcome::terminal(
+                                "session_revoked",
+                                "remote session was revoked by the control plane",
                             ));
                         }
                     }
@@ -1200,8 +1306,9 @@ async fn run_one_connection(
                         let _ = request
                             .response
                             .send(Err("remote session was revoked".to_string()));
-                        return Ok(ConnectionOutcome::Terminal(
-                            "remote session was revoked by the control plane".to_string(),
+                        return Ok(ConnectionOutcome::terminal(
+                            "session_revoked",
+                            "remote session was revoked by the control plane",
                         ));
                     }
                     Ok(TelemetryOutcome::Buffered) => {
@@ -1379,12 +1486,12 @@ fn log_telemetry_rejected(error: &str) {
     );
 }
 
-fn log_proof_worker_shutdown_error(error: &str) {
+fn log_proof_worker_shutdown_error(failure_kind: &str) {
     eprintln!(
         "{}",
         serde_json::json!({
             "event": "remote_proof_worker_shutdown_failed",
-            "error": error,
+            "failure_kind": failure_kind,
         })
     );
 }
@@ -1523,6 +1630,7 @@ fn remote_error(value: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exit_status::AgentExitCategory;
 
     #[test]
     fn telemetry_batch_sample_limit_is_validated_before_connecting() {
@@ -1553,14 +1661,22 @@ mod tests {
         let error = finish_proof_worker(failed_worker, Ok(()))
             .await
             .unwrap_err();
-        assert_eq!(error, "state unavailable");
+        assert_eq!(error.category(), AgentExitCategory::Internal);
+        assert_eq!(error.failure_kind(), "proof_worker");
+        assert_eq!(error.diagnostic_detail(), "state unavailable");
 
+        let clean_exit = unexpected_proof_worker_exit(Ok(Ok(())));
+        assert_eq!(clean_exit.category(), AgentExitCategory::Internal);
+        assert_eq!(clean_exit.failure_kind(), "proof_worker");
         assert_eq!(
-            unexpected_proof_worker_exit(Ok(Ok(()))),
+            clean_exit.diagnostic_detail(),
             "remote proof worker stopped unexpectedly"
         );
+        let failed_exit = unexpected_proof_worker_exit(Ok(Err("state unavailable".to_string())));
+        assert_eq!(failed_exit.category(), AgentExitCategory::Internal);
+        assert_eq!(failed_exit.failure_kind(), "proof_worker");
         assert_eq!(
-            unexpected_proof_worker_exit(Ok(Err("state unavailable".to_string()))),
+            failed_exit.diagnostic_detail(),
             "remote proof worker failed: state unavailable"
         );
     }
@@ -1682,15 +1798,22 @@ mod tests {
     }
 
     #[test]
-    fn websocket_statuses_restart_expired_sessions_and_stop_revoked_devices() {
+    fn websocket_statuses_preserve_terminal_failure_categories() {
         assert!(matches!(
             websocket_http_outcome(410),
             Some(ConnectionOutcome::RestartSession(_))
         ));
-        assert!(matches!(
-            websocket_http_outcome(403),
-            Some(ConnectionOutcome::Terminal(_))
-        ));
+        for (status, expected_kind) in [
+            (400, "control_plane_contract"),
+            (401, "unauthorized"),
+            (403, "session_revoked"),
+        ] {
+            let Some(ConnectionOutcome::Terminal { kind, .. }) = websocket_http_outcome(status)
+            else {
+                panic!("HTTP {status} did not produce a terminal outcome");
+            };
+            assert_eq!(kind, expected_kind, "HTTP {status}");
+        }
         assert!(websocket_http_outcome(503).is_none());
 
         let missing_without_envelope = ControlPlaneRequestError::Rejected {

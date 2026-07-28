@@ -1,4 +1,5 @@
 use axum::Router;
+use burd_agent::exit_status::AgentExitCategory;
 use burd_agent::lifecycle::{AgentLifecyclePhase, AgentLifecycleStatus, lifecycle_status};
 use burd_agent::remote_proof::{ProofExecution, ProofExecutionRequest};
 use burd_control_plane::{AppState, ControlPlaneConfig, Database, router};
@@ -749,8 +750,11 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
         Some("session_revoked")
     );
     let error = agent_result.expect_err("revocation must terminate the Agent control loop");
+    assert_eq!(error.category(), AgentExitCategory::Revoked);
+    assert_eq!(error.exit_code(), 12);
+    assert_eq!(error.failure_kind(), "session_revoked");
     assert!(
-        error.contains("revoked"),
+        error.diagnostic_detail().contains("revoked"),
         "unexpected Agent revocation error: {error}"
     );
 }
