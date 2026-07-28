@@ -236,6 +236,10 @@ recuperavel nao encerra o Agent: permanece `degraded` com retry. Outros comandos
 ainda usam o codigo legado `1`; erros sintaticos do Clap continuam no formato
 nativo com codigo `2`. Veja
 [`docs/hardening/agent-exit-status-contract.md`](docs/hardening/agent-exit-status-contract.md).
+Uma matriz fisica sanitizada em Windows/AMD/Vulkan/Ollama/Docker confirma
+diagnostico local, assinatura, challenge local, readiness e bloqueio correto do
+marketplace sem alegar cobertura NVIDIA/CUDA; veja
+[`docs/hardening/windows-physical-compatibility-matrix.md`](docs/hardening/windows-physical-compatibility-matrix.md).
 O BN-04 adiciona telemetria GPU assinada no control plane; veja [`docs/bn-04-gpu-telemetry.md`](docs/bn-04-gpu-telemetry.md).
 O BN-05 adiciona registry remoto de evidencias assinadas no control plane; veja
 [`docs/bn-05-remote-evidence-registry.md`](docs/bn-05-remote-evidence-registry.md).

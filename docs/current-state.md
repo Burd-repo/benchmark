@@ -344,6 +344,11 @@ starting the API server or depending on host state:
   Recoverable outages remain `degraded` and retry instead of exiting. Other
   commands retain legacy code `1`, while Clap syntax failures retain native code
   `2`; this is not yet a process-wide typed error migration.
+- A sanitized physical Windows matrix validates the available AMD/Vulkan host,
+  live Ollama inference, signed local evidence, local challenge, readiness,
+  redaction, Docker detection, and local API authentication. It does not claim
+  NVIDIA/CUDA or Linux secure-runtime coverage; see
+  [`hardening/windows-physical-compatibility-matrix.md`](hardening/windows-physical-compatibility-matrix.md).
 - PostgreSQL integration coverage exercises start, duplicate rejection,
   heartbeat, degradation, resume, and revocation. One ignored harness runs the
   real Agent loop against Axum and isolated PostgreSQL, injects socket loss and
