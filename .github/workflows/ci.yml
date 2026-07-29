@@ -33,13 +33,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --all --check
+
+      - name: Check Clippy
+        run: cargo clippy --workspace --all-targets --no-deps -- -D warnings
 
       - name: Verify sanitized JSON contract snapshots
         run: cargo test -p burd-bench contract_tests::sanitized_json_contract_snapshots_are_stable -- --exact
