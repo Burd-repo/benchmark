@@ -9,16 +9,23 @@ $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $RepoRoot
 
 Write-Host "Running fast burd-bench contract tests with a ${MaxSeconds}s budget..."
-$elapsed = Measure-Command {
+$testExitCode = 1
+$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+try {
     & cargo test -p burd-bench --lib --quiet
-    if ($LASTEXITCODE -ne 0) {
-        throw "burd-bench contract tests failed with exit code $LASTEXITCODE"
-    }
+    $testExitCode = $LASTEXITCODE
+}
+finally {
+    $stopwatch.Stop()
 }
 
-$seconds = [Math]::Round($elapsed.TotalSeconds, 2)
+if ($testExitCode -ne 0) {
+    throw "burd-bench contract tests failed with exit code $testExitCode"
+}
+
+$seconds = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 2)
 Write-Host "Fast burd-bench contract tests completed in ${seconds}s."
 
-if ($elapsed.TotalSeconds -gt $MaxSeconds) {
+if ($stopwatch.Elapsed.TotalSeconds -gt $MaxSeconds) {
     throw "Fast contract test budget exceeded: ${seconds}s > ${MaxSeconds}s"
 }
