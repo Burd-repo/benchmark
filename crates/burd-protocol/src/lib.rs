@@ -7,6 +7,7 @@ pub mod evidence;
 pub mod gpu_inventory;
 pub mod identity;
 pub mod job;
+pub mod job_execution;
 pub mod lease;
 pub mod local_state;
 pub mod marketplace;
@@ -114,6 +115,12 @@ pub use job::{
     JOB_SCHEMA_VERSION, JobArtifact, JobDataPlaneGrant, JobDataPlaneUrl, JobEventRecord,
     JobEventRequest, JobEventResponse, JobRecord, JobResponse, ListJobsResponse, NextJobResponse,
     SubmitJobResultRequest, SubmitJobResultResponse,
+};
+pub use job_execution::{
+    PROVIDER_JOB_APPROVED_TEMPLATES, PROVIDER_JOB_EXECUTION_POLICY_VERSION,
+    PROVIDER_JOB_EXECUTION_SCHEMA_VERSION, ProviderJobCancellationPolicy, ProviderJobCleanupPolicy,
+    ProviderJobExecutionSpec, ProviderJobExecutionState, ProviderJobRuntimePolicy,
+    validate_next_job_execution_response, validate_provider_job_execution_bundle,
 };
 pub use lease::{
     JOB_LEASE_SCHEMA_VERSION, JobLeaseRecord, ListJobLeasesResponse, RunSchedulerRequest,

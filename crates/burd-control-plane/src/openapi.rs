@@ -2568,6 +2568,95 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
         }),
     );
     schemas.insert(
+        "ProviderJobExecutionState".to_string(),
+        serde_json::json!({
+            "type": "string",
+            "enum": ["assigned", "accepted", "provisioning", "running", "uploading", "succeeded", "failed", "cancelled", "expired"]
+        }),
+    );
+    schemas.insert(
+        "ProviderJobRuntimePolicy".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["runtime_engine", "target_os", "command_source", "command_override_allowed", "entrypoint_override_allowed", "network_mode", "read_only_rootfs", "no_new_privileges", "run_as_user", "seccomp_profile", "cap_drop", "cpu_millis", "memory_mib", "pids_limit", "shm_size_mib"],
+            "properties": {
+                "runtime_engine": { "type": "string", "const": "docker" },
+                "target_os": { "type": "string", "const": "linux" },
+                "command_source": { "type": "string", "const": "approved_template" },
+                "command_override_allowed": { "type": "boolean", "const": false },
+                "entrypoint_override_allowed": { "type": "boolean", "const": false },
+                "network_mode": { "type": "string", "const": "none" },
+                "read_only_rootfs": { "type": "boolean", "const": true },
+                "no_new_privileges": { "type": "boolean", "const": true },
+                "run_as_user": { "type": "string", "const": "1000:1000" },
+                "seccomp_profile": { "type": "string", "const": "default" },
+                "cap_drop": { "type": "array", "items": { "type": "string" } },
+                "cpu_millis": { "type": "integer", "minimum": 1 },
+                "memory_mib": { "type": "integer", "minimum": 1 },
+                "pids_limit": { "type": "integer", "minimum": 1 },
+                "shm_size_mib": { "type": "integer", "minimum": 1 }
+            }
+        }),
+    );
+    schemas.insert(
+        "ProviderJobCancellationPolicy".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["poll_interval_seconds", "graceful_stop_seconds", "force_kill_after_seconds"],
+            "properties": {
+                "poll_interval_seconds": { "type": "integer", "minimum": 1 },
+                "graceful_stop_seconds": { "type": "integer", "minimum": 1 },
+                "force_kill_after_seconds": { "type": "integer", "minimum": 1 }
+            }
+        }),
+    );
+    schemas.insert(
+        "ProviderJobCleanupPolicy".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["remove_container", "remove_working_directory", "clear_ephemeral_secrets", "revoke_data_plane_credential"],
+            "properties": {
+                "remove_container": { "type": "boolean", "const": true },
+                "remove_working_directory": { "type": "boolean", "const": true },
+                "clear_ephemeral_secrets": { "type": "boolean", "const": true },
+                "revoke_data_plane_credential": { "type": "boolean", "const": true }
+            }
+        }),
+    );
+    schemas.insert(
+        "ProviderJobExecutionSpec".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["schema_version", "policy_version", "job_schema_version", "lease_schema_version", "data_plane_schema_version", "job_id", "lease_id", "provider_id", "device_id", "session_id", "workload_type", "template_id", "image_ref", "gpu_uuid", "backend", "initial_state", "timeout_seconds", "lease_expires_at", "data_plane_credential_expires_at", "runtime", "cancellation", "cleanup"],
+            "properties": {
+                "schema_version": { "type": "string", "const": "burd-provider-job-execution-v1" },
+                "policy_version": { "type": "string", "const": "burd-provider-job-runtime-policy-v1" },
+                "job_schema_version": { "type": "string" },
+                "lease_schema_version": { "type": "string" },
+                "data_plane_schema_version": { "type": "string" },
+                "job_id": { "type": "string" },
+                "lease_id": { "type": "string" },
+                "provider_id": { "type": "string" },
+                "device_id": { "type": "string" },
+                "session_id": { "type": "string" },
+                "workload_type": { "type": "string" },
+                "template_id": { "type": "string", "enum": ["llm_inference", "embeddings", "image_generation", "whisper_transcription", "file_processing"] },
+                "image_ref": { "type": "string", "description": "Digest-pinned container image selected by the backend." },
+                "gpu_uuid": { "type": "string" },
+                "backend": { "type": "string", "const": "cuda" },
+                "policy_id": { "type": ["string", "null"] },
+                "workload_policy_version": { "type": ["string", "null"] },
+                "initial_state": { "$ref": "#/components/schemas/ProviderJobExecutionState" },
+                "timeout_seconds": { "type": "integer", "minimum": 1 },
+                "lease_expires_at": { "type": "string", "format": "date-time" },
+                "data_plane_credential_expires_at": { "type": "string", "format": "date-time" },
+                "runtime": { "$ref": "#/components/schemas/ProviderJobRuntimePolicy" },
+                "cancellation": { "$ref": "#/components/schemas/ProviderJobCancellationPolicy" },
+                "cleanup": { "$ref": "#/components/schemas/ProviderJobCleanupPolicy" }
+            }
+        }),
+    );
+    schemas.insert(
         "NextJobResponse".to_string(),
         serde_json::json!({
             "type": "object",
@@ -2576,7 +2665,8 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
                 "request_id": { "type": "string" },
                 "job": { "oneOf": [{ "$ref": "#/components/schemas/JobRecord" }, { "type": "null" }] },
                 "data_plane": { "oneOf": [{ "$ref": "#/components/schemas/JobDataPlaneGrant" }, { "type": "null" }] },
-                "lease": { "oneOf": [{ "$ref": "#/components/schemas/JobLeaseRecord" }, { "type": "null" }] }
+                "lease": { "oneOf": [{ "$ref": "#/components/schemas/JobLeaseRecord" }, { "type": "null" }] },
+                "execution": { "oneOf": [{ "$ref": "#/components/schemas/ProviderJobExecutionSpec" }, { "type": "null" }] }
             }
         }),
     );
@@ -4003,6 +4093,11 @@ mod tests {
             "JobResponse",
             "ListJobsResponse",
             "JobDataPlaneGrant",
+            "ProviderJobExecutionState",
+            "ProviderJobRuntimePolicy",
+            "ProviderJobCancellationPolicy",
+            "ProviderJobCleanupPolicy",
+            "ProviderJobExecutionSpec",
             "NextJobResponse",
             "JobEventRequest",
             "JobEventResponse",
@@ -4021,6 +4116,11 @@ mod tests {
         ] {
             assert!(schemas.contains_key(schema), "missing schema {schema}");
         }
+
+        assert_eq!(
+            schemas["NextJobResponse"]["properties"]["execution"]["oneOf"][0]["$ref"],
+            "#/components/schemas/ProviderJobExecutionSpec"
+        );
 
         let paths = document["paths"].as_object().unwrap();
         assert_eq!(

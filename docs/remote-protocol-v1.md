@@ -703,14 +703,14 @@ Initial approved runtime templates:
 - `whisper_transcription`;
 - `file_processing`.
 
-Backend behavior reserved for BN-13/BN-14:
+Backend-authoritative execution binding now implemented:
 
-- choose the approved template and image digest;
-- bind the runtime plan to provider, device, session, GPU UUID, job ID, and lease ID;
-- issue job-specific credentials and signed artifact URLs;
-- reject arbitrary shell payloads;
-- treat provider-generated runtime plans as evidence, not final authority;
-- persist runtime/job audit events before execution and after cleanup.
+- the Control Plane chooses the approved template and image digest;
+- `burd-provider-job-execution-v1` binds provider, device, session, GPU UUID, job, lease, workload policy, timeout, and expiries;
+- the assignment includes a separate job-specific data-plane credential; byte transfer and signed object-storage URLs are not implemented;
+- the runtime policy rejects arbitrary command and entrypoint overrides;
+- provider-generated runtime plans remain local evidence and are not final authority;
+- the Control Plane returns only a complete, validated `job`/`lease`/`data_plane`/`execution` bundle.
 
 BN-12 by itself does not create jobs, leases, scheduler assignment, data-plane artifact transfer, result upload, metering, billing, Pix, payouts, or marketplace listings. BN-13 adds the first `/v1/jobs` control-plane API and metadata-only data-plane grants.
 
@@ -752,7 +752,8 @@ Device-session endpoint. It atomically consumes the oldest non-expired `offered`
 
 - `job`, the persisted job record;
 - `data_plane`, a job-scoped grant;
-- `lease`, the scheduler lease record.
+- `lease`, the scheduler lease record;
+- `execution`, the backend-authored runtime binding and restrictive execution policy.
 
 The grant contains an opaque credential, server expiry, and scoped artifact paths. URLs do not embed the raw credential. BN-13 does not transfer artifact bytes yet.
 

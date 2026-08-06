@@ -714,9 +714,10 @@ Documento: [`docs/bn-12-secure-provider-runtime.md`](docs/bn-12-secure-provider-
 
 ## Job API e data plane
 
-O BN-13 adiciona no control plane a primeira API de jobs: criacao admin com idempotencia, pull pelo provider via sessao remota autenticada, accept, eventos sequenciados, resultado final, cancelamento e grants de data plane com credencial separada. Desde o BN-14, o pull de job depende de um lease oferecido pelo scheduler para a sessao autenticada. Ele ainda nao transfere bytes de artefato, nao executa container de cliente e nao faz metering ou billing.
+O BN-13 adiciona no control plane a primeira API de jobs: criacao admin com idempotencia, pull pelo provider via sessao remota autenticada, accept, eventos sequenciados, resultado final, cancelamento e grants de data plane com credencial separada. Desde o BN-14, o pull depende de um lease oferecido pelo scheduler. O Control Plane agora tambem retorna uma especificacao versionada que vincula job, lease, identidade, GPU, imagem digest-pinned, timeout e politica de runtime; ainda nao existe provider worker que transfira artefatos ou execute containers de cliente.
 
 Documento: [`docs/bn-13-job-api-data-plane.md`](docs/bn-13-job-api-data-plane.md).
+Contrato adicional: [`docs/provider-job-runner-contract.md`](docs/provider-job-runner-contract.md).
 
 ## Scheduler e leases
 
