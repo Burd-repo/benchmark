@@ -10,8 +10,12 @@ use burd_protocol::{
     AcceptJobRequest, CancelJobRequest, CreateJobRequest, CreateJobResponse,
     JOB_DATA_PLANE_GRANT_VERSION, JOB_EVENT_SCHEMA_VERSION, JOB_SCHEMA_VERSION, JobArtifact,
     JobDataPlaneGrant, JobDataPlaneUrl, JobEventRecord, JobEventRequest, JobEventResponse,
-    JobRecord, JobResponse, ListJobsResponse, NextJobResponse, SubmitJobResultRequest,
-    SubmitJobResultResponse, random_token, sha256_hex,
+    JobLeaseRecord, JobRecord, JobResponse, ListJobsResponse, NextJobResponse,
+    PROVIDER_JOB_APPROVED_TEMPLATES, PROVIDER_JOB_EXECUTION_POLICY_VERSION,
+    PROVIDER_JOB_EXECUTION_SCHEMA_VERSION, ProviderJobCancellationPolicy, ProviderJobCleanupPolicy,
+    ProviderJobExecutionSpec, ProviderJobExecutionState, ProviderJobRuntimePolicy,
+    SubmitJobResultRequest, SubmitJobResultResponse, random_token, sha256_hex,
+    validate_provider_job_execution_bundle,
 };
 use chrono::{Duration, Utc};
 use tokio_postgres::{Row, Transaction};
@@ -21,14 +25,6 @@ const DEFAULT_JOB_TIMEOUT_SECONDS: u32 = 3600;
 const MAX_JOB_TIMEOUT_SECONDS: u32 = 24 * 60 * 60;
 const MAX_JOB_ARTIFACTS: usize = 32;
 const MAX_JOB_MESSAGE_LEN: usize = 512;
-const APPROVED_JOB_TEMPLATES: &[&str] = &[
-    "llm_inference",
-    "embeddings",
-    "image_generation",
-    "whisper_transcription",
-    "file_processing",
-];
-
 #[derive(Debug, Clone)]
 pub struct CreateJobCommand {
     pub request_id: String,
@@ -256,6 +252,7 @@ impl Database {
                 job: None,
                 data_plane: None,
                 lease: None,
+                execution: None,
             });
         };
         let lease_id: String = lease_row.get("lease_id");
@@ -279,6 +276,7 @@ impl Database {
         let job = load_job_in_transaction(&transaction, &queued.job_id).await?;
         let lease = load_job_lease_in_transaction(&transaction, &lease_id).await?;
         let data_plane = data_plane_grant(&job, credential, credential_expires_at);
+        let execution = provider_job_execution_spec(&job, &lease, &data_plane)?;
         insert_audit_event(
             &transaction,
             NewAuditEvent {
@@ -300,6 +298,7 @@ impl Database {
             job: Some(job),
             data_plane: Some(data_plane),
             lease: Some(lease),
+            execution: Some(execution),
         })
     }
     pub async fn accept_job(
@@ -700,6 +699,42 @@ async fn apply_event_state_update(
     Ok(())
 }
 
+fn provider_job_execution_spec(
+    job: &JobRecord,
+    lease: &JobLeaseRecord,
+    data_plane: &JobDataPlaneGrant,
+) -> Result<ProviderJobExecutionSpec, SessionError> {
+    let spec = ProviderJobExecutionSpec {
+        schema_version: PROVIDER_JOB_EXECUTION_SCHEMA_VERSION.to_string(),
+        policy_version: PROVIDER_JOB_EXECUTION_POLICY_VERSION.to_string(),
+        job_schema_version: job.schema_version.clone(),
+        lease_schema_version: lease.schema_version.clone(),
+        data_plane_schema_version: data_plane.schema_version.clone(),
+        job_id: job.job_id.clone(),
+        lease_id: lease.lease_id.clone(),
+        provider_id: job.provider_id.clone(),
+        device_id: job.device_id.clone(),
+        session_id: job.session_id.clone(),
+        workload_type: job.workload_type.clone(),
+        template_id: job.template_id.clone(),
+        image_ref: job.image_ref.clone(),
+        gpu_uuid: job.gpu_uuid.clone(),
+        backend: job.backend.clone(),
+        policy_id: job.policy_id.clone(),
+        workload_policy_version: job.policy_version.clone(),
+        initial_state: ProviderJobExecutionState::Assigned,
+        timeout_seconds: job.timeout_seconds,
+        lease_expires_at: lease.expires_at.clone(),
+        data_plane_credential_expires_at: data_plane.credential_expires_at.clone(),
+        runtime: ProviderJobRuntimePolicy::v1(),
+        cancellation: ProviderJobCancellationPolicy::v1(),
+        cleanup: ProviderJobCleanupPolicy::v1(),
+    };
+    validate_provider_job_execution_bundle(job, lease, data_plane, &spec).map_err(|_| {
+        SessionError::Conflict("provider job execution bundle is inconsistent".to_string())
+    })?;
+    Ok(spec)
+}
 fn data_plane_grant(
     job: &JobRecord,
     credential: String,
@@ -756,7 +791,7 @@ fn validate_create_job_request(request: &CreateJobRequest) -> Result<(), Session
     ] {
         validate_id(label, value, max_len)?;
     }
-    if !APPROVED_JOB_TEMPLATES
+    if !PROVIDER_JOB_APPROVED_TEMPLATES
         .iter()
         .any(|template| *template == request.template_id)
     {
@@ -1174,6 +1209,42 @@ mod tests {
         assert_eq!(grant.upload_urls.len(), 1);
         assert!(!grant.download_urls[0].url.contains("jobcred_example"));
         assert!(grant.download_urls[0].url.contains("/download"));
+
+        let lease = JobLeaseRecord {
+            lease_id: "lease_1".to_string(),
+            job_id: job.job_id.clone(),
+            provider_id: job.provider_id.clone(),
+            device_id: job.device_id.clone(),
+            session_id: job.session_id.clone(),
+            schema_version: burd_protocol::JOB_LEASE_SCHEMA_VERSION.to_string(),
+            workload_type: job.workload_type.clone(),
+            gpu_uuid: job.gpu_uuid.clone(),
+            policy_id: job.policy_id.clone(),
+            policy_version: job.policy_version.clone(),
+            status: "offered".to_string(),
+            reason_codes: Vec::new(),
+            offered_at: "2026-07-13T00:00:00Z".to_string(),
+            expires_at: "2026-07-13T00:05:00Z".to_string(),
+            accepted_at: None,
+            provisioning_at: None,
+            active_at: None,
+            completed_at: None,
+            failure_reason: None,
+            created_at: "2026-07-13T00:00:00Z".to_string(),
+            updated_at: "2026-07-13T00:00:00Z".to_string(),
+        };
+        let execution = provider_job_execution_spec(&job, &lease, &grant).unwrap();
+        assert_eq!(execution.lease_id, lease.lease_id);
+        assert_eq!(execution.gpu_uuid, job.gpu_uuid);
+        assert!(
+            !serde_json::to_string(&execution)
+                .unwrap()
+                .contains(&grant.credential)
+        );
+
+        let mut wrong_lease = lease;
+        wrong_lease.job_id = "job_2".to_string();
+        assert!(provider_job_execution_spec(&job, &wrong_lease, &grant).is_err());
     }
     #[tokio::test]
     #[ignore]

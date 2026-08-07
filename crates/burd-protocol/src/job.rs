@@ -1,3 +1,4 @@
+use crate::job_execution::ProviderJobExecutionSpec;
 use crate::lease::JobLeaseRecord;
 use serde::{Deserialize, Serialize};
 
@@ -131,6 +132,8 @@ pub struct NextJobResponse {
     pub data_plane: Option<JobDataPlaneGrant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease: Option<JobLeaseRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ProviderJobExecutionSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

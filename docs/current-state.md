@@ -549,13 +549,13 @@ starting the API server or depending on host state:
 
 ## BN-13 - Job API And Data Plane
 
-- `burd-protocol` defines job artifacts, job records, create/list/next/accept/event/result/cancel contracts, and job-scoped data-plane grants.
+- `burd-protocol` defines job artifacts, job records, create/list/next/accept/event/result/cancel contracts, job-scoped data-plane grants, and the versioned provider execution specification.
 - PostgreSQL migration `0012_job_api_data_plane` adds `compute_jobs` and `job_events`.
 - The control plane exposes `POST /v1/jobs`, `GET /v1/jobs/{job_id}`, `GET /v1/providers/{provider_id}/jobs`, `POST /v1/jobs/{job_id}/cancel`, `GET /v1/sessions/{session_id}/jobs/next`, `POST /v1/sessions/{session_id}/jobs/{job_id}/accept`, `POST /v1/sessions/{session_id}/jobs/{job_id}/events`, and `POST /v1/sessions/{session_id}/jobs/{job_id}/result`. OpenAPI now includes request/response schemas for the implemented job contracts.
 - Job creation is admin-authorized, idempotent, scoped to one provider/device/session/GPU, and requires an online or degraded session plus backend workload eligibility of `eligible` or `limited`.
 - Jobs are limited to approved templates, CUDA backend, digest-pinned images, structured artifact manifests, and redacted JSON parameters/metadata.
-- Provider sessions pull a job over authenticated outbound session credentials and receive a job-scoped data-plane grant with separate credential material and scoped artifact paths. BN-14 now requires an offered scheduler lease before this pull can assign work.
-- BN-13 does not implement scheduler selection, leases, provider-side container execution, byte-level artifact transfer, object-storage signed URLs, metering, billing, Pix, payouts, marketplace listing, multi-GPU jobs, or multi-provider jobs.
+- Provider sessions pull a job over authenticated outbound session credentials and receive a complete backend-validated bundle containing the job, offered lease, data-plane grant, and execution specification. The specification binds provider/device/session, GPU UUID, approved template, digest-pinned image, timeout, expiries, and restrictive runtime policy without copying the raw credential.
+- The execution contract does not implement a provider worker, container execution, byte-level artifact transfer, object-storage signed URLs, runtime cancellation/cleanup enforcement, paid execution, multi-GPU jobs, or multi-provider jobs. Scheduler leases and later metering/marketplace registries remain separate backend capabilities.
 
 ## BN-14 - Scheduler And Leases
 
