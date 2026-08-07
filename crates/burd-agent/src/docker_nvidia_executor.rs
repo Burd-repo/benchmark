@@ -1,6 +1,6 @@
 use crate::docker_runtime_backend::{
-    DockerContainerLogs, DockerContainerPlan, DockerContainerState, DockerRuntimeBackend,
-    DockerRuntimeError,
+    DockerCommandControl, DockerContainerLogs, DockerContainerPlan, DockerContainerState,
+    DockerRuntimeBackend, DockerRuntimeError,
 };
 use crate::provider_job_executor::{
     JobCancellation, ProviderJobAssignment, ProviderJobExecutionError, ProviderJobExecutionOutcome,
@@ -21,6 +21,8 @@ const DEVICE_LABEL: &str = "com.burd.device_id";
 const SESSION_LABEL: &str = "com.burd.session_id";
 const GPU_LABEL: &str = "com.burd.gpu_uuid";
 const BACKEND_LABEL: &str = "com.burd.runtime_backend";
+const RUNTIME_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub trait ProviderJobImagePolicy: Send + Sync + 'static {
     fn image_is_allowed(&self, template_id: &str, image_ref: &str) -> bool;
@@ -124,38 +126,43 @@ where
 
         // All checks above and all environment probes are read-only. Container side effects start
         // only after the complete contract, image policy, deadline, host, GPU and image pass.
-        self.backend
-            .verify_environment(&plan)
-            .map_err(map_runtime_error)?;
-        cancellation.ensure_not_cancelled()?;
-        self.remove_stale_container(&plan)?;
-        cancellation.ensure_not_cancelled()?;
+        self.run_active_command(&cancellation, deadlines, |control| {
+            self.backend.verify_environment(&plan, control)
+        })?;
+        self.remove_stale_container(&plan, &cancellation, deadlines)?;
 
-        let container_id = match self.backend.create(&plan) {
+        let container_id = match self.run_active_command(&cancellation, deadlines, |control| {
+            self.backend.create(&plan, control)
+        }) {
             Ok(container_id) => container_id,
             Err(error) => {
                 self.cleanup_partial_create(&plan)?;
-                return Err(map_runtime_error(error));
+                return Err(error);
             }
         };
-        if let Err(error) = cancellation.ensure_not_cancelled() {
+        if let Err(error) = self.run_active_command(&cancellation, deadlines, |control| {
+            self.backend.start(&container_id, control)
+        }) {
             self.remove_created_container(&container_id)?;
             return Err(error);
-        }
-        if let Err(error) = self.backend.start(&container_id) {
-            self.remove_created_container(&container_id)?;
-            return Err(map_runtime_error(error));
         }
 
         let monitor_result =
             self.monitor_container(&container_id, &assignment, &cancellation, deadlines);
         match monitor_result {
-            Ok(state) => {
-                self.finish_exited_container(&container_id, &assignment, state, started_at)
-            }
+            Ok(state) => self.finish_exited_container(
+                &container_id,
+                &assignment,
+                &cancellation,
+                deadlines,
+                state,
+                started_at,
+            ),
             Err(error) => {
                 let termination = self.terminate_running_container(&container_id, &assignment);
-                let removal = self.backend.remove(&container_id);
+                let removal = self
+                    .backend
+                    .remove(&container_id, &self.cleanup_command_control());
                 if termination.is_err() || removal.is_err() {
                     Err(execution_error("container_cleanup_failed"))
                 } else {
@@ -168,18 +175,21 @@ where
     fn remove_stale_container(
         &self,
         plan: &DockerContainerPlan,
+        cancellation: &JobCancellation,
+        deadlines: ExecutionDeadlines,
     ) -> Result<(), ProviderJobExecutionError> {
-        let Some(existing) = self
-            .backend
-            .existing_container(&plan.name)
-            .map_err(map_runtime_error)?
+        let Some(existing) = self.run_active_command(cancellation, deadlines, |control| {
+            self.backend.existing_container(&plan.name, control)
+        })?
         else {
             return Ok(());
         };
         if !labels_match(&existing.labels, &plan.labels) {
             return Err(execution_error("container_name_conflict"));
         }
-        self.backend.remove(&plan.name).map_err(map_runtime_error)
+        self.run_active_command(cancellation, deadlines, |control| {
+            self.backend.remove(&plan.name, control)
+        })
     }
 
     fn cleanup_partial_create(
@@ -188,13 +198,15 @@ where
     ) -> Result<(), ProviderJobExecutionError> {
         let existing = self
             .backend
-            .existing_container(&plan.name)
+            .existing_container(&plan.name, &self.cleanup_command_control())
             .map_err(map_runtime_error)?;
         if let Some(existing) = existing {
             if !labels_match(&existing.labels, &plan.labels) {
                 return Err(execution_error("container_name_conflict"));
             }
-            self.backend.remove(&plan.name).map_err(map_runtime_error)?;
+            self.backend
+                .remove(&plan.name, &self.cleanup_command_control())
+                .map_err(map_runtime_error)?;
         }
         Ok(())
     }
@@ -204,7 +216,7 @@ where
         container_id: &str,
     ) -> Result<(), ProviderJobExecutionError> {
         self.backend
-            .remove(container_id)
+            .remove(container_id, &self.cleanup_command_control())
             .map_err(|_| execution_error("container_cleanup_failed"))
     }
 
@@ -229,10 +241,9 @@ where
             if now >= deadlines.timeout {
                 return Err(execution_error("execution_timeout"));
             }
-            let state = self
-                .backend
-                .inspect(container_id)
-                .map_err(map_runtime_error)?;
+            let state = self.run_active_command(cancellation, deadlines, |control| {
+                self.backend.inspect(container_id, control)
+            })?;
             if !state.running {
                 return Ok(state);
             }
@@ -251,36 +262,57 @@ where
         container_id: &str,
         assignment: &ProviderJobAssignment,
     ) -> Result<(), DockerRuntimeError> {
-        let stop_result = self.backend.stop(
-            container_id,
-            assignment.execution.cancellation.graceful_stop_seconds,
-        );
-        let still_running = match stop_result {
-            Ok(()) => self
+        let policy = &assignment.execution.cancellation;
+        let started_at = self.clock.now();
+        let graceful_deadline = add_seconds(started_at, policy.graceful_stop_seconds);
+        let force_deadline = add_seconds(started_at, policy.force_kill_after_seconds);
+        let _ = self
+            .backend
+            .terminate(container_id, &self.cleanup_control_until(force_deadline));
+        let poll_interval = Duration::from_secs(u64::from(policy.poll_interval_seconds));
+
+        loop {
+            let now = self.clock.now();
+            if now >= force_deadline {
+                return self
+                    .backend
+                    .kill(container_id, &self.cleanup_command_control());
+            }
+            if self
                 .backend
-                .inspect(container_id)
-                .map(|state| state.running)
-                .unwrap_or(true),
-            Err(_) => true,
-        };
-        if still_running {
-            self.backend.kill(container_id)?;
+                .inspect(container_id, &self.cleanup_control_until(force_deadline))
+                .is_ok_and(|state| !state.running)
+            {
+                return Ok(());
+            }
+            let phase_deadline = if now < graceful_deadline {
+                graceful_deadline
+            } else {
+                force_deadline
+            };
+            let remaining = (phase_deadline - self.clock.now())
+                .to_std()
+                .unwrap_or(Duration::ZERO);
+            self.clock.sleep(poll_interval.min(remaining));
         }
-        Ok(())
     }
 
     fn finish_exited_container(
         &self,
         container_id: &str,
         assignment: &ProviderJobAssignment,
+        cancellation: &JobCancellation,
+        deadlines: ExecutionDeadlines,
         state: DockerContainerState,
         started_at: DateTime<Utc>,
     ) -> Result<ProviderJobExecutionOutcome, ProviderJobExecutionError> {
-        let logs = match self.backend.logs(container_id) {
+        let logs = match self.run_active_command(cancellation, deadlines, |control| {
+            self.backend.logs(container_id, control)
+        }) {
             Ok(logs) => logs,
             Err(error) => {
                 self.remove_created_container(container_id)?;
-                return Err(map_runtime_error(error));
+                return Err(error);
             }
         };
         self.remove_created_container(container_id)?;
@@ -308,6 +340,58 @@ where
             ),
         ))
     }
+
+    fn run_active_command<T>(
+        &self,
+        cancellation: &JobCancellation,
+        deadlines: ExecutionDeadlines,
+        operation: impl FnOnce(&DockerCommandControl) -> Result<T, DockerRuntimeError>,
+    ) -> Result<T, ProviderJobExecutionError> {
+        let active = self.active_command_control(cancellation, deadlines)?;
+        operation(&active.control)
+            .map_err(|error| map_active_runtime_error(error, active.timeout_code))
+    }
+
+    fn active_command_control(
+        &self,
+        cancellation: &JobCancellation,
+        deadlines: ExecutionDeadlines,
+    ) -> Result<ActiveDockerCommandControl, ProviderJobExecutionError> {
+        cancellation.ensure_not_cancelled()?;
+        let now = self.clock.now();
+        if now >= deadlines.lease {
+            return Err(execution_error("execution_lease_expired"));
+        }
+        if now >= deadlines.timeout {
+            return Err(execution_error("execution_timeout"));
+        }
+        let (deadline, deadline_code) = if deadlines.lease <= deadlines.timeout {
+            (deadlines.lease, "execution_lease_expired")
+        } else {
+            (deadlines.timeout, "execution_timeout")
+        };
+        let remaining = (deadline - now).to_std().unwrap_or(Duration::ZERO);
+        let (timeout, timeout_code) = if remaining <= RUNTIME_COMMAND_TIMEOUT {
+            (remaining, deadline_code)
+        } else {
+            (RUNTIME_COMMAND_TIMEOUT, "runtime_command_timed_out")
+        };
+        Ok(ActiveDockerCommandControl {
+            control: DockerCommandControl::cancellable(timeout, cancellation.clone()),
+            timeout_code,
+        })
+    }
+
+    fn cleanup_command_control(&self) -> DockerCommandControl {
+        DockerCommandControl::cleanup(CLEANUP_COMMAND_TIMEOUT)
+    }
+
+    fn cleanup_control_until(&self, deadline: DateTime<Utc>) -> DockerCommandControl {
+        let remaining = (deadline - self.clock.now())
+            .to_std()
+            .unwrap_or(Duration::ZERO);
+        DockerCommandControl::cleanup(CLEANUP_COMMAND_TIMEOUT.min(remaining))
+    }
 }
 
 impl<B, P> ProviderJobExecutor for DockerNvidiaProviderJobExecutor<B, P>
@@ -328,6 +412,11 @@ where
 struct ExecutionDeadlines {
     lease: DateTime<Utc>,
     timeout: DateTime<Utc>,
+}
+
+struct ActiveDockerCommandControl {
+    control: DockerCommandControl,
+    timeout_code: &'static str,
 }
 
 fn execution_deadlines(
@@ -353,6 +442,11 @@ fn execution_deadlines(
         lease: lease.min(data_plane),
         timeout,
     })
+}
+
+fn add_seconds(now: DateTime<Utc>, seconds: u32) -> DateTime<Utc> {
+    now.checked_add_signed(TimeDelta::seconds(i64::from(seconds)))
+        .unwrap_or(now)
 }
 
 fn validate_runtime_identifiers(
@@ -471,6 +565,17 @@ fn map_runtime_error(error: DockerRuntimeError) -> ProviderJobExecutionError {
     execution_error(error.code())
 }
 
+fn map_active_runtime_error(
+    error: DockerRuntimeError,
+    timeout_code: &'static str,
+) -> ProviderJobExecutionError {
+    match error.code() {
+        "runtime_command_cancelled" => execution_error("execution_cancelled"),
+        "runtime_command_timed_out" => execution_error(timeout_code),
+        _ => map_runtime_error(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,9 +621,10 @@ mod tests {
         existing: VecDeque<Option<ExistingDockerContainer>>,
         inspect: VecDeque<DockerContainerState>,
         logs: DockerContainerLogs,
+        fail_existing: bool,
         fail_create: bool,
         fail_start: bool,
-        fail_stop: bool,
+        fail_terminate: bool,
         fail_kill: bool,
         fail_remove: bool,
         cancel_on_inspect: Option<JobCancellation>,
@@ -545,7 +651,11 @@ mod tests {
             "docker_linux_native"
         }
 
-        fn verify_environment(&self, plan: &DockerContainerPlan) -> Result<(), DockerRuntimeError> {
+        fn verify_environment(
+            &self,
+            plan: &DockerContainerPlan,
+            _control: &DockerCommandControl,
+        ) -> Result<(), DockerRuntimeError> {
             let mut state = self.state.lock().unwrap();
             state.operations.push("verify".to_string());
             state.observed_plans.push(plan.clone());
@@ -555,13 +665,22 @@ mod tests {
         fn existing_container(
             &self,
             _name: &str,
+            _control: &DockerCommandControl,
         ) -> Result<Option<ExistingDockerContainer>, DockerRuntimeError> {
             let mut state = self.state.lock().unwrap();
             state.operations.push("existing".to_string());
-            Ok(state.existing.pop_front().flatten())
+            if state.fail_existing {
+                Err(DockerRuntimeError::new("container_inspect_failed"))
+            } else {
+                Ok(state.existing.pop_front().flatten())
+            }
         }
 
-        fn create(&self, _plan: &DockerContainerPlan) -> Result<String, DockerRuntimeError> {
+        fn create(
+            &self,
+            _plan: &DockerContainerPlan,
+            _control: &DockerCommandControl,
+        ) -> Result<String, DockerRuntimeError> {
             let mut state = self.state.lock().unwrap();
             state.operations.push("create".to_string());
             if state.fail_create {
@@ -571,7 +690,11 @@ mod tests {
             }
         }
 
-        fn start(&self, _container_id: &str) -> Result<(), DockerRuntimeError> {
+        fn start(
+            &self,
+            _container_id: &str,
+            _control: &DockerCommandControl,
+        ) -> Result<(), DockerRuntimeError> {
             let mut state = self.state.lock().unwrap();
             state.operations.push("start".to_string());
             if state.fail_start {
@@ -581,7 +704,11 @@ mod tests {
             }
         }
 
-        fn inspect(&self, _container_id: &str) -> Result<DockerContainerState, DockerRuntimeError> {
+        fn inspect(
+            &self,
+            _container_id: &str,
+            _control: &DockerCommandControl,
+        ) -> Result<DockerContainerState, DockerRuntimeError> {
             let mut state = self.state.lock().unwrap();
             state.operations.push("inspect".to_string());
             if let Some(cancellation) = state.cancel_on_inspect.take() {
@@ -590,23 +717,35 @@ mod tests {
             Ok(state.inspect.pop_front().unwrap_or_else(running_state))
         }
 
-        fn logs(&self, _container_id: &str) -> Result<DockerContainerLogs, DockerRuntimeError> {
+        fn logs(
+            &self,
+            _container_id: &str,
+            _control: &DockerCommandControl,
+        ) -> Result<DockerContainerLogs, DockerRuntimeError> {
             let mut state = self.state.lock().unwrap();
             state.operations.push("logs".to_string());
             Ok(state.logs.clone())
         }
 
-        fn stop(&self, _container_id: &str, _grace_seconds: u32) -> Result<(), DockerRuntimeError> {
+        fn terminate(
+            &self,
+            _container_id: &str,
+            _control: &DockerCommandControl,
+        ) -> Result<(), DockerRuntimeError> {
             let mut state = self.state.lock().unwrap();
-            state.operations.push("stop".to_string());
-            if state.fail_stop {
-                Err(DockerRuntimeError::new("container_stop_failed"))
+            state.operations.push("terminate".to_string());
+            if state.fail_terminate {
+                Err(DockerRuntimeError::new("container_terminate_failed"))
             } else {
                 Ok(())
             }
         }
 
-        fn kill(&self, _container_id: &str) -> Result<(), DockerRuntimeError> {
+        fn kill(
+            &self,
+            _container_id: &str,
+            _control: &DockerCommandControl,
+        ) -> Result<(), DockerRuntimeError> {
             let mut state = self.state.lock().unwrap();
             state.operations.push("kill".to_string());
             if state.fail_kill {
@@ -616,7 +755,11 @@ mod tests {
             }
         }
 
-        fn remove(&self, _container_id_or_name: &str) -> Result<(), DockerRuntimeError> {
+        fn remove(
+            &self,
+            _container_id_or_name: &str,
+            _control: &DockerCommandControl,
+        ) -> Result<(), DockerRuntimeError> {
             let mut state = self.state.lock().unwrap();
             state.operations.push("remove".to_string());
             if state.fail_remove {
@@ -929,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_stops_kills_and_removes_when_graceful_stop_fails() {
+    fn cancellation_terminates_then_forces_kill_at_policy_deadline() {
         let now = Utc::now();
         let assignment = assignment_at(now);
         let cancellation = JobCancellation::default();
@@ -937,7 +1080,7 @@ mod tests {
         {
             let mut state = backend.state.lock().unwrap();
             state.cancel_on_inspect = Some(cancellation.clone());
-            state.fail_stop = true;
+            state.fail_terminate = true;
         }
         let error = executor(backend.clone(), now, &assignment)
             .execute(assignment, cancellation)
@@ -946,7 +1089,9 @@ mod tests {
         assert_eq!(error.code(), "execution_cancelled");
         assert!(backend.operations().ends_with(&[
             "inspect".to_string(),
-            "stop".to_string(),
+            "terminate".to_string(),
+            "inspect".to_string(),
+            "inspect".to_string(),
             "kill".to_string(),
             "remove".to_string()
         ]));
@@ -977,10 +1122,54 @@ mod tests {
             .unwrap();
         assert_eq!(error.code(), "execution_timeout");
         assert!(backend.operations().ends_with(&[
-            "stop".to_string(),
+            "terminate".to_string(),
             "inspect".to_string(),
             "remove".to_string()
         ]));
+    }
+
+    #[test]
+    fn graceful_termination_exits_before_force_kill_deadline() {
+        let now = Utc::now();
+        let assignment = assignment_at(now);
+        let cancellation = JobCancellation::default();
+        let backend = FakeBackend::default();
+        {
+            let mut state = backend.state.lock().unwrap();
+            state.cancel_on_inspect = Some(cancellation.clone());
+            state.inspect.push_back(running_state());
+            state.inspect.push_back(exited_state(143, false));
+        }
+
+        let error = executor(backend.clone(), now, &assignment)
+            .execute(assignment, cancellation)
+            .err()
+            .unwrap();
+
+        assert_eq!(error.code(), "execution_cancelled");
+        assert!(backend.operations().ends_with(&[
+            "inspect".to_string(),
+            "terminate".to_string(),
+            "inspect".to_string(),
+            "remove".to_string()
+        ]));
+        assert!(!backend.operations().contains(&"kill".to_string()));
+    }
+
+    #[test]
+    fn existing_container_probe_failure_is_fail_closed() {
+        let now = Utc::now();
+        let assignment = assignment_at(now);
+        let backend = FakeBackend::default();
+        backend.state.lock().unwrap().fail_existing = true;
+
+        let error = executor(backend.clone(), now, &assignment)
+            .execute(assignment, JobCancellation::default())
+            .err()
+            .unwrap();
+
+        assert_eq!(error.code(), "container_inspect_failed");
+        assert_eq!(backend.operations(), ["verify", "existing"]);
     }
 
     #[test]

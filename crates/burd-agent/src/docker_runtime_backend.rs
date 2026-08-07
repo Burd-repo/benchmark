@@ -1,12 +1,59 @@
+use crate::provider_job_executor::JobCancellation;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
 use std::io::{self, Read};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 pub const MAX_DOCKER_LOG_BYTES: usize = 64 * 1024;
 pub const MAX_DOCKER_LOG_LINES: usize = 200;
+const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const COMMAND_REAP_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Clone)]
+pub struct DockerCommandControl {
+    deadline: Instant,
+    cancellation: Option<JobCancellation>,
+}
+
+impl DockerCommandControl {
+    pub fn cancellable(timeout: Duration, cancellation: JobCancellation) -> Self {
+        Self::new(timeout, Some(cancellation))
+    }
+
+    pub fn cleanup(timeout: Duration) -> Self {
+        Self::new(timeout, None)
+    }
+
+    fn new(timeout: Duration, cancellation: Option<JobCancellation>) -> Self {
+        let now = Instant::now();
+        Self {
+            deadline: now.checked_add(timeout).unwrap_or(now),
+            cancellation,
+        }
+    }
+
+    fn interruption(&self) -> Option<DockerRuntimeError> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(JobCancellation::requested)
+        {
+            Some(DockerRuntimeError::new("runtime_command_cancelled"))
+        } else if Instant::now() >= self.deadline {
+            Some(DockerRuntimeError::new("runtime_command_timed_out"))
+        } else {
+            None
+        }
+    }
+
+    fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DockerContainerPlan {
@@ -112,22 +159,55 @@ pub trait DockerRuntimeBackend: Send + Sync + 'static {
     fn runtime_backend(&self) -> &'static str;
 
     /// Performs read-only host, Docker, image and GPU checks before container creation.
-    fn verify_environment(&self, plan: &DockerContainerPlan) -> Result<(), DockerRuntimeError>;
+    fn verify_environment(
+        &self,
+        plan: &DockerContainerPlan,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError>;
 
     fn existing_container(
         &self,
         name: &str,
+        control: &DockerCommandControl,
     ) -> Result<Option<ExistingDockerContainer>, DockerRuntimeError>;
 
-    fn create(&self, plan: &DockerContainerPlan) -> Result<String, DockerRuntimeError>;
-    fn start(&self, container_id: &str) -> Result<(), DockerRuntimeError>;
-    fn inspect(&self, container_id: &str) -> Result<DockerContainerState, DockerRuntimeError>;
+    fn create(
+        &self,
+        plan: &DockerContainerPlan,
+        control: &DockerCommandControl,
+    ) -> Result<String, DockerRuntimeError>;
+    fn start(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError>;
+    fn inspect(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<DockerContainerState, DockerRuntimeError>;
 
     /// Returns already bounded and redacted tails; implementations must never expose raw logs.
-    fn logs(&self, container_id: &str) -> Result<DockerContainerLogs, DockerRuntimeError>;
-    fn stop(&self, container_id: &str, grace_seconds: u32) -> Result<(), DockerRuntimeError>;
-    fn kill(&self, container_id: &str) -> Result<(), DockerRuntimeError>;
-    fn remove(&self, container_id_or_name: &str) -> Result<(), DockerRuntimeError>;
+    fn logs(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<DockerContainerLogs, DockerRuntimeError>;
+    fn terminate(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError>;
+    fn kill(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError>;
+    fn remove(
+        &self,
+        container_id_or_name: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError>;
 }
 
 #[derive(Clone, Debug)]
@@ -146,16 +226,21 @@ impl Default for LinuxNativeDockerBackend {
 }
 
 impl LinuxNativeDockerBackend {
-    fn docker(&self, args: &[String]) -> Result<BoundedCommandOutput, DockerRuntimeError> {
-        run_bounded_command(&self.docker_program, args)
+    fn docker(
+        &self,
+        args: &[String],
+        control: &DockerCommandControl,
+    ) -> Result<BoundedCommandOutput, DockerRuntimeError> {
+        run_bounded_command(&self.docker_program, args, control)
     }
 
     fn successful_docker(
         &self,
         args: &[String],
         code: &'static str,
+        control: &DockerCommandControl,
     ) -> Result<BoundedCommandOutput, DockerRuntimeError> {
-        let output = self.docker(args)?;
+        let output = self.docker(args, control)?;
         if output.status.success() {
             Ok(output)
         } else {
@@ -221,7 +306,11 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
         "docker_linux_native"
     }
 
-    fn verify_environment(&self, plan: &DockerContainerPlan) -> Result<(), DockerRuntimeError> {
+    fn verify_environment(
+        &self,
+        plan: &DockerContainerPlan,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
         if std::env::consts::OS != "linux" {
             return Err(DockerRuntimeError::new("linux_native_host_required"));
         }
@@ -229,6 +318,7 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
         let server_os = self.successful_docker(
             &["version".into(), "--format".into(), "{{.Server.Os}}".into()],
             "docker_unavailable",
+            control,
         )?;
         if server_os.stdout.trim() != "linux" {
             return Err(DockerRuntimeError::new("linux_container_engine_required"));
@@ -241,6 +331,7 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
                 "{{json .Runtimes}}".into(),
             ],
             "docker_runtime_probe_failed",
+            control,
         )?;
         let runtime_map: serde_json::Value = serde_json::from_str(runtimes.stdout.trim())
             .map_err(|_| DockerRuntimeError::new("docker_runtime_probe_invalid"))?;
@@ -251,6 +342,7 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
         let gpu_output = run_bounded_command(
             &self.nvidia_smi_program,
             &["--query-gpu=uuid".into(), "--format=csv,noheader".into()],
+            control,
         )?;
         if !gpu_output.status.success()
             || !gpu_output
@@ -271,6 +363,7 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
                 plan.image_ref.clone(),
             ],
             "container_image_unavailable",
+            control,
         )?;
         if image.stdout.trim().is_empty() {
             return Err(DockerRuntimeError::new("container_image_invalid"));
@@ -281,25 +374,50 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
     fn existing_container(
         &self,
         name: &str,
+        control: &DockerCommandControl,
     ) -> Result<Option<ExistingDockerContainer>, DockerRuntimeError> {
-        let output = self.docker(&[
-            "container".into(),
-            "inspect".into(),
-            "--format".into(),
-            "{{json .Config.Labels}}".into(),
-            name.to_string(),
-        ])?;
-        if !output.status.success() {
+        let listing = self.successful_docker(
+            &[
+                "container".into(),
+                "ls".into(),
+                "--all".into(),
+                "--filter".into(),
+                format!("name={name}"),
+                "--format".into(),
+                "{{.ID}}\t{{.Names}}".into(),
+            ],
+            "container_list_failed",
+            control,
+        )?;
+        let Some(container_id) =
+            exact_container_id(&listing.stdout, listing.stdout_truncated, name)?
+        else {
             return Ok(None);
-        }
+        };
+        let output = self.successful_docker(
+            &[
+                "container".into(),
+                "inspect".into(),
+                "--format".into(),
+                "{{json .Config.Labels}}".into(),
+                container_id,
+            ],
+            "container_inspect_failed",
+            control,
+        )?;
         let labels = serde_json::from_str::<Option<BTreeMap<String, String>>>(output.stdout.trim())
             .map_err(|_| DockerRuntimeError::new("container_labels_invalid"))?
             .unwrap_or_default();
         Ok(Some(ExistingDockerContainer { labels }))
     }
 
-    fn create(&self, plan: &DockerContainerPlan) -> Result<String, DockerRuntimeError> {
-        let output = self.successful_docker(&Self::create_args(plan), "container_create_failed")?;
+    fn create(
+        &self,
+        plan: &DockerContainerPlan,
+        control: &DockerCommandControl,
+    ) -> Result<String, DockerRuntimeError> {
+        let output =
+            self.successful_docker(&Self::create_args(plan), "container_create_failed", control)?;
         let id = output.stdout.trim();
         if !(12..=64).contains(&id.len()) || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(DockerRuntimeError::new("container_id_invalid"));
@@ -307,15 +425,24 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
         Ok(id.to_string())
     }
 
-    fn start(&self, container_id: &str) -> Result<(), DockerRuntimeError> {
+    fn start(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
         self.successful_docker(
             &["start".into(), container_id.to_string()],
             "container_start_failed",
+            control,
         )?;
         Ok(())
     }
 
-    fn inspect(&self, container_id: &str) -> Result<DockerContainerState, DockerRuntimeError> {
+    fn inspect(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<DockerContainerState, DockerRuntimeError> {
         let output = self.successful_docker(
             &[
                 "container".into(),
@@ -325,6 +452,7 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
                 container_id.to_string(),
             ],
             "container_inspect_failed",
+            control,
         )?;
         let state: DockerStateOutput = serde_json::from_str(output.stdout.trim())
             .map_err(|_| DockerRuntimeError::new("container_state_invalid"))?;
@@ -337,7 +465,11 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
         })
     }
 
-    fn logs(&self, container_id: &str) -> Result<DockerContainerLogs, DockerRuntimeError> {
+    fn logs(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<DockerContainerLogs, DockerRuntimeError> {
         let output = self.successful_docker(
             &[
                 "logs".into(),
@@ -346,6 +478,7 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
                 container_id.to_string(),
             ],
             "container_logs_failed",
+            control,
         )?;
         Ok(DockerContainerLogs::new(
             &output.stdout,
@@ -355,28 +488,47 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
         ))
     }
 
-    fn stop(&self, container_id: &str, grace_seconds: u32) -> Result<(), DockerRuntimeError> {
+    fn terminate(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
         self.successful_docker(
             &[
-                "stop".into(),
-                "--time".into(),
-                grace_seconds.to_string(),
+                "kill".into(),
+                "--signal".into(),
+                "TERM".into(),
                 container_id.to_string(),
             ],
-            "container_stop_failed",
+            "container_terminate_failed",
+            control,
         )?;
         Ok(())
     }
 
-    fn kill(&self, container_id: &str) -> Result<(), DockerRuntimeError> {
+    fn kill(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
         self.successful_docker(
-            &["kill".into(), container_id.to_string()],
+            &[
+                "kill".into(),
+                "--signal".into(),
+                "KILL".into(),
+                container_id.to_string(),
+            ],
             "container_kill_failed",
+            control,
         )?;
         Ok(())
     }
 
-    fn remove(&self, container_id_or_name: &str) -> Result<(), DockerRuntimeError> {
+    fn remove(
+        &self,
+        container_id_or_name: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
         self.successful_docker(
             &[
                 "rm".into(),
@@ -384,6 +536,7 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
                 container_id_or_name.to_string(),
             ],
             "container_remove_failed",
+            control,
         )?;
         Ok(())
     }
@@ -429,12 +582,51 @@ struct BoundedCommandOutput {
     stderr_truncated: bool,
 }
 
+fn exact_container_id(
+    stdout: &str,
+    stdout_truncated: bool,
+    expected_name: &str,
+) -> Result<Option<String>, DockerRuntimeError> {
+    if stdout_truncated {
+        return Err(DockerRuntimeError::new("container_list_invalid"));
+    }
+    let mut exact_id = None;
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let Some((id, name)) = line.split_once('\t') else {
+            return Err(DockerRuntimeError::new("container_list_invalid"));
+        };
+        if name != expected_name {
+            continue;
+        }
+        if exact_id.is_some()
+            || !(12..=64).contains(&id.len())
+            || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(DockerRuntimeError::new("container_list_invalid"));
+        }
+        exact_id = Some(id.to_string());
+    }
+    Ok(exact_id)
+}
+
 fn run_bounded_command(
     program: &str,
     args: &[String],
+    control: &DockerCommandControl,
 ) -> Result<BoundedCommandOutput, DockerRuntimeError> {
-    let mut child = Command::new(program)
-        .args(args)
+    let mut command = Command::new(program);
+    command.args(args);
+    run_bounded_process(&mut command, control)
+}
+
+fn run_bounded_process(
+    command: &mut Command,
+    control: &DockerCommandControl,
+) -> Result<BoundedCommandOutput, DockerRuntimeError> {
+    if let Some(error) = control.interruption() {
+        return Err(error);
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -448,19 +640,31 @@ fn run_bounded_command(
         .stderr
         .take()
         .ok_or_else(|| DockerRuntimeError::new("runtime_stderr_unavailable"))?;
-    let stdout_reader = thread::spawn(move || read_tail_bounded(stdout, MAX_DOCKER_LOG_BYTES));
-    let stderr_reader = thread::spawn(move || read_tail_bounded(stderr, MAX_DOCKER_LOG_BYTES));
-    let status = child
-        .wait()
-        .map_err(|_| DockerRuntimeError::new("runtime_command_wait_failed"))?;
-    let (stdout, stdout_truncated) = stdout_reader
-        .join()
-        .map_err(|_| DockerRuntimeError::new("runtime_stdout_reader_failed"))?
-        .map_err(|_| DockerRuntimeError::new("runtime_stdout_read_failed"))?;
-    let (stderr, stderr_truncated) = stderr_reader
-        .join()
-        .map_err(|_| DockerRuntimeError::new("runtime_stderr_reader_failed"))?
-        .map_err(|_| DockerRuntimeError::new("runtime_stderr_read_failed"))?;
+    let stdout_reader = spawn_bounded_reader(stdout);
+    let stderr_reader = spawn_bounded_reader(stderr);
+    let status = loop {
+        if let Some(error) = control.interruption() {
+            break Err(error);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {}
+            Err(_) => break Err(DockerRuntimeError::new("runtime_command_wait_failed")),
+        }
+        thread::sleep(COMMAND_POLL_INTERVAL.min(control.remaining()));
+    };
+
+    let status = match status {
+        Ok(status) => status,
+        Err(error) => {
+            terminate_command_child(&mut child)?;
+            drop(stdout_reader);
+            drop(stderr_reader);
+            return Err(error);
+        }
+    };
+    let (stdout, stdout_truncated, stderr, stderr_truncated) =
+        collect_bounded_output_readers(stdout_reader, stderr_reader, control)?;
     Ok(BoundedCommandOutput {
         status,
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
@@ -468,6 +672,86 @@ fn run_bounded_command(
         stdout_truncated,
         stderr_truncated,
     })
+}
+
+fn terminate_command_child(child: &mut Child) -> Result<(), DockerRuntimeError> {
+    if child.kill().is_err() {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            _ => {
+                return Err(DockerRuntimeError::new(
+                    "runtime_command_termination_failed",
+                ));
+            }
+        }
+    }
+    let reap_deadline = Instant::now()
+        .checked_add(COMMAND_REAP_TIMEOUT)
+        .unwrap_or_else(Instant::now);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) if Instant::now() < reap_deadline => {
+                thread::sleep(COMMAND_POLL_INTERVAL);
+            }
+            _ => {
+                return Err(DockerRuntimeError::new(
+                    "runtime_command_termination_failed",
+                ));
+            }
+        }
+    }
+}
+
+type BoundedReader = mpsc::Receiver<io::Result<(Vec<u8>, bool)>>;
+
+fn spawn_bounded_reader<R: Read + Send + 'static>(reader: R) -> BoundedReader {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(read_tail_bounded(reader, MAX_DOCKER_LOG_BYTES));
+    });
+    receiver
+}
+
+fn collect_bounded_output_readers(
+    stdout_reader: BoundedReader,
+    stderr_reader: BoundedReader,
+    control: &DockerCommandControl,
+) -> Result<(Vec<u8>, bool, Vec<u8>, bool), DockerRuntimeError> {
+    let (stdout, stdout_truncated) = receive_bounded_output(
+        stdout_reader,
+        control,
+        "runtime_stdout_reader_failed",
+        "runtime_stdout_read_failed",
+    )?;
+    let (stderr, stderr_truncated) = receive_bounded_output(
+        stderr_reader,
+        control,
+        "runtime_stderr_reader_failed",
+        "runtime_stderr_read_failed",
+    )?;
+    Ok((stdout, stdout_truncated, stderr, stderr_truncated))
+}
+
+fn receive_bounded_output(
+    receiver: BoundedReader,
+    control: &DockerCommandControl,
+    disconnected_code: &'static str,
+    read_code: &'static str,
+) -> Result<(Vec<u8>, bool), DockerRuntimeError> {
+    loop {
+        if let Some(error) = control.interruption() {
+            return Err(error);
+        }
+        let wait = COMMAND_POLL_INTERVAL.min(control.remaining());
+        match receiver.recv_timeout(wait) {
+            Ok(output) => return output.map_err(|_| DockerRuntimeError::new(read_code)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(DockerRuntimeError::new(disconnected_code));
+            }
+        }
+    }
 }
 
 fn read_tail_bounded<R: Read>(mut reader: R, limit: usize) -> io::Result<(Vec<u8>, bool)> {
@@ -548,6 +832,18 @@ pub fn redact_log_text(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn sleeping_test_process() -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--ignored",
+                "--exact",
+                "docker_runtime_backend::tests::bounded_command_test_helper",
+            ])
+            .env("BURD_RUNTIME_COMMAND_TEST_HELPER", "1");
+        command
+    }
+
     fn plan() -> DockerContainerPlan {
         DockerContainerPlan {
             name: "burd-job-job_1-deadbeef".to_string(),
@@ -623,6 +919,78 @@ mod tests {
         let (output, truncated) = read_tail_bounded(input.as_slice(), 4).unwrap();
         assert_eq!(output, b"6789");
         assert!(truncated);
+    }
+
+    #[test]
+    #[ignore]
+    fn bounded_command_test_helper() {
+        if std::env::var_os("BURD_RUNTIME_COMMAND_TEST_HELPER").is_some() {
+            thread::sleep(Duration::from_secs(30));
+        }
+    }
+
+    #[test]
+    fn runtime_command_timeout_terminates_the_child() {
+        let started_at = Instant::now();
+        let error = run_bounded_process(
+            &mut sleeping_test_process(),
+            &DockerCommandControl::cleanup(Duration::from_millis(100)),
+        )
+        .err()
+        .unwrap();
+
+        assert_eq!(error.code(), "runtime_command_timed_out");
+        assert!(started_at.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn runtime_command_cancellation_terminates_the_child() {
+        let cancellation = JobCancellation::default();
+        let cancellation_request = cancellation.clone();
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            cancellation_request.cancel();
+        });
+        let started_at = Instant::now();
+        let error = run_bounded_process(
+            &mut sleeping_test_process(),
+            &DockerCommandControl::cancellable(Duration::from_secs(5), cancellation),
+        )
+        .err()
+        .unwrap();
+        canceller.join().unwrap();
+
+        assert_eq!(error.code(), "runtime_command_cancelled");
+        assert!(started_at.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn exact_container_lookup_distinguishes_absence_and_substring_matches() {
+        let stdout = "aaaaaaaaaaaa\tburd-job-1-old\nbbbbbbbbbbbb\tburd-job-1\n";
+        assert_eq!(
+            exact_container_id(stdout, false, "burd-job-1").unwrap(),
+            Some("bbbbbbbbbbbb".to_string())
+        );
+        assert_eq!(exact_container_id("", false, "burd-job-1").unwrap(), None);
+    }
+
+    #[test]
+    fn exact_container_lookup_rejects_ambiguous_or_truncated_output() {
+        let duplicate = "aaaaaaaaaaaa\tburd-job-1\nbbbbbbbbbbbb\tburd-job-1\n";
+        assert_eq!(
+            exact_container_id(duplicate, false, "burd-job-1")
+                .err()
+                .unwrap()
+                .code(),
+            "container_list_invalid"
+        );
+        assert_eq!(
+            exact_container_id("", true, "burd-job-1")
+                .err()
+                .unwrap()
+                .code(),
+            "container_list_invalid"
+        );
     }
 
     #[test]

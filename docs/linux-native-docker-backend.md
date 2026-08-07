@@ -51,14 +51,28 @@ docker create --pull never ...
 docker start
 docker container inspect
 docker logs --tail 200
-docker stop --time <grace>
-docker kill                 # if graceful stop fails or leaves it running
+docker kill --signal TERM
+docker container inspect    # poll through the graceful window
+docker kill --signal KILL   # at force_kill_after_seconds if still running
 docker rm --force
 ```
 
 The container is not created with `docker run --rm`. Its state remains
 inspectable until the executor records exit/OOM data, collects bounded and
 redacted log tails, and performs explicit cleanup.
+
+Every Docker CLI and `nvidia-smi` invocation has a wall-clock deadline. Normal
+execution commands are also interrupted by the job cancellation token and are
+capped by the earlier lease/job deadline. A timed-out or cancelled CLI child is
+terminated and reaped before the executor continues to cleanup. Cleanup uses
+independent bounded commands so a cancellation cannot prevent removal.
+
+Cancellation sends `TERM` without delegating escalation to `docker stop`.
+The executor polls container state through `graceful_stop_seconds`, continues
+the bounded escalation window, and sends explicit `KILL` at
+`force_kill_after_seconds` only if the container remains running. Container
+lookup uses a successful filtered list plus exact-name matching; absence is
+`None`, while Docker list/inspect failures are errors and therefore fail closed.
 
 The fixed security boundary includes:
 
