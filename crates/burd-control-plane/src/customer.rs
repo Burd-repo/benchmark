@@ -1770,6 +1770,30 @@ mod tests {
             )
             .await
             .unwrap();
+        let persisted = db.connect().await.unwrap();
+        let key_row = persisted
+            .query_one(
+                "SELECT key_hash, key_prefix FROM customer_api_keys WHERE api_key_id = $1",
+                &[&key.api_key.api_key_id],
+            )
+            .await
+            .unwrap();
+        let stored_hash: String = key_row.get("key_hash");
+        let stored_prefix: String = key_row.get("key_prefix");
+        assert_eq!(stored_hash, sha256_hex(key.token.as_bytes()));
+        assert_ne!(stored_hash, key.token);
+        assert_ne!(stored_prefix, key.token);
+        let audit_row = persisted
+            .query_one(
+                "SELECT summary, metadata_json FROM customer_audit_events WHERE entity_type = 'customer_api_key' AND entity_id = $1",
+                &[&key.api_key.api_key_id],
+            )
+            .await
+            .unwrap();
+        let audit_summary: String = audit_row.get("summary");
+        let audit_metadata: String = audit_row.get("metadata_json");
+        assert!(!audit_summary.contains(&key.token));
+        assert!(!audit_metadata.contains(&key.token));
         let auth = db
             .authorize_customer_api_key(&key.token, Some(&project.project_id))
             .await

@@ -23,7 +23,7 @@ use crate::telemetry::TelemetryPolicy;
 use crate::verification_policy::{RecurringProofProfile, VerificationPolicy};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -519,6 +519,17 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
         .into_response()
 }
 
+fn sensitive_json_response<T: Serialize>(status: StatusCode, value: T) -> Response {
+    let mut response = (status, Json(value)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
+}
+
 async fn observability_snapshot(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -616,7 +627,7 @@ async fn issue_enrollment_token(
         )
         .await
         .map_err(|error| enrollment_api_error(error, request_id.clone()))?;
-    Ok((StatusCode::CREATED, Json(response)).into_response())
+    Ok(sensitive_json_response(StatusCode::CREATED, response))
 }
 
 async fn start_enrollment(
@@ -652,7 +663,7 @@ async fn complete_enrollment(
         )
         .await
         .map_err(|error| enrollment_api_error(error, request_id.clone()))?;
-    Ok((StatusCode::CREATED, Json(response)).into_response())
+    Ok(sensitive_json_response(StatusCode::CREATED, response))
 }
 
 async fn list_provider_devices(
@@ -690,7 +701,7 @@ async fn refresh_device_credential(
         )
         .await
         .map_err(|error| enrollment_api_error(error, request_id.clone()))?;
-    Ok((StatusCode::CREATED, Json(response)).into_response())
+    Ok(sensitive_json_response(StatusCode::CREATED, response))
 }
 
 async fn start_key_rotation(
@@ -768,7 +779,7 @@ async fn start_remote_session(
         )
         .await
         .map_err(|error| session_api_error(error, request_id.clone()))?;
-    Ok((StatusCode::CREATED, Json(response)).into_response())
+    Ok(sensitive_json_response(StatusCode::CREATED, response))
 }
 
 async fn get_remote_session(
@@ -1516,7 +1527,7 @@ async fn create_customer_api_key(
         .create_customer_api_key(&request_id, &project_id, &payload)
         .await
         .map_err(|error| session_api_error(error, request_id.clone()))?;
-    Ok((StatusCode::CREATED, Json(response)).into_response())
+    Ok(sensitive_json_response(StatusCode::CREATED, response))
 }
 
 async fn grant_customer_credits(
@@ -2875,6 +2886,23 @@ mod tests {
                 .starts_with("req_")
         );
         assert!(value["error"]["details"].is_object());
+    }
+
+    #[test]
+    fn sensitive_responses_disable_intermediary_caching() {
+        let response = sensitive_json_response(
+            StatusCode::CREATED,
+            serde_json::json!({"token": "one-time"}),
+        );
+
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL),
+            Some(&HeaderValue::from_static("no-store"))
+        );
+        assert_eq!(
+            response.headers().get(header::PRAGMA),
+            Some(&HeaderValue::from_static("no-cache"))
+        );
     }
 
     #[tokio::test]

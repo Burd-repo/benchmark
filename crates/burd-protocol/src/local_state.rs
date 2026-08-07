@@ -1,13 +1,11 @@
 use crate::signature::random_token;
 use serde::Serialize;
 use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions, Permissions};
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const TEMPORARY_FILE_ATTEMPTS: usize = 4;
-#[cfg(windows)]
-const WINDOWS_DACL_ATTEMPTS: usize = 320;
 #[cfg(windows)]
 const WINDOWS_REPLACE_ATTEMPTS: usize = 20;
 
@@ -27,9 +25,7 @@ pub fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)
         .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
-    let permissions = destination_permissions(path)?;
-    #[cfg(windows)]
-    let destination_exists = permissions.is_some();
+    validate_destination(path)?;
     let (temporary, mut file) = create_temporary_file(path)?;
 
     let result = (|| {
@@ -39,14 +35,6 @@ pub fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
                 temporary.display()
             )
         })?;
-        if let Some(permissions) = permissions {
-            file.set_permissions(permissions).map_err(|error| {
-                format!(
-                    "failed to preserve permissions for {}: {error}",
-                    path.display()
-                )
-            })?;
-        }
         file.sync_all().map_err(|error| {
             format!(
                 "failed to sync temporary state file at {}: {error}",
@@ -54,15 +42,6 @@ pub fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
             )
         })?;
         drop(file);
-        #[cfg(windows)]
-        if destination_exists {
-            copy_windows_dacl(path, &temporary).map_err(|error| {
-                format!(
-                    "failed to preserve access control for {}: {error}",
-                    path.display()
-                )
-            })?;
-        }
         replace_file(&temporary, path).map_err(|error| {
             format!(
                 "failed to atomically replace state file at {}: {error}",
@@ -83,7 +62,7 @@ pub fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 
-fn destination_permissions(path: &Path) -> Result<Option<Permissions>, String> {
+fn validate_destination(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
             "refusing to replace symbolic-link state path {}",
@@ -93,8 +72,8 @@ fn destination_permissions(path: &Path) -> Result<Option<Permissions>, String> {
             "state path {} is not a regular file",
             path.display()
         )),
-        Ok(metadata) => Ok(Some(metadata.permissions())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!(
             "failed to inspect state path {}: {error}",
             path.display()
@@ -115,11 +94,7 @@ fn create_temporary_file(path: &Path) -> Result<(PathBuf, File), String> {
         temporary_name.push(file_name);
         temporary_name.push(format!(".{token}.tmp"));
         let temporary = path.with_file_name(temporary_name);
-        match OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-        {
+        match create_private_file(&temporary) {
             Ok(file) => return Ok((temporary, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 last_collision = Some(error);
@@ -142,161 +117,89 @@ fn create_temporary_file(path: &Path) -> Result<(PathBuf, File), String> {
     ))
 }
 
+#[cfg(unix)]
+fn create_private_file(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn create_private_file(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL};
+
+    let path_wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let descriptor_sddl = "D:P(A;;FA;;;OW)(A;;FA;;;SY)"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            descriptor_sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if converted == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor,
+        bInheritHandle: 0,
+    };
+    let handle = unsafe {
+        CreateFileW(
+            path_wide.as_ptr(),
+            GENERIC_WRITE,
+            0,
+            &attributes,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    let result = if handle == INVALID_HANDLE_VALUE {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(unsafe { File::from_raw_handle(handle) })
+    };
+    unsafe {
+        LocalFree(descriptor);
+    }
+    result
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_private_file(path: &Path) -> std::io::Result<File> {
+    std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+}
+
 #[cfg(windows)]
 static WINDOWS_REPLACEMENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-#[cfg(windows)]
-#[derive(Debug, Eq, PartialEq)]
-struct WindowsDacl {
-    descriptor: Vec<u8>,
-    protection: u32,
-}
-
-#[cfg(windows)]
-fn read_windows_dacl(path: &Path) -> std::io::Result<WindowsDacl> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
-    use windows_sys::Win32::Security::{
-        DACL_SECURITY_INFORMATION, GetFileSecurityW, GetSecurityDescriptorControl,
-        PROTECTED_DACL_SECURITY_INFORMATION, SE_DACL_PROTECTED,
-        UNPROTECTED_DACL_SECURITY_INFORMATION,
-    };
-
-    let path_wide = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let mut length = 0_u32;
-    let first_result = unsafe {
-        GetFileSecurityW(
-            path_wide.as_ptr(),
-            DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            0,
-            &mut length,
-        )
-    };
-    if first_result == 0 {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error().map(|code| code as u32) != Some(ERROR_INSUFFICIENT_BUFFER)
-            || length == 0
-        {
-            return Err(error);
-        }
-    }
-
-    let mut descriptor = vec![0_u8; length as usize];
-    let result = unsafe {
-        GetFileSecurityW(
-            path_wide.as_ptr(),
-            DACL_SECURITY_INFORMATION,
-            descriptor.as_mut_ptr().cast(),
-            length,
-            &mut length,
-        )
-    };
-    if result == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-
-    let mut control = 0_u16;
-    let mut revision = 0_u32;
-    let result = unsafe {
-        GetSecurityDescriptorControl(descriptor.as_mut_ptr().cast(), &mut control, &mut revision)
-    };
-    if result == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let protection = if control & SE_DACL_PROTECTED != 0 {
-        PROTECTED_DACL_SECURITY_INFORMATION
-    } else {
-        UNPROTECTED_DACL_SECURITY_INFORMATION
-    };
-    Ok(WindowsDacl {
-        descriptor,
-        protection,
-    })
-}
-
-#[cfg(windows)]
-fn apply_windows_dacl(path: &Path, dacl: &mut WindowsDacl) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use std::time::Duration;
-    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
-    use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetNamedSecurityInfoW};
-    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl};
-
-    let mut dacl_present = 0;
-    let mut dacl_pointer = std::ptr::null_mut();
-    let mut dacl_defaulted = 0;
-    let result = unsafe {
-        GetSecurityDescriptorDacl(
-            dacl.descriptor.as_mut_ptr().cast(),
-            &mut dacl_present,
-            &mut dacl_pointer,
-            &mut dacl_defaulted,
-        )
-    };
-    if result == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-
-    let path_wide = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    for attempt in 0..WINDOWS_DACL_ATTEMPTS {
-        let status = unsafe {
-            SetNamedSecurityInfoW(
-                path_wide.as_ptr(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | dacl.protection,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                if dacl_present != 0 {
-                    dacl_pointer
-                } else {
-                    std::ptr::null_mut()
-                },
-                std::ptr::null_mut(),
-            )
-        };
-        if status == 0 {
-            return Ok(());
-        }
-        let retryable = status == ERROR_ACCESS_DENIED || status == ERROR_SHARING_VIOLATION;
-        if !retryable || attempt + 1 == WINDOWS_DACL_ATTEMPTS {
-            return Err(std::io::Error::from_raw_os_error(status as i32));
-        }
-        let delay_ms = 1_u64 << attempt.min(4);
-        std::thread::sleep(Duration::from_millis(delay_ms));
-    }
-    unreachable!("bounded Windows DACL loop always returns")
-}
-
-#[cfg(windows)]
-fn copy_windows_dacl(source: &Path, destination: &Path) -> std::io::Result<()> {
-    let mut source_dacl = read_windows_dacl(source)?;
-    if read_windows_dacl(destination)? == source_dacl {
-        return Ok(());
-    }
-
-    let _guard = WINDOWS_REPLACEMENT_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if read_windows_dacl(destination)? == source_dacl {
-        return Ok(());
-    }
-    apply_windows_dacl(destination, &mut source_dacl)?;
-    if read_windows_dacl(destination)? != source_dacl {
-        return Err(std::io::Error::other(
-            "Windows DACL changed while being applied to replacement file",
-        ));
-    }
-    Ok(())
-}
 
 #[cfg(windows)]
 fn replace_file(temporary: &Path, destination: &Path) -> std::io::Result<()> {
@@ -476,13 +379,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn replacement_preserves_existing_file_permissions() {
+    fn new_and_replaced_files_are_owner_only() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = test_root("permissions");
         let path = root.join("state.json");
         write_json_atomic(&path, &json!({"version": 1})).unwrap();
-        fs::set_permissions(&path, Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         write_json_atomic(&path, &json!({"version": 2})).unwrap();
 
         assert_eq!(
