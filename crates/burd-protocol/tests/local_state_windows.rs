@@ -6,9 +6,12 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_SHARING_VIOLATION,
+    ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_SHARING_VIOLATION, LocalFree,
 };
-use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetNamedSecurityInfoW};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    SetNamedSecurityInfoW,
+};
 use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, GetFileSecurityW, GetSecurityDescriptorControl,
     GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION, SE_DACL_PROTECTED,
@@ -16,24 +19,36 @@ use windows_sys::Win32::Security::{
 };
 
 #[test]
-fn atomic_replacement_preserves_a_protected_dacl() {
+fn atomic_write_creates_a_private_protected_dacl() {
     let root = test_root();
     let path = root.join("state.json");
     write_json_atomic(&path, &json!({"version": 1})).unwrap();
 
-    let mut original = read_dacl(&path).unwrap();
+    assert_private_dacl(&path);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn atomic_replacement_repairs_a_permissive_dacl() {
+    let root = test_root();
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("state.json");
+    std::fs::write(&path, r#"{"version":1}"#).unwrap();
+    let mut inherited = read_dacl(&root).unwrap();
     apply_dacl(
         &path,
-        &mut original.descriptor,
-        PROTECTED_DACL_SECURITY_INFORMATION,
+        &mut inherited.descriptor,
+        UNPROTECTED_DACL_SECURITY_INFORMATION,
     )
     .unwrap();
-    let before = read_dacl(&path).unwrap();
-    assert_eq!(before.protection, PROTECTED_DACL_SECURITY_INFORMATION);
+    assert_ne!(
+        read_dacl(&path).unwrap().protection,
+        PROTECTED_DACL_SECURITY_INFORMATION
+    );
 
     write_json_atomic(&path, &json!({"version": 2})).unwrap();
 
-    assert_eq!(read_dacl(&path).unwrap(), before);
+    assert_private_dacl(&path);
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -41,6 +56,46 @@ fn atomic_replacement_preserves_a_protected_dacl() {
 struct Dacl {
     descriptor: Vec<u8>,
     protection: u32,
+}
+
+fn assert_private_dacl(path: &Path) {
+    let mut dacl = read_dacl(path).unwrap();
+    assert_eq!(dacl.protection, PROTECTED_DACL_SECURITY_INFORMATION);
+    let sddl = dacl_sddl(&mut dacl).unwrap();
+    assert!(sddl.starts_with("D:P"), "unexpected DACL: {sddl}");
+    assert!(sddl.contains(";;;OW)"), "owner ACE missing: {sddl}");
+    assert!(sddl.contains(";;;SY)"), "SYSTEM ACE missing: {sddl}");
+    for broad_principal in [";;;WD)", ";;;AU)", ";;;BU)", ";;;BA)"] {
+        assert!(
+            !sddl.contains(broad_principal),
+            "broad principal {broad_principal} present in {sddl}"
+        );
+    }
+}
+
+fn dacl_sddl(dacl: &mut Dacl) -> std::io::Result<String> {
+    let mut encoded = std::ptr::null_mut();
+    let mut length = 0_u32;
+    let result = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            dacl.descriptor.as_mut_ptr().cast(),
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &mut encoded,
+            &mut length,
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let value =
+        String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(encoded, length as usize) })
+            .trim_end_matches('\0')
+            .to_string();
+    unsafe {
+        LocalFree(encoded.cast());
+    }
+    Ok(value)
 }
 
 fn read_dacl(path: &Path) -> std::io::Result<Dacl> {

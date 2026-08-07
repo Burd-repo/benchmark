@@ -1,4 +1,4 @@
-use crate::local_state::write_json_atomic;
+use crate::local_state::{write_bytes_atomic, write_json_atomic};
 use crate::signature::{
     KEY_ALGORITHM, encode_base64, generate_keypair, sha256_hex, sign_message, verify_message,
 };
@@ -632,13 +632,7 @@ fn backup_existing_state(state_dir: &Path) -> Result<Option<PathBuf>, String> {
         .map_err(|error| format!("failed to create {}: {error}", backup_dir.display()))?;
     for entry in files {
         let target = backup_dir.join(entry.file_name());
-        fs::copy(entry.path(), &target).map_err(|error| {
-            format!(
-                "failed to back up {} to {}: {error}",
-                entry.path().display(),
-                target.display()
-            )
-        })?;
+        copy_state_file_private(&entry.path(), &target)?;
     }
     Ok(Some(backup_dir))
 }
@@ -650,15 +644,21 @@ fn copy_public_state_files(source_dir: &Path, target_dir: &Path) -> Result<(), S
             continue;
         }
         let target = target_dir.join(name);
-        fs::copy(&source, &target).map_err(|error| {
-            format!(
-                "failed to migrate {} to {}: {error}",
-                source.display(),
-                target.display()
-            )
-        })?;
+        copy_state_file_private(&source, &target)?;
     }
     Ok(())
+}
+
+fn copy_state_file_private(source: &Path, target: &Path) -> Result<(), String> {
+    let bytes = fs::read(source)
+        .map_err(|error| format!("failed to read {}: {error}", source.display()))?;
+    write_bytes_atomic(target, &bytes).map_err(|error| {
+        format!(
+            "failed to copy {} to {}: {error}",
+            source.display(),
+            target.display()
+        )
+    })
 }
 
 fn contains_legacy_secret_fields(raw: &str) -> bool {
@@ -832,6 +832,21 @@ mod tests {
         assert!(target.join("benchmark-history.json").exists());
         let backup = PathBuf::from(result.backup_dir.unwrap());
         assert!(backup.join("old-state.json").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            for private_state in [
+                target.join("agent.key"),
+                target.join("agent.json"),
+                backup.join("old-state.json"),
+            ] {
+                assert_eq!(
+                    fs::metadata(private_state).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+        }
         validate_keypair(
             &load_identity().unwrap(),
             &load_private_key(&load_identity().unwrap()).unwrap(),
