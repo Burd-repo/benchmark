@@ -2,6 +2,8 @@ mod instance_lock;
 
 pub use instance_lock::{AgentStateLock, AgentStateLockOperation};
 
+pub mod docker_nvidia_executor;
+pub mod docker_runtime_backend;
 pub mod exit_status;
 pub mod lifecycle;
 pub mod provider_job_executor;
