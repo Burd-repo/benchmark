@@ -3,3 +3,49 @@
 *.log
 *.tmp
 .DS_Store
+
+# Environment and local credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.credentials
+credentials.json
+secrets.json
+
+# Burd Agent local state
+.burd/
+agent.json
+agent.key
+remote-enrollment.json
+remote-session.json
+migration-backup-*/
+
+# Generated reports and local evidence
+latest-report.json
+latest-signed-report.json
+latest-challenge-response.json
+benchmark-history.json
+uptime.json
+actions.json
+logs.json
+
+# Control Plane local object storage
+.burd-control-objects/
+
+# Local databases and dumps
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.sql.gz
+
+# Local secret-scanner reports
+gitleaks-report.*
+trufflehog-report.*
