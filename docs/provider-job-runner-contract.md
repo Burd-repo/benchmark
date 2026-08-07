@@ -2,7 +2,7 @@
 
 ## Status
 
-This document describes the implemented backend-authoritative execution contract returned by the Control Plane. It does not describe an implemented provider worker or container executor.
+This document describes the backend-authoritative execution contract returned by the Control Plane and the Agent-side provider job orchestration boundary. A production container executor is not implemented.
 
 Schema versions:
 
@@ -69,17 +69,24 @@ Implemented:
 - versioned protocol types and OpenAPI schemas;
 - backend construction and validation of the assignment bundle;
 - explicit transition validation with a fake executor in tests;
-- canonical approved-template list shared by protocol and Control Plane.
+- canonical approved-template list shared by protocol and Control Plane;
+- a separate Agent provider job worker and executor interface;
+- authenticated polling, local bundle/session/GPU/expiry validation, acceptance, ordered `provisioning`, `running`, and `uploading` events, and terminal result submission;
+- one active execution at a time per worker, bounded in-memory replay rejection, authoritative deadline cancellation, and cooperative Agent shutdown;
+- deterministic fake-executor coverage for success, failure, invalid bundles, expiry, shutdown, and replay;
+- integration-only session-supervisor wiring for the provider job worker.
+
+The production `remote-session connect` command does not start the worker yet. Enabling a fake executor against real assignments would create false successful compute results, so production activation is intentionally deferred until the real container executor exists.
 
 Not implemented:
 
-- Agent daemon polling and execution loop;
 - Docker/containerd process execution;
 - NVIDIA Container Toolkit integration in a remote worker;
 - byte-level artifact download or result upload;
 - signed object-storage URLs;
 - secret injection;
-- runtime cancellation or cleanup enforcement;
+- remote cancellation discovery while an execution is active;
+- container cleanup enforcement;
 - paid workload execution.
 
-A future provider runner must revalidate the complete bundle before provisioning and must report persisted transitions through the existing authenticated job endpoints.
+The current worker revalidates the complete bundle before acceptance and reports persisted transitions through the existing authenticated job endpoints. Its cancellation token currently represents local shutdown and authoritative assignment deadlines only. `POST /v1/jobs/{job_id}/cancel` remains administrative, and the remote control protocol has no typed `job_cancel` command or provider-authenticated job-status query; tests must not describe this boundary as remote cancellation.

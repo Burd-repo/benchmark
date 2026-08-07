@@ -1,5 +1,7 @@
 use crate::exit_status::AgentExitError;
 use crate::lifecycle::{AgentLifecyclePhase, LifecycleReporter};
+use crate::provider_job_executor::ProviderJobExecutor;
+use crate::provider_job_worker::{ProviderJobControlPlane, run_worker as run_provider_job_worker};
 use crate::remote_enrollment::{
     ControlPlaneRequestError, join_url, post_json_checked, refresh_credential,
     refresh_credential_checked,
@@ -29,6 +31,7 @@ use std::sync::{
 };
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinSet;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -68,7 +71,7 @@ pub fn connect(
                 let _ = tokio::signal::ctrl_c().await;
                 let _ = shutdown_tx.send(true);
             });
-            run_control_and_proof(
+            run_session_supervisor(
                 agent_version.to_string(),
                 max_reconnect_delay_seconds.max(1),
                 retry_seed,
@@ -77,6 +80,7 @@ pub fn connect(
                 collect_nvidia_telemetry,
                 proof_agent_version,
                 execute_remote_proof,
+                None,
                 prepare_connection,
                 runtime_lifecycle,
                 shutdown_rx,
@@ -216,7 +220,7 @@ pub async fn connect_until_shutdown_with_telemetry_collector(
             .map_err(|error| AgentExitError::local_state("local_state", error))?;
         let telemetry_enabled = telemetry || identity.telemetry_enabled;
         let retry_seed = stable_retry_seed(&identity.machine_id);
-        run_control_and_proof(
+        run_session_supervisor(
             agent_version.to_string(),
             max_reconnect_delay_seconds.max(1),
             retry_seed,
@@ -225,6 +229,7 @@ pub async fn connect_until_shutdown_with_telemetry_collector(
             telemetry_collector,
             None,
             execute_remote_proof,
+            None,
             prepare_connection,
             lifecycle.clone(),
             shutdown,
@@ -279,7 +284,7 @@ pub async fn connect_until_shutdown_with_test_runtime(
             })?
             .map_err(|error| AgentExitError::local_state("local_state", error))?;
         let retry_seed = stable_retry_seed(&identity.machine_id);
-        run_control_and_proof(
+        run_session_supervisor(
             agent_version.to_string(),
             max_reconnect_delay_seconds.max(1),
             retry_seed,
@@ -288,6 +293,7 @@ pub async fn connect_until_shutdown_with_test_runtime(
             telemetry_collector,
             Some(agent_version.to_string()),
             proof_executor,
+            None,
             prepare_connection,
             lifecycle.clone(),
             shutdown,
@@ -308,8 +314,88 @@ pub async fn connect_until_shutdown_with_test_runtime(
         .map_err(|error| AgentExitError::local_state("local_state", error))
 }
 
+/// Integration-only entry point for exercising the real session supervisor with a provider-job
+/// transport and deterministic executor. Production `connect` remains disabled for provider jobs
+/// until the real container executor exists.
+#[cfg(feature = "integration-test-support")]
 #[allow(clippy::too_many_arguments)]
-async fn run_control_and_proof(
+pub async fn connect_until_shutdown_with_provider_job_runtime(
+    agent_version: &str,
+    max_reconnect_delay_seconds: u64,
+    telemetry: bool,
+    telemetry_batch_samples: usize,
+    telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
+    job_control_plane: Arc<dyn ProviderJobControlPlane>,
+    job_executor: Arc<dyn ProviderJobExecutor>,
+    shutdown: watch::Receiver<bool>,
+) -> Result<RemoteSessionStateStatus, AgentExitError> {
+    validate_telemetry_batch_samples(telemetry_batch_samples)
+        .map_err(|error| AgentExitError::invalid_invocation("telemetry_config", error))?;
+    let _instance_lock = AgentStateLock::acquire(AgentStateLockOperation::RemoteSessionConnect)
+        .map_err(|error| AgentExitError::local_state("state_lock", error))?;
+    let lifecycle = tokio::task::spawn_blocking(LifecycleReporter::start)
+        .await
+        .map_err(|error| {
+            AgentExitError::internal(
+                "lifecycle_task",
+                format!("failed to start Agent lifecycle task: {error}"),
+            )
+        })?
+        .map_err(|error| AgentExitError::local_state("lifecycle_state", error))?;
+    let result = async {
+        let identity = tokio::task::spawn_blocking(load_identity)
+            .await
+            .map_err(|error| {
+                AgentExitError::internal(
+                    "identity_task",
+                    format!("failed to load identity task: {error}"),
+                )
+            })?
+            .map_err(|error| AgentExitError::local_state("local_state", error))?;
+        let retry_seed = stable_retry_seed(&identity.machine_id);
+        run_session_supervisor(
+            agent_version.to_string(),
+            max_reconnect_delay_seconds.max(1),
+            retry_seed,
+            telemetry || identity.telemetry_enabled,
+            telemetry_batch_samples,
+            telemetry_collector,
+            None,
+            execute_remote_proof,
+            Some(ProviderJobRuntime {
+                control_plane: job_control_plane,
+                executor: job_executor,
+            }),
+            prepare_connection,
+            lifecycle.clone(),
+            shutdown,
+        )
+        .await
+    }
+    .await;
+    complete_lifecycle_async(&lifecycle, &result).await?;
+    result?;
+    tokio::task::spawn_blocking(show_remote_session)
+        .await
+        .map_err(|error| {
+            AgentExitError::internal(
+                "session_status_task",
+                format!("failed to load remote session status task: {error}"),
+            )
+        })?
+        .map_err(|error| AgentExitError::local_state("local_state", error))
+}
+
+struct ProviderJobRuntime {
+    control_plane: Arc<dyn ProviderJobControlPlane>,
+    executor: Arc<dyn ProviderJobExecutor>,
+}
+
+type SessionWorkerResult = (&'static str, Result<(), String>);
+type SessionWorkerJoinResult = Option<Result<SessionWorkerResult, tokio::task::JoinError>>;
+
+#[allow(clippy::too_many_arguments)]
+async fn run_session_supervisor(
     agent_version: String,
     max_reconnect_delay_seconds: u64,
     retry_seed: u64,
@@ -318,20 +404,43 @@ async fn run_control_and_proof(
     telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
     proof_agent_version: Option<String>,
     proof_executor: ProofExecutor,
+    provider_jobs: Option<ProviderJobRuntime>,
     preparation_executor: PreparationExecutor,
     lifecycle: LifecycleReporter,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), AgentExitError> {
     let (proof_telemetry_tx, mut proof_telemetry_rx) = mpsc::channel(1);
     let (session_shutdown_tx, session_shutdown_rx) = watch::channel(false);
-    let proof_worker = proof_agent_version.map(|proof_agent_version| {
-        tokio::spawn(run_worker(
-            proof_agent_version,
-            proof_telemetry_tx,
-            proof_executor,
-            session_shutdown_rx.clone(),
-        ))
-    });
+    let mut workers = JoinSet::new();
+    if let Some(proof_agent_version) = proof_agent_version {
+        let proof_shutdown = session_shutdown_rx.clone();
+        workers.spawn(async move {
+            (
+                "proof_worker",
+                run_worker(
+                    proof_agent_version,
+                    proof_telemetry_tx,
+                    proof_executor,
+                    proof_shutdown,
+                )
+                .await,
+            )
+        });
+    }
+    if let Some(provider_jobs) = provider_jobs {
+        let job_shutdown = session_shutdown_rx.clone();
+        workers.spawn(async move {
+            (
+                "provider_job_worker",
+                run_provider_job_worker(
+                    provider_jobs.control_plane,
+                    provider_jobs.executor,
+                    job_shutdown,
+                )
+                .await,
+            )
+        });
+    }
     let control = run_control_loop(
         ControlLoopRuntime {
             agent_version,
@@ -350,86 +459,93 @@ async fn run_control_and_proof(
     );
     tokio::pin!(control);
 
-    match proof_worker {
-        Some(mut worker) => {
-            tokio::select! {
-                _ = wait_for_shutdown(&mut shutdown) => {
-                    let lifecycle_result = transition_lifecycle(
-                        &lifecycle,
-                        AgentLifecyclePhase::Stopping,
-                        None,
-                    ).await;
-                    let _ = session_shutdown_tx.send(true);
-                    let result = control.await;
-                    lifecycle_result.map_err(lifecycle_exit_error)?;
-                    finish_proof_worker(worker, result).await
-                }
-                result = &mut control => {
-                    let _ = session_shutdown_tx.send(true);
-                    finish_proof_worker(worker, result).await
-                }
-                worker_result = &mut worker => {
-                    let _ = session_shutdown_tx.send(true);
-                    let control_result = control.await;
-                    if let Err(error) = control_result {
-                        log_proof_worker_shutdown_error(error.failure_kind());
-                    }
-                    Err(unexpected_proof_worker_exit(worker_result))
-                }
+    if workers.is_empty() {
+        return tokio::select! {
+            biased;
+            _ = wait_for_shutdown(&mut shutdown) => {
+                let lifecycle_result = transition_lifecycle(
+                    &lifecycle,
+                    AgentLifecyclePhase::Stopping,
+                    None,
+                ).await;
+                let _ = session_shutdown_tx.send(true);
+                let result = control.await;
+                lifecycle_result.map_err(lifecycle_exit_error)?;
+                result
             }
+            result = &mut control => result,
+        };
+    }
+
+    tokio::select! {
+        biased;
+        _ = wait_for_shutdown(&mut shutdown) => {
+            let lifecycle_result = transition_lifecycle(
+                &lifecycle,
+                AgentLifecyclePhase::Stopping,
+                None,
+            ).await;
+            let _ = session_shutdown_tx.send(true);
+            let result = control.await;
+            lifecycle_result.map_err(lifecycle_exit_error)?;
+            finish_session_workers(&mut workers, result).await
         }
-        None => {
-            tokio::select! {
-                _ = wait_for_shutdown(&mut shutdown) => {
-                    let lifecycle_result = transition_lifecycle(
-                        &lifecycle,
-                        AgentLifecyclePhase::Stopping,
-                        None,
-                    ).await;
-                    let _ = session_shutdown_tx.send(true);
-                    let result = control.await;
-                    lifecycle_result.map_err(lifecycle_exit_error)?;
-                    result
-                }
-                result = &mut control => result,
+        result = &mut control => {
+            let _ = session_shutdown_tx.send(true);
+            finish_session_workers(&mut workers, result).await
+        }
+        worker_result = workers.join_next() => {
+            let _ = session_shutdown_tx.send(true);
+            let control_result = control.await;
+            if let Err(error) = control_result {
+                log_session_worker_shutdown_error("control_loop", error.failure_kind());
             }
+            let unexpected = unexpected_session_worker_exit(worker_result);
+            finish_session_workers(&mut workers, Err(unexpected)).await
         }
     }
 }
 
-async fn finish_proof_worker(
-    worker: tokio::task::JoinHandle<Result<(), String>>,
+async fn finish_session_workers(
+    workers: &mut JoinSet<SessionWorkerResult>,
     control_result: Result<(), AgentExitError>,
 ) -> Result<(), AgentExitError> {
-    match worker.await {
-        Ok(Ok(())) => control_result,
-        Ok(Err(error)) if control_result.is_ok() => {
-            Err(AgentExitError::internal("proof_worker", error))
+    let mut worker_error = None;
+    while let Some(result) = workers.join_next().await {
+        match result {
+            Ok((_kind, Ok(()))) => {}
+            Ok((kind, Err(error))) if control_result.is_ok() && worker_error.is_none() => {
+                worker_error = Some(AgentExitError::internal(kind, error));
+            }
+            Ok((kind, Err(_))) => {
+                log_session_worker_shutdown_error(kind, kind);
+            }
+            Err(error) if control_result.is_ok() && worker_error.is_none() => {
+                worker_error = Some(AgentExitError::internal(
+                    "session_worker",
+                    format!("remote session worker task failed: {error}"),
+                ));
+            }
+            Err(_) => {
+                log_session_worker_shutdown_error("session_worker", "task_failed");
+            }
         }
-        Ok(Err(_error)) => {
-            log_proof_worker_shutdown_error("proof_worker");
-            control_result
-        }
-        Err(error) if control_result.is_ok() => Err(AgentExitError::internal(
-            "proof_worker",
-            format!("remote proof worker failed: {error}"),
-        )),
-        Err(_error) => {
-            log_proof_worker_shutdown_error("proof_worker");
-            control_result
-        }
+    }
+    match (control_result, worker_error) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Some(error)) => Err(error),
+        (Ok(()), None) => Ok(()),
     }
 }
 
-fn unexpected_proof_worker_exit(
-    result: Result<Result<(), String>, tokio::task::JoinError>,
-) -> AgentExitError {
+fn unexpected_session_worker_exit(result: SessionWorkerJoinResult) -> AgentExitError {
     let detail = match result {
-        Ok(Ok(())) => "remote proof worker stopped unexpectedly".to_string(),
-        Ok(Err(error)) => format!("remote proof worker failed: {error}"),
-        Err(error) => format!("remote proof worker task failed: {error}"),
+        Some(Ok((kind, Ok(())))) => format!("{kind} stopped unexpectedly"),
+        Some(Ok((kind, Err(error)))) => format!("{kind} failed: {error}"),
+        Some(Err(error)) => format!("remote session worker task failed: {error}"),
+        None => "remote session worker set stopped unexpectedly".to_string(),
     };
-    AgentExitError::internal("proof_worker", detail)
+    AgentExitError::internal("session_worker", detail)
 }
 fn validate_telemetry_batch_samples(telemetry_batch_samples: usize) -> Result<(), String> {
     if !(1..=64).contains(&telemetry_batch_samples) {
@@ -1486,11 +1602,12 @@ fn log_telemetry_rejected(error: &str) {
     );
 }
 
-fn log_proof_worker_shutdown_error(failure_kind: &str) {
+fn log_session_worker_shutdown_error(worker: &str, failure_kind: &str) {
     eprintln!(
         "{}",
         serde_json::json!({
-            "event": "remote_proof_worker_shutdown_failed",
+            "event": "remote_session_worker_shutdown_failed",
+            "worker": worker,
             "failure_kind": failure_kind,
         })
     );
@@ -1653,31 +1770,41 @@ mod tests {
         assert!(shutdown_requested(&shutdown_rx));
     }
     #[tokio::test]
-    async fn proof_worker_exit_is_propagated_by_the_supervisor() {
-        let clean_worker = tokio::spawn(async { Ok(()) });
-        assert!(finish_proof_worker(clean_worker, Ok(())).await.is_ok());
+    async fn session_worker_exit_is_propagated_by_the_supervisor() {
+        let mut clean_workers = JoinSet::new();
+        clean_workers.spawn(async { ("proof_worker", Ok(())) });
+        assert!(
+            finish_session_workers(&mut clean_workers, Ok(()))
+                .await
+                .is_ok()
+        );
 
-        let failed_worker = tokio::spawn(async { Err("state unavailable".to_string()) });
-        let error = finish_proof_worker(failed_worker, Ok(()))
+        let mut failed_workers = JoinSet::new();
+        failed_workers
+            .spawn(async { ("provider_job_worker", Err("state unavailable".to_string())) });
+        let error = finish_session_workers(&mut failed_workers, Ok(()))
             .await
             .unwrap_err();
         assert_eq!(error.category(), AgentExitCategory::Internal);
-        assert_eq!(error.failure_kind(), "proof_worker");
+        assert_eq!(error.failure_kind(), "provider_job_worker");
         assert_eq!(error.diagnostic_detail(), "state unavailable");
 
-        let clean_exit = unexpected_proof_worker_exit(Ok(Ok(())));
+        let clean_exit = unexpected_session_worker_exit(Some(Ok(("proof_worker", Ok(())))));
         assert_eq!(clean_exit.category(), AgentExitCategory::Internal);
-        assert_eq!(clean_exit.failure_kind(), "proof_worker");
+        assert_eq!(clean_exit.failure_kind(), "session_worker");
         assert_eq!(
             clean_exit.diagnostic_detail(),
-            "remote proof worker stopped unexpectedly"
+            "proof_worker stopped unexpectedly"
         );
-        let failed_exit = unexpected_proof_worker_exit(Ok(Err("state unavailable".to_string())));
+        let failed_exit = unexpected_session_worker_exit(Some(Ok((
+            "provider_job_worker",
+            Err("state unavailable".to_string()),
+        ))));
         assert_eq!(failed_exit.category(), AgentExitCategory::Internal);
-        assert_eq!(failed_exit.failure_kind(), "proof_worker");
+        assert_eq!(failed_exit.failure_kind(), "session_worker");
         assert_eq!(
             failed_exit.diagnostic_detail(),
-            "remote proof worker failed: state unavailable"
+            "provider_job_worker failed: state unavailable"
         );
     }
 
