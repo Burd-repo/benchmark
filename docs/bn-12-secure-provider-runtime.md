@@ -1,34 +1,84 @@
 # BN-12 - Secure Provider Runtime
 
-BN-12 prepares the first secure runtime boundary for paid compute without yet
-accepting customer jobs. The agent can inspect the local host and build a
-versioned Docker/NVIDIA sandbox plan, but no arbitrary workload is executed in
-this stage.
+BN-12 defines the local runtime capability and sandbox-planning boundary for
+paid compute without executing customer jobs. Runtime Platform Model v2 keeps
+the provider host separate from the Linux container required by Burd
+workloads.
 
-## Scope
+## Contracts
 
-- Define the `SecureRuntimePlan` protocol contract.
-- Add `burd-agent runtime check --json` for local runtime readiness diagnosis.
-- Add `burd-agent runtime plan --json` for an approved runtime image.
-- Require digest-pinned image references through `@sha256:`.
-- Require explicit image allowlisting before producing executable Docker args.
-- Bind planned execution to a specific GPU UUID.
-- Require Linux for ready runtime status.
-- Require Docker plus the NVIDIA container runtime.
-- Model read-only root filesystem, non-root user, dropped capabilities,
-  no-new-privileges, seccomp, explicit CPU/RAM/PID/shm limits, no network, no
-  IPC sharing, explicit tmpfs mounts, ephemeral secrets, and mandatory cleanup.
+- `burd-provider-runtime-capability-v1` describes what the Agent observes on
+  the local machine.
+- `burd-provider-runtime-verification-v1` keeps Agent reports separate from
+  future Control Plane verification.
+- `burd-secure-runtime-v2` describes how an approved workload would be
+  executed locally.
+- `burd-secure-runtime-policy-v2` versions the secure planning policy.
 
-## Non-Goals
+The v1 `target_os` field was removed rather than reinterpreted. In v1 it meant
+the physical host in `SecureRuntimePlan`, while the job runtime policy used the
+same name for the Linux workload environment.
 
-- No job API.
-- No scheduler lease.
-- No customer artifact download.
-- No result upload.
-- No shell command execution.
-- No container launch from the backend.
-- No billing, metering, marketplace listing, or payout.
-- No Kubernetes, distributed inference, or multi-provider job execution.
+## Host, Capability, And Plan
+
+The three concepts are intentionally different:
+
+```text
+ProviderRuntimeCapability
+    What this machine reports it can offer.
+
+SecureRuntimePlan
+    How the Agent plans to execute one approved workload.
+
+ProviderJobRuntimePolicy
+    What the backend requires from every provider runtime.
+```
+
+Burd workloads remain Linux containers with CUDA and NVIDIA. The provider host
+may be Linux or Windows:
+
+```text
+Linux host   -> docker_linux_native -> Linux container
+Windows host -> docker_wsl2         -> Linux container
+```
+
+`runtime_provider` is optional diagnostic metadata such as `docker_desktop` or
+`docker_engine`. It is not a workload requirement, so the `docker_wsl2`
+contract does not bind Burd to Docker Desktop.
+
+## Capability Statuses
+
+- `ready`: the local probes observed the required runtime components.
+- `not_ready`: the host may be supported, but one or more components are
+  missing or still require backend verification.
+- `unsupported`: no Burd runtime backend is defined for the host platform.
+
+`reason_codes` preserve actionable causes such as `docker_unavailable`,
+`wsl2_runtime_unavailable`, `nvidia_runtime_unavailable`,
+`gpu_uuid_unavailable`, and `runtime_backend_verification_required`.
+
+Windows is not globally unsupported. In this slice, a detected
+`docker_wsl2` backend remains `not_ready` with
+`runtime_backend_verification_required` until the Windows backend and its
+physical NVIDIA isolation test are implemented.
+
+## Reported Versus Verified
+
+Agent output is never proof by itself. Local plans currently emit:
+
+```json
+{
+  "authority": "agent",
+  "status": "reported",
+  "gpu_uuid_binding": "unverified",
+  "reason_codes": ["runtime_proof_required"]
+}
+```
+
+Only a future Control Plane runtime-proof flow may produce
+`authority=control_plane`, `status=verified`, and
+`gpu_uuid_binding=verified`. PR #82 does not persist capability reports, make
+them scheduler-authoritative, or change scheduler candidate filtering.
 
 ## Agent Commands
 
@@ -36,9 +86,8 @@ this stage.
 burd-agent runtime check --json
 ```
 
-`runtime check` probes the host and returns a `SecureRuntimePlan` with no image
-reference. It is diagnostic. On Windows and macOS the expected status is
-`unsupported_host` because BN-12 starts with Linux providers.
+`runtime check` reports the local capability and returns a plan without an
+image reference. The plan is diagnostic and does not authorize paid work.
 
 ```bash
 burd-agent runtime plan \
@@ -49,9 +98,10 @@ burd-agent runtime plan \
   --json
 ```
 
-`runtime plan` returns `status=ready` only when the host, image, allowlist, GPU
-binding, resources, and security profile all pass. Docker arguments are emitted
-only for `ready` plans.
+`runtime plan` returns `status=ready` only when the reported runtime
+capability, image, allowlist, observed GPU UUID, resource limits, and security
+profile pass. A caller-supplied GPU UUID that was not observed locally fails
+closed.
 
 ## Approved Initial Templates
 
@@ -61,62 +111,58 @@ only for `ready` plans.
 - `whisper_transcription`
 - `file_processing`
 
-The approved template list is intentionally narrower than arbitrary container
-execution. BN-13 can map job templates to these runtime templates.
+The approved template list remains narrower than arbitrary container
+execution. Customer-provided commands and entrypoint overrides are forbidden.
 
 ## Plan Statuses
 
-- `ready`: the runtime plan can be bound to a future backend lease.
-- `verification_required`: the host is reachable but required execution binding
-  data, such as image or GPU UUID, is missing.
-- `blocked`: a hard security or runtime requirement failed.
-- `unsupported_host`: the current OS is not supported for BN-12 runtime
-  readiness.
+- `ready`: the local capability and workload-specific plan checks passed.
+- `verification_required`: required workload binding data, such as an image,
+  is missing.
+- `blocked`: a capability, security, image, GPU binding, or resource check
+  failed.
+
+Capability readiness and plan readiness are local observations. Neither is
+backend verification or global provider eligibility.
+
+The shared `validate_provider_runtime_compatibility()` helper compares the job
+policy with a locally ready capability. It is deliberately non-authoritative:
+scheduler admission must later require a persisted Control Plane verification
+record as an additional condition.
 
 ## Security Defaults
 
-The plan uses Docker with NVIDIA Container Toolkit expectations:
+The plan keeps the existing fail-closed Linux-container policy:
 
-- `--pull never`
-- `--gpus device=<GPU UUID>`
-- `--read-only`
-- `--user 1000:1000`
-- `--cap-drop ALL`
-- `--security-opt no-new-privileges`
-- `--security-opt seccomp=default`
-- `--pids-limit 512`
-- `--memory 8192m` by default
-- `--cpus 4` by default
-- `--network none`
-- `--ipc none`
-- `--shm-size 64m`
-- tmpfs `/tmp` with `rw,noexec,nosuid,nodev,size=1024m`
-- tmpfs `/run/burd-secrets` with `rw,noexec,nosuid,nodev,size=16m,mode=0700`
+- digest-pinned, allowlisted images;
+- `--pull never`;
+- one observed GPU UUID through `--gpus device=<GPU UUID>`;
+- read-only root filesystem;
+- user `1000:1000`;
+- all capabilities dropped;
+- `no-new-privileges` and default seccomp;
+- explicit CPU, memory, PID, shared-memory, network, and IPC limits;
+- explicit tmpfs mounts;
+- ephemeral secrets and mandatory cleanup;
+- no arbitrary command or entrypoint override.
 
-The plan does not include an entrypoint override or customer shell command.
+The Windows backend must not expose arbitrary Windows paths, user profiles,
+Desktop, Documents, AppData, or entire home directories to a workload. Its
+storage boundary will use Docker-managed or WSL-local isolated storage.
 
-## Authority Boundary
+## Current Boundary
 
-BN-12 is still agent-local runtime preparation. The backend does not yet trust a
-provider because it produced a local runtime plan. A future job lease must bind:
+PR #82 defines contracts, local detection, validation, JSON serialization,
+OpenAPI components, documentation, and tests. It does not:
 
-- provider ID;
-- device ID;
-- session ID;
-- workload template;
-- image digest;
-- GPU UUID;
-- policy version;
-- lease ID;
-- job-specific credentials;
-- metering receipt.
+- launch Docker containers;
+- implement the Linux or Windows executor backend;
+- prove GPU UUID isolation through WSL2;
+- upload capability reports to the Control Plane;
+- persist a verified runtime state;
+- filter scheduler candidates by runtime capability;
+- transfer customer artifacts or results;
+- activate production provider jobs.
 
-Until BN-13 and BN-14 exist, secure runtime output is evidence of local
-capability, not authorization to run paid work.
-
-## BN-13 Handoff
-
-BN-13 should consume this contract when implementing the first Job API and data
-plane. The scheduler and job service should never send arbitrary shell payloads
-to the provider. They should select an approved template, an allowlisted digest,
-a GPU UUID, a lease, signed URLs, and ephemeral credentials.
+The production worker remains disabled until the executor, data plane,
+runtime verification, and controlled activation boundaries are complete.

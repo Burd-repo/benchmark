@@ -168,6 +168,12 @@ captured bearer token did not appear in response bodies or server logs.
 
 ### Secure Runtime
 
+> Historical note: this capture exercised the v1 runtime model. Runtime
+> Platform Model v2 supersedes the global `unsupported_host` interpretation by
+> separating a Windows host from its future `docker_wsl2` Linux-container
+> backend. The observations below remain the literal result of this earlier
+> physical run.
+
 `runtime check --json` observed Docker Engine `29.4.0` and an advertised NVIDIA
 container runtime, but correctly returned `status=unsupported_host` because:
 
@@ -265,7 +271,9 @@ The available AMD/Windows environment behaves as intended:
 - signed local evidence and local challenge verification work;
 - readiness can become `ready_locally`;
 - marketplace and future workload admission remain blocked;
-- secure runtime remains unsupported on the Windows host;
+- under the captured v1 model, secure runtime was reported as unsupported on
+  the Windows host; v2 now models Windows as a potential `docker_wsl2` host but
+  keeps it `not_ready` until backend and physical NVIDIA verification exist;
 - secrets remain redacted.
 
 Physical NVIDIA/CUDA certification requires a separate controlled host matrix.

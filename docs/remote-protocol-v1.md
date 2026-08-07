@@ -680,12 +680,14 @@ BN-12 defines the provider-side runtime plan that BN-13 jobs and BN-14 leases ca
 
 `SecureRuntimePlan` fields include:
 
-- `schema_version: burd-secure-runtime-v1`;
-- `policy_version: burd-secure-runtime-policy-v1`;
+- `schema_version: burd-secure-runtime-v2`;
+- `policy_version: burd-secure-runtime-policy-v2`;
 - `generated_at`;
-- `status: ready | verification_required | blocked | unsupported_host`;
-- `runtime_engine`, initially `docker+nvidia-container-toolkit`;
-- `target_os`, initially ready only on Linux;
+- `status: ready | verification_required | blocked`;
+- `capability`, with separate `host_os`, `runtime_backend`, `container_os`,
+  `gpu_backend`, `gpu_runtime`, readiness, reason codes, and observed GPU UUIDs;
+- `verification`, which remains Agent-reported and keeps GPU UUID binding
+  unverified until a future Control Plane proof;
 - `template_id` from the approved runtime template list;
 - optional `image_ref`, which must be digest-pinned with `@sha256:` before execution planning;
 - optional `gpu_uuid`, required before lease binding;
@@ -706,7 +708,9 @@ Initial approved runtime templates:
 Backend-authoritative execution binding now implemented:
 
 - the Control Plane chooses the approved template and image digest;
-- `burd-provider-job-execution-v1` binds provider, device, session, GPU UUID, job, lease, workload policy, timeout, and expiries;
+- `burd-provider-job-execution-v2` binds provider, device, session, GPU UUID, job, lease, workload policy, timeout, and expiries;
+- `burd-provider-job-runtime-policy-v2` requires a Linux container with Docker,
+  CUDA, and NVIDIA without requiring a Linux physical host;
 - the assignment includes a separate job-specific data-plane credential; byte transfer and signed object-storage URLs are not implemented;
 - the runtime policy rejects arbitrary command and entrypoint overrides;
 - provider-generated runtime plans remain local evidence and are not final authority;

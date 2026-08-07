@@ -6,8 +6,13 @@ This document describes the backend-authoritative execution contract returned by
 
 Schema versions:
 
-- `burd-provider-job-execution-v1`;
-- `burd-provider-job-runtime-policy-v1`.
+- `burd-provider-job-execution-v2`;
+- `burd-provider-job-runtime-policy-v2`.
+
+V2 removes the ambiguous `target_os` field. The job policy describes workload
+requirements through `container_os=linux`, `gpu_backend=cuda`, and
+`gpu_runtime=nvidia`; it does not require the provider's physical host to run
+Linux.
 
 ## Assignment Bundle
 
@@ -43,9 +48,10 @@ uploading
 
 ## Runtime Policy
 
-The v1 policy requires:
+The v2 policy requires:
 
-- Linux and Docker;
+- Docker-compatible execution of a Linux container;
+- CUDA through the NVIDIA GPU runtime;
 - commands sourced only from an approved template;
 - no command or entrypoint override;
 - digest-pinned image;
@@ -62,6 +68,13 @@ The v1 policy requires:
 
 The shared validator rejects schema, identity, lease, workload, policy, artifact-path, expiry, credential-shape, or runtime-policy mismatches.
 
+Host capability is a separate contract. `ProviderRuntimeCapability` reports
+`host_os`, a local backend such as `docker_linux_native` or `docker_wsl2`, the
+Linux container environment, GPU runtime, readiness, reason codes, and observed
+GPU UUIDs. The Agent report is not trusted proof: the separate runtime
+verification state remains `reported` with `gpu_uuid_binding=unverified` until
+a future Control Plane proof succeeds.
+
 ## Current Boundary
 
 Implemented:
@@ -75,6 +88,8 @@ Implemented:
 - one active execution at a time per worker, bounded in-memory replay rejection, authoritative deadline cancellation, and cooperative Agent shutdown;
 - deterministic fake-executor coverage for success, failure, invalid bundles, expiry, shutdown, and replay;
 - integration-only session-supervisor wiring for the provider job worker.
+- Runtime Platform Model v2, which separates provider host capability from the
+  Linux-container job policy.
 
 The production `remote-session connect` command does not start the worker yet. Enabling a fake executor against real assignments would create false successful compute results, so production activation is intentionally deferred until the real container executor exists.
 
@@ -87,6 +102,9 @@ Not implemented:
 - secret injection;
 - remote cancellation discovery while an execution is active;
 - container cleanup enforcement;
+- Control Plane persistence or verification of reported runtime capabilities;
+- scheduler filtering by verified runtime capability;
+- the Linux-native and Windows WSL2 Docker backends;
 - paid workload execution.
 
 The current worker revalidates the complete bundle before acceptance and reports persisted transitions through the existing authenticated job endpoints. Its cancellation token currently represents local shutdown and authoritative assignment deadlines only. `POST /v1/jobs/{job_id}/cancel` remains administrative, and the remote control protocol has no typed `job_cancel` command or provider-authenticated job-status query; tests must not describe this boundary as remote cancellation.

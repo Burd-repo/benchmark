@@ -1349,7 +1349,7 @@ mod tests {
             timeout_seconds: job.timeout_seconds,
             lease_expires_at,
             data_plane_credential_expires_at: credential_expires_at,
-            runtime: ProviderJobRuntimePolicy::v1(),
+            runtime: ProviderJobRuntimePolicy::v2(),
             cancellation: ProviderJobCancellationPolicy::v1(),
             cleanup: ProviderJobCleanupPolicy::v1(),
         };

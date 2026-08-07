@@ -726,7 +726,7 @@ fn provider_job_execution_spec(
         timeout_seconds: job.timeout_seconds,
         lease_expires_at: lease.expires_at.clone(),
         data_plane_credential_expires_at: data_plane.credential_expires_at.clone(),
-        runtime: ProviderJobRuntimePolicy::v1(),
+        runtime: ProviderJobRuntimePolicy::v2(),
         cancellation: ProviderJobCancellationPolicy::v1(),
         cleanup: ProviderJobCleanupPolicy::v1(),
     };

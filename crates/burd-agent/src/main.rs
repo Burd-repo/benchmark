@@ -722,13 +722,24 @@ fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
 fn runtime_action_status(plan: &burd_protocol::SecureRuntimePlan) -> &'static str {
     match plan.status.as_str() {
         "ready" => "completed",
-        "verification_required" | "unsupported_host" => "partial",
+        "verification_required" => "partial",
+        "blocked" if plan.capability.status == "not_ready" => "partial",
         _ => "failed",
     }
 }
 
 fn runtime_action_details(plan: &burd_protocol::SecureRuntimePlan) -> Vec<String> {
-    let mut details = vec![format!("status: {}", plan.status)];
+    let mut details = vec![
+        format!("status: {}", plan.status),
+        format!("capability_status: {}", plan.capability.status),
+        format!("verification_status: {}", plan.verification.status),
+    ];
+    details.extend(
+        plan.capability
+            .reason_codes
+            .iter()
+            .map(|reason| format!("runtime_capability: {reason}")),
+    );
     details.extend(
         plan.checks
             .iter()
