@@ -1,0 +1,6 @@
+# Deterministic test-only API token hash fixture.
+1f790aed7968611153f293e6472c9e368f376dfd:crates/burd-api-local/src/server.rs:generic-api-key:673
+
+# Upstream llmfit benchmark examples with intentionally fake credentials.
+d191503915a016116078ddc046d4d3527b9e5011:third_party/llmfit/llmfit-core/data/benchmarks.yaml:generic-api-key:1349
+d191503915a016116078ddc046d4d3527b9e5011:third_party/llmfit/llmfit-core/data/benchmarks.yaml:generic-api-key:1372
