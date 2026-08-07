@@ -2,7 +2,7 @@
 
 ## Status
 
-This document describes the backend-authoritative execution contract returned by the Control Plane and the Agent-side provider job orchestration boundary. A production container executor is not implemented.
+This document describes the backend-authoritative execution contract returned by the Control Plane and the Agent-side provider job orchestration boundary. A Linux-native Docker/NVIDIA executor exists as an isolated Agent component, but production session wiring remains disabled.
 
 Schema versions:
 
@@ -90,21 +90,30 @@ Implemented:
 - integration-only session-supervisor wiring for the provider job worker.
 - Runtime Platform Model v2, which separates provider host capability from the
   Linux-container job policy.
+- `DockerNvidiaProviderJobExecutor` separated from the `DockerRuntimeBackend`
+  interface, with `LinuxNativeDockerBackend` as the first implementation;
+- exact template/image-digest authorization with no permissive default;
+- read-only Docker/NVIDIA/GPU/image probes before side effects;
+- structured `docker create`, `start`, `inspect`, bounded/redacted `logs`,
+  `stop`, `kill`, and `rm --force` operations without a shell;
+- deterministic container names, Burd ownership labels, controlled stale
+  cleanup, resource limits, GPU UUID binding, timeout/cancellation, distinct
+  exit/OOM failures, and mandatory removal;
+- fake-backend unit coverage and an ignored physical Linux/NVIDIA isolation
+  test.
 
-The production `remote-session connect` command does not start the worker yet. Enabling a fake executor against real assignments would create false successful compute results, so production activation is intentionally deferred until the real container executor exists.
+The production `remote-session connect` command does not start the worker yet. The Linux executor is intentionally disconnected until Windows support, the real data plane, runtime verification, and controlled activation are complete.
 
 Not implemented:
 
-- Docker/containerd process execution;
-- NVIDIA Container Toolkit integration in a remote worker;
 - byte-level artifact download or result upload;
 - signed object-storage URLs;
 - secret injection;
 - remote cancellation discovery while an execution is active;
-- container cleanup enforcement;
 - Control Plane persistence or verification of reported runtime capabilities;
 - scheduler filtering by verified runtime capability;
-- the Linux-native and Windows WSL2 Docker backends;
+- the Windows WSL2 Docker backend;
+- production worker/executor wiring;
 - paid workload execution.
 
 The current worker revalidates the complete bundle before acceptance and reports persisted transitions through the existing authenticated job endpoints. Its cancellation token currently represents local shutdown and authoritative assignment deadlines only. `POST /v1/jobs/{job_id}/cancel` remains administrative, and the remote control protocol has no typed `job_cancel` command or provider-authenticated job-status query; tests must not describe this boundary as remote cancellation.

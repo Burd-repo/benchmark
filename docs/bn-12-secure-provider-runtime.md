@@ -152,11 +152,24 @@ storage boundary will use Docker-managed or WSL-local isolated storage.
 
 ## Current Boundary
 
-PR #82 defines contracts, local detection, validation, JSON serialization,
-OpenAPI components, documentation, and tests. It does not:
+The Runtime Platform Model v2 defines contracts, local detection, validation,
+JSON serialization, OpenAPI components, documentation, and tests. The Agent
+also contains an isolated Linux-native Docker/NVIDIA executor which:
 
-- launch Docker containers;
-- implement the Linux or Windows executor backend;
+- requires an exact approved `template_id` and image digest pair;
+- revalidates the complete assignment before side effects;
+- verifies Linux Docker, the NVIDIA runtime, the leased local GPU UUID, and the
+  already-present digest-pinned image;
+- creates a hardened container without a shell, customer command, entrypoint
+  override, host bind mount, Docker socket, host network, host PID, or host IPC;
+- monitors typed container state and bounds/redacts captured logs;
+- stops, kills when necessary, and removes containers on success, failure,
+  timeout, or cancellation.
+
+The Linux executor is not connected to production session execution. The
+remaining boundary does not:
+
+- implement the Windows WSL2 executor backend;
 - prove GPU UUID isolation through WSL2;
 - upload capability reports to the Control Plane;
 - persist a verified runtime state;
@@ -164,5 +177,6 @@ OpenAPI components, documentation, and tests. It does not:
 - transfer customer artifacts or results;
 - activate production provider jobs.
 
-The production worker remains disabled until the executor, data plane,
-runtime verification, and controlled activation boundaries are complete.
+The production worker remains disabled until the Windows backend, data plane,
+runtime verification, physical isolation tests, and controlled activation
+boundaries are complete.

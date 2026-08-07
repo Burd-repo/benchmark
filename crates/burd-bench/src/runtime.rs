@@ -623,7 +623,7 @@ fn build_docker_args(
         "--security-opt".to_string(),
         "no-new-privileges".to_string(),
         "--security-opt".to_string(),
-        "seccomp=default".to_string(),
+        "seccomp=builtin".to_string(),
         "--pids-limit".to_string(),
         resources.pids_limit.to_string(),
         "--network".to_string(),
@@ -735,6 +735,8 @@ mod tests {
         assert!(plan.docker_args.iter().any(|arg| arg == "--cap-drop"));
         assert!(plan.docker_args.iter().any(|arg| arg == "--gpus"));
         assert!(plan.docker_args.iter().any(|arg| arg == "--network"));
+        assert!(plan.docker_args.iter().any(|arg| arg == "seccomp=builtin"));
+        assert!(!plan.docker_args.iter().any(|arg| arg == "seccomp=default"));
         assert!(!plan.security.arbitrary_shell_allowed);
     }
 
