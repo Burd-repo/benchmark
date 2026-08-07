@@ -78,7 +78,8 @@ pub use report::{
 };
 pub use runtime::{
     SECURE_RUNTIME_ALLOWED_TEMPLATES, SECURE_RUNTIME_DEFAULT_TEMPLATE, SecureRuntimePlanOptions,
-    SecureRuntimeProbe, build_secure_runtime_plan, calculate_secure_runtime_plan,
+    SecureRuntimeProbe, build_secure_runtime_plan, calculate_provider_runtime_capability,
+    calculate_secure_runtime_plan,
 };
 pub use score::{ScoreReport, calculate_score, tier_for_score};
 pub use session::{

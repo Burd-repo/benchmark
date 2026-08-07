@@ -2575,13 +2575,52 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
         }),
     );
     schemas.insert(
+        "ProviderRuntimeCapability".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "description": "Agent-observed runtime capability. This report is not scheduler-authoritative until separately verified by the Control Plane.",
+            "required": ["schema_version", "observed_at", "host_os", "container_os", "gpu_backend", "gpu_runtime", "isolation_mode", "status", "reason_codes", "gpu_uuids"],
+            "properties": {
+                "schema_version": { "type": "string", "const": "burd-provider-runtime-capability-v1" },
+                "observed_at": { "type": "string", "format": "date-time" },
+                "host_os": { "type": "string" },
+                "runtime_backend": { "type": "string", "enum": ["docker_linux_native", "docker_wsl2"] },
+                "runtime_provider": { "type": "string", "description": "Optional diagnostic implementation such as docker_desktop; it is not a workload requirement." },
+                "container_os": { "type": "string", "const": "linux" },
+                "gpu_backend": { "type": "string", "const": "cuda" },
+                "gpu_runtime": { "type": "string", "const": "nvidia" },
+                "isolation_mode": { "type": "string", "const": "linux_container" },
+                "status": { "type": "string", "enum": ["ready", "not_ready", "unsupported"] },
+                "reason_codes": { "type": "array", "items": { "type": "string" }, "maxItems": 16 },
+                "gpu_uuids": { "type": "array", "items": { "type": "string" }, "maxItems": 32 }
+            }
+        }),
+    );
+    schemas.insert(
+        "ProviderRuntimeVerification".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "description": "Authority state kept separate from the Agent capability observation. Only the Control Plane may produce a verified state.",
+            "required": ["schema_version", "authority", "status", "gpu_uuid_binding", "reason_codes"],
+            "properties": {
+                "schema_version": { "type": "string", "const": "burd-provider-runtime-verification-v1" },
+                "authority": { "type": "string", "enum": ["agent", "control_plane"] },
+                "status": { "type": "string", "enum": ["reported", "verified", "rejected"] },
+                "gpu_uuid_binding": { "type": "string", "enum": ["unverified", "verified", "rejected"] },
+                "reason_codes": { "type": "array", "items": { "type": "string" }, "maxItems": 16 }
+            }
+        }),
+    );
+    schemas.insert(
         "ProviderJobRuntimePolicy".to_string(),
         serde_json::json!({
             "type": "object",
-            "required": ["runtime_engine", "target_os", "command_source", "command_override_allowed", "entrypoint_override_allowed", "network_mode", "read_only_rootfs", "no_new_privileges", "run_as_user", "seccomp_profile", "cap_drop", "cpu_millis", "memory_mib", "pids_limit", "shm_size_mib"],
+            "required": ["runtime_engine", "container_os", "gpu_backend", "gpu_runtime", "command_source", "command_override_allowed", "entrypoint_override_allowed", "network_mode", "read_only_rootfs", "no_new_privileges", "run_as_user", "seccomp_profile", "cap_drop", "cpu_millis", "memory_mib", "pids_limit", "shm_size_mib"],
             "properties": {
                 "runtime_engine": { "type": "string", "const": "docker" },
-                "target_os": { "type": "string", "const": "linux" },
+                "container_os": { "type": "string", "const": "linux" },
+                "gpu_backend": { "type": "string", "const": "cuda" },
+                "gpu_runtime": { "type": "string", "const": "nvidia" },
                 "command_source": { "type": "string", "const": "approved_template" },
                 "command_override_allowed": { "type": "boolean", "const": false },
                 "entrypoint_override_allowed": { "type": "boolean", "const": false },
@@ -2629,8 +2668,8 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
             "type": "object",
             "required": ["schema_version", "policy_version", "job_schema_version", "lease_schema_version", "data_plane_schema_version", "job_id", "lease_id", "provider_id", "device_id", "session_id", "workload_type", "template_id", "image_ref", "gpu_uuid", "backend", "initial_state", "timeout_seconds", "lease_expires_at", "data_plane_credential_expires_at", "runtime", "cancellation", "cleanup"],
             "properties": {
-                "schema_version": { "type": "string", "const": "burd-provider-job-execution-v1" },
-                "policy_version": { "type": "string", "const": "burd-provider-job-runtime-policy-v1" },
+                "schema_version": { "type": "string", "const": "burd-provider-job-execution-v2" },
+                "policy_version": { "type": "string", "const": "burd-provider-job-runtime-policy-v2" },
                 "job_schema_version": { "type": "string" },
                 "lease_schema_version": { "type": "string" },
                 "data_plane_schema_version": { "type": "string" },
@@ -4094,6 +4133,8 @@ mod tests {
             "ListJobsResponse",
             "JobDataPlaneGrant",
             "ProviderJobExecutionState",
+            "ProviderRuntimeCapability",
+            "ProviderRuntimeVerification",
             "ProviderJobRuntimePolicy",
             "ProviderJobCancellationPolicy",
             "ProviderJobCleanupPolicy",
@@ -4120,6 +4161,35 @@ mod tests {
         assert_eq!(
             schemas["NextJobResponse"]["properties"]["execution"]["oneOf"][0]["$ref"],
             "#/components/schemas/ProviderJobExecutionSpec"
+        );
+        assert_eq!(
+            schemas["ProviderJobExecutionSpec"]["properties"]["schema_version"]["const"],
+            "burd-provider-job-execution-v2"
+        );
+        assert_eq!(
+            schemas["ProviderJobExecutionSpec"]["properties"]["policy_version"]["const"],
+            "burd-provider-job-runtime-policy-v2"
+        );
+        assert_eq!(
+            schemas["ProviderJobRuntimePolicy"]["properties"]["container_os"]["const"],
+            "linux"
+        );
+        assert_eq!(
+            schemas["ProviderJobRuntimePolicy"]["properties"]["gpu_backend"]["const"],
+            "cuda"
+        );
+        assert_eq!(
+            schemas["ProviderJobRuntimePolicy"]["properties"]["gpu_runtime"]["const"],
+            "nvidia"
+        );
+        assert!(
+            schemas["ProviderJobRuntimePolicy"]["properties"]
+                .get("target_os")
+                .is_none()
+        );
+        assert_eq!(
+            schemas["ProviderRuntimeCapability"]["properties"]["runtime_backend"]["enum"],
+            serde_json::json!(["docker_linux_native", "docker_wsl2"])
         );
 
         let paths = document["paths"].as_object().unwrap();

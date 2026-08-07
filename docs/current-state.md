@@ -539,12 +539,15 @@ starting the API server or depending on host state:
 - BN-11 does not implement scheduler enforcement, secure provider runtime, jobs, leases, marketplace listings, billing, Pix, payouts, or autonomous production sweep scheduling.
 ## BN-12 - Secure Provider Runtime
 
-- `burd-protocol` defines `SecureRuntimePlan`, runtime checks, image allowlist entries, resource limits, tmpfs mounts, and a hardened security profile.
-- `burd-bench` builds local secure runtime plans from host probes, Docker/NVIDIA runtime availability, GPU UUID binding, template allowlist, digest-pinned image references, resource limits, and security defaults.
+- `burd-protocol` defines Runtime Platform Model v2: separate Agent-reported `ProviderRuntimeCapability`, authority-owned `ProviderRuntimeVerification`, workload-specific `SecureRuntimePlan`, runtime checks, image allowlist entries, resource limits, tmpfs mounts, and a hardened security profile.
+- The ambiguous v1 `target_os` field is removed. Host capability now records `host_os` and `runtime_backend`, while job policy requires `container_os=linux`, `gpu_backend=cuda`, and `gpu_runtime=nvidia` independently of the physical host OS.
+- `burd-bench` detects `docker_linux_native` on Linux and models `docker_wsl2` on Windows without binding the protocol to Docker Desktop. Capability states are `ready`, `not_ready`, or `unsupported`, with actionable reason codes.
+- Local capability output remains `authority=agent`, `status=reported`, and `gpu_uuid_binding=unverified`; it is not persisted, scheduler-authoritative, or globally eligible state.
+- `burd-bench` builds local secure runtime plans from capability probes, Docker/NVIDIA runtime availability, observed GPU UUID binding, template allowlist, digest-pinned image references, resource limits, and security defaults.
 - `burd-agent runtime check --json` returns a diagnostic plan for the current host without requiring an image.
 - `burd-agent runtime plan --image-ref <image@sha256:digest> --allow-image-ref <image@sha256:digest> --gpu-uuid <gpu_uuid> --json` emits Docker arguments only when the plan status is `ready`.
 - BN-12 remains an agent-local runtime planning surface; no remote control-plane runtime execution endpoint is documented in `/openapi.json`.
-- Ready plans require Linux, Docker, NVIDIA Container Toolkit runtime advertising, an approved template, a digest-pinned allowlisted image, a GPU UUID, valid limits, read-only rootfs, non-root user, dropped capabilities, no-new-privileges, seccomp, no network, no IPC sharing, explicit tmpfs mounts, ephemeral secrets mode, and cleanup requirement.
+- Ready plans currently require the implemented Linux-native Docker capability, NVIDIA runtime advertising, an approved template, a digest-pinned allowlisted image, an observed GPU UUID, valid limits, read-only rootfs, non-root user, dropped capabilities, no-new-privileges, seccomp, no network, no IPC sharing, explicit tmpfs mounts, ephemeral secrets mode, and cleanup requirement. Windows is not globally unsupported; `docker_wsl2` remains `not_ready` pending its backend and physical GPU-isolation verification.
 - BN-12 does not implement job submission, backend leases, customer artifact download, result upload, arbitrary shell execution, metering, scheduler, marketplace, billing, Pix, payouts, Kubernetes, or distributed workloads.
 
 ## BN-13 - Job API And Data Plane

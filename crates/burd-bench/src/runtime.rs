@@ -1,8 +1,11 @@
 use burd_hardware::collect_nvidia_telemetry;
 use burd_protocol::{
-    SECURE_RUNTIME_POLICY_VERSION, SECURE_RUNTIME_SCHEMA_VERSION, SecureRuntimeCheck,
-    SecureRuntimeImageAllowlistEntry, SecureRuntimePlan, SecureRuntimeResourceLimits,
-    SecureRuntimeSecurityProfile, SecureRuntimeTmpfsMount,
+    PROVIDER_RUNTIME_CAPABILITY_SCHEMA_VERSION, PROVIDER_RUNTIME_VERIFICATION_SCHEMA_VERSION,
+    ProviderRuntimeCapability, ProviderRuntimeVerification, SECURE_RUNTIME_POLICY_VERSION,
+    SECURE_RUNTIME_SCHEMA_VERSION, SecureRuntimeCheck, SecureRuntimeImageAllowlistEntry,
+    SecureRuntimePlan, SecureRuntimeResourceLimits, SecureRuntimeSecurityProfile,
+    SecureRuntimeTmpfsMount, validate_provider_runtime_capability,
+    validate_provider_runtime_verification,
 };
 use chrono::Utc;
 use std::process::Command;
@@ -46,10 +49,14 @@ impl Default for SecureRuntimePlanOptions {
 #[derive(Debug, Clone)]
 pub struct SecureRuntimeProbe {
     pub host_os: String,
+    pub wsl2_available: Option<bool>,
     pub docker_available: bool,
     pub docker_server_version: Option<String>,
+    pub docker_os_type: Option<String>,
+    pub docker_operating_system: Option<String>,
+    pub docker_kernel_version: Option<String>,
     pub nvidia_runtime_available: bool,
-    pub gpu_uuid: Option<String>,
+    pub gpu_uuids: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -57,7 +64,7 @@ pub fn build_secure_runtime_plan(
     agent_version: &str,
     options: SecureRuntimePlanOptions,
 ) -> SecureRuntimePlan {
-    let probe = probe_secure_runtime(&options);
+    let probe = probe_secure_runtime();
     calculate_secure_runtime_plan(Utc::now().to_rfc3339(), agent_version, probe, options)
 }
 
@@ -69,25 +76,55 @@ pub fn calculate_secure_runtime_plan(
 ) -> SecureRuntimePlan {
     let mut checks = Vec::new();
     let mut warnings = probe.warnings.clone();
-    let mut blocking = false;
+    let capability = calculate_provider_runtime_capability(generated_at.clone(), &probe);
+    debug_assert!(validate_provider_runtime_capability(&capability).is_ok());
+    let verification = reported_runtime_verification();
+    debug_assert!(validate_provider_runtime_verification(&verification).is_ok());
+    let mut blocking = capability.status != "ready";
     let mut verification_required = false;
 
-    let supported_host = probe.host_os == "linux";
     push_check(
         &mut checks,
         "host_os",
-        if supported_host { "passed" } else { "failed" },
-        if supported_host {
-            "Linux host is supported for BN-12 secure runtime."
+        if matches!(probe.host_os.as_str(), "linux" | "windows") {
+            "passed"
         } else {
-            "BN-12 secure runtime starts on Linux; this host can only build a diagnostic plan."
+            "failed"
+        },
+        match probe.host_os.as_str() {
+            "linux" => "Linux host can offer the native Docker backend.".to_string(),
+            "windows" => {
+                "Windows host is eligible for the WSL2 Linux-container backend.".to_string()
+            }
+            _ => format!(
+                "Host OS {} has no Burd runtime backend definition.",
+                probe.host_os
+            ),
         },
     );
 
-    if !supported_host {
+    push_check(
+        &mut checks,
+        "runtime_backend",
+        if capability.status == "ready" {
+            "passed"
+        } else if capability.runtime_backend.is_some() {
+            "verification_required"
+        } else {
+            "failed"
+        },
+        capability
+            .runtime_backend
+            .as_ref()
+            .map(|backend| format!("Detected runtime backend {backend}."))
+            .unwrap_or_else(|| "No compatible Linux-container backend was detected.".to_string()),
+    );
+
+    if capability.status != "ready" {
         warnings.push(format!(
-            "secure provider runtime is Linux-first; detected host_os={}",
-            probe.host_os
+            "runtime capability is {}; reasons={}",
+            capability.status,
+            capability.reason_codes.join(",")
         ));
     }
 
@@ -190,28 +227,40 @@ pub fn calculate_secure_runtime_plan(
         _ => blocking = true,
     }
 
-    let selected_gpu_uuid =
-        normalized_option(options.gpu_uuid.as_deref()).or_else(|| probe.gpu_uuid.clone());
+    let requested_gpu_uuid = normalized_option(options.gpu_uuid.as_deref());
+    let selected_gpu_uuid = requested_gpu_uuid
+        .clone()
+        .or_else(|| probe.gpu_uuids.first().cloned());
+    let selected_gpu_observed = selected_gpu_uuid
+        .as_ref()
+        .is_some_and(|gpu_uuid| probe.gpu_uuids.contains(gpu_uuid));
     push_check(
         &mut checks,
         "gpu_uuid_binding",
-        if selected_gpu_uuid.is_some() {
+        if selected_gpu_observed {
             "passed"
+        } else if selected_gpu_uuid.is_some() {
+            "failed"
         } else {
             "missing"
         },
-        selected_gpu_uuid
-            .as_ref()
-            .map(|gpu_uuid| {
+        match (&selected_gpu_uuid, selected_gpu_observed) {
+            (Some(gpu_uuid), true) => {
                 format!("Runtime plan binds container execution to GPU UUID {gpu_uuid}.")
-            })
-            .unwrap_or_else(|| {
+            }
+            (Some(_), false) => {
+                "Requested GPU UUID was not observed in the local runtime capability.".to_string()
+            }
+            (None, _) => {
                 "No GPU UUID was supplied or detected; backend lease binding cannot be enforced."
                     .to_string()
-            }),
+            }
+        },
     );
     if selected_gpu_uuid.is_none() {
         verification_required = true;
+    } else if !selected_gpu_observed {
+        blocking = true;
     }
 
     let resources_valid = resources_are_valid(&options);
@@ -258,9 +307,7 @@ pub fn calculate_secure_runtime_plan(
         })
         .collect::<Vec<_>>();
 
-    let status = if !supported_host {
-        "unsupported_host"
-    } else if blocking {
+    let status = if blocking {
         "blocked"
     } else if verification_required {
         "verification_required"
@@ -280,7 +327,8 @@ pub fn calculate_secure_runtime_plan(
 
     let mut notes = vec![
         format!("agent_version={agent_version}"),
-        "BN-12 prepares the secure runtime contract only; customer job execution starts in BN-13."
+        "The runtime capability is agent-reported and is not scheduler-authoritative.".to_string(),
+        "Control Plane runtime proof is required before a reported capability can become verified."
             .to_string(),
         "The agent must not run arbitrary shell payloads from customers.".to_string(),
         "Runtime execution must be bound to a backend lease before paid jobs are accepted."
@@ -295,8 +343,8 @@ pub fn calculate_secure_runtime_plan(
         policy_version: SECURE_RUNTIME_POLICY_VERSION.to_string(),
         generated_at,
         status,
-        runtime_engine: "docker+nvidia-container-toolkit".to_string(),
-        target_os: probe.host_os,
+        capability,
+        verification,
         template_id: options.template_id,
         image_ref: selected_image,
         gpu_uuid: selected_gpu_uuid,
@@ -310,9 +358,129 @@ pub fn calculate_secure_runtime_plan(
     }
 }
 
-fn probe_secure_runtime(options: &SecureRuntimePlanOptions) -> SecureRuntimeProbe {
+pub fn calculate_provider_runtime_capability(
+    observed_at: String,
+    probe: &SecureRuntimeProbe,
+) -> ProviderRuntimeCapability {
+    let supported_host = matches!(probe.host_os.as_str(), "linux" | "windows");
+    let docker_linux_engine = probe.docker_available
+        && probe
+            .docker_os_type
+            .as_deref()
+            .is_some_and(|os_type| os_type.eq_ignore_ascii_case("linux"));
+    let wsl2_engine = probe.wsl2_available == Some(true)
+        && docker_linux_engine
+        && probe.host_os == "windows"
+        && probe
+            .docker_kernel_version
+            .as_deref()
+            .is_some_and(|version| {
+                let version = version.to_ascii_lowercase();
+                version.contains("microsoft-standard-wsl2") || version.contains("wsl2")
+            });
+
+    let runtime_backend = match probe.host_os.as_str() {
+        "linux" if docker_linux_engine => Some("docker_linux_native".to_string()),
+        "windows" if wsl2_engine => Some("docker_wsl2".to_string()),
+        _ => None,
+    };
+    let runtime_provider = if probe.docker_available {
+        Some(
+            if probe
+                .docker_operating_system
+                .as_deref()
+                .is_some_and(|name| name.to_ascii_lowercase().contains("docker desktop"))
+            {
+                "docker_desktop"
+            } else {
+                "docker_engine"
+            }
+            .to_string(),
+        )
+    } else {
+        None
+    };
+
+    let mut reason_codes = Vec::new();
+    if !supported_host {
+        push_reason(&mut reason_codes, "unsupported_host_os");
+    } else {
+        if probe.host_os == "windows" && probe.wsl2_available != Some(true) {
+            push_reason(&mut reason_codes, "wsl2_unavailable");
+        }
+        if !probe.docker_available {
+            push_reason(&mut reason_codes, "docker_unavailable");
+        } else if !docker_linux_engine {
+            push_reason(&mut reason_codes, "linux_container_engine_unavailable");
+        }
+        if probe.host_os == "windows" && probe.docker_available && !wsl2_engine {
+            push_reason(&mut reason_codes, "wsl2_runtime_unavailable");
+        }
+        if probe.docker_available && !probe.nvidia_runtime_available {
+            push_reason(&mut reason_codes, "nvidia_runtime_unavailable");
+        }
+        if probe.gpu_uuids.is_empty() {
+            push_reason(&mut reason_codes, "gpu_uuid_unavailable");
+        }
+        if probe.host_os == "windows" && runtime_backend.as_deref() == Some("docker_wsl2") {
+            push_reason(&mut reason_codes, "runtime_backend_verification_required");
+        }
+    }
+
+    let status = if !supported_host {
+        "unsupported"
+    } else if reason_codes.is_empty() {
+        "ready"
+    } else {
+        "not_ready"
+    };
+
+    ProviderRuntimeCapability {
+        schema_version: PROVIDER_RUNTIME_CAPABILITY_SCHEMA_VERSION.to_string(),
+        observed_at,
+        host_os: probe.host_os.clone(),
+        runtime_backend,
+        runtime_provider,
+        container_os: "linux".to_string(),
+        gpu_backend: "cuda".to_string(),
+        gpu_runtime: "nvidia".to_string(),
+        isolation_mode: "linux_container".to_string(),
+        status: status.to_string(),
+        reason_codes,
+        gpu_uuids: probe.gpu_uuids.clone(),
+    }
+}
+
+fn reported_runtime_verification() -> ProviderRuntimeVerification {
+    ProviderRuntimeVerification {
+        schema_version: PROVIDER_RUNTIME_VERIFICATION_SCHEMA_VERSION.to_string(),
+        authority: "agent".to_string(),
+        status: "reported".to_string(),
+        gpu_uuid_binding: "unverified".to_string(),
+        reason_codes: vec!["runtime_proof_required".to_string()],
+    }
+}
+
+fn push_reason(reason_codes: &mut Vec<String>, reason: &str) {
+    if !reason_codes.iter().any(|existing| existing == reason) {
+        reason_codes.push(reason.to_string());
+    }
+}
+
+fn probe_secure_runtime() -> SecureRuntimeProbe {
     let mut warnings = Vec::new();
     let host_os = std::env::consts::OS.to_string();
+    let wsl2_available = if host_os == "windows" {
+        match command_text("wsl.exe", &["--status"]) {
+            Ok(_) => Some(true),
+            Err(error) => {
+                warnings.push(format!("WSL2 status probe unavailable: {error}"));
+                Some(false)
+            }
+        }
+    } else {
+        None
+    };
     let docker_server_version =
         match command_text("docker", &["version", "--format", "{{.Server.Version}}"]) {
             Ok(version) => Some(version),
@@ -322,35 +490,59 @@ fn probe_secure_runtime(options: &SecureRuntimePlanOptions) -> SecureRuntimeProb
             }
         };
     let docker_available = docker_server_version.is_some();
-    let nvidia_runtime_available =
+    let (docker_os_type, docker_operating_system, docker_kernel_version) = if docker_available {
+        (
+            docker_probe_field("{{.OSType}}", "OS type", &mut warnings),
+            docker_probe_field("{{.OperatingSystem}}", "operating system", &mut warnings),
+            docker_probe_field("{{.KernelVersion}}", "kernel version", &mut warnings),
+        )
+    } else {
+        (None, None, None)
+    };
+    let nvidia_runtime_available = if docker_available {
         match command_text("docker", &["info", "--format", "{{json .Runtimes}}"]) {
             Ok(output) => output.contains("nvidia"),
             Err(error) => {
                 warnings.push(format!("docker NVIDIA runtime probe unavailable: {error}"));
                 false
             }
-        };
-    let gpu_uuid = normalized_option(options.gpu_uuid.as_deref()).or_else(|| {
-        match collect_nvidia_telemetry(1) {
-            Ok(collection) => collection
-                .samples
-                .into_iter()
-                .next()
-                .map(|sample| sample.gpu_uuid),
-            Err(error) => {
-                warnings.push(format!("GPU UUID auto-detection unavailable: {error}"));
-                None
-            }
         }
-    });
+    } else {
+        false
+    };
+    let gpu_uuids = match collect_nvidia_telemetry(1) {
+        Ok(collection) => collection
+            .samples
+            .into_iter()
+            .map(|sample| sample.gpu_uuid)
+            .collect(),
+        Err(error) => {
+            warnings.push(format!("GPU UUID auto-detection unavailable: {error}"));
+            Vec::new()
+        }
+    };
 
     SecureRuntimeProbe {
         host_os,
+        wsl2_available,
         docker_available,
         docker_server_version,
+        docker_os_type,
+        docker_operating_system,
+        docker_kernel_version,
         nvidia_runtime_available,
-        gpu_uuid,
+        gpu_uuids,
         warnings,
+    }
+}
+
+fn docker_probe_field(format: &str, label: &str, warnings: &mut Vec<String>) -> Option<String> {
+    match command_text("docker", &["info", "--format", format]) {
+        Ok(value) => normalized_option(Some(&value)),
+        Err(error) => {
+            warnings.push(format!("docker {label} probe unavailable: {error}"));
+            None
+        }
     }
 }
 
@@ -500,10 +692,14 @@ mod tests {
     fn ready_probe() -> SecureRuntimeProbe {
         SecureRuntimeProbe {
             host_os: "linux".to_string(),
+            wsl2_available: None,
             docker_available: true,
             docker_server_version: Some("25.0.0".to_string()),
+            docker_os_type: Some("linux".to_string()),
+            docker_operating_system: Some("Ubuntu 24.04".to_string()),
+            docker_kernel_version: Some("6.8.0".to_string()),
             nvidia_runtime_available: true,
-            gpu_uuid: Some("GPU-test".to_string()),
+            gpu_uuids: vec!["GPU-test".to_string()],
             warnings: Vec::new(),
         }
     }
@@ -526,6 +722,14 @@ mod tests {
         );
 
         assert_eq!(plan.status, "ready");
+        assert_eq!(plan.capability.host_os, "linux");
+        assert_eq!(
+            plan.capability.runtime_backend.as_deref(),
+            Some("docker_linux_native")
+        );
+        assert_eq!(plan.capability.container_os, "linux");
+        assert_eq!(plan.verification.status, "reported");
+        assert_eq!(plan.verification.gpu_uuid_binding, "unverified");
         assert_eq!(plan.gpu_uuid.as_deref(), Some("GPU-test"));
         assert!(plan.docker_args.iter().any(|arg| arg == "--read-only"));
         assert!(plan.docker_args.iter().any(|arg| arg == "--cap-drop"));
@@ -560,13 +764,20 @@ mod tests {
             "2026-01-01T00:00:00Z".to_string(),
             "test-agent",
             SecureRuntimeProbe {
-                gpu_uuid: None,
+                gpu_uuids: Vec::new(),
                 ..ready_probe()
             },
             SecureRuntimePlanOptions::default(),
         );
 
-        assert_eq!(plan.status, "verification_required");
+        assert_eq!(plan.status, "blocked");
+        assert_eq!(plan.capability.status, "not_ready");
+        assert!(
+            plan.capability
+                .reason_codes
+                .iter()
+                .any(|reason| reason == "gpu_uuid_unavailable")
+        );
         assert!(plan.docker_args.is_empty());
         assert!(
             plan.checks
@@ -576,22 +787,78 @@ mod tests {
     }
 
     #[test]
-    fn non_linux_host_is_diagnostic_only() {
+    fn windows_wsl2_is_not_globally_unsupported() {
         let plan = calculate_secure_runtime_plan(
             "2026-01-01T00:00:00Z".to_string(),
             "test-agent",
             SecureRuntimeProbe {
                 host_os: "windows".to_string(),
+                wsl2_available: Some(true),
+                docker_operating_system: Some("Docker Desktop".to_string()),
+                docker_kernel_version: Some("5.15.167.4-microsoft-standard-WSL2".to_string()),
                 ..ready_probe()
             },
             ready_options(),
         );
 
-        assert_eq!(plan.status, "unsupported_host");
-        assert!(
-            plan.warnings
-                .iter()
-                .any(|warning| warning.contains("Linux-first"))
+        assert_eq!(plan.status, "blocked");
+        assert_eq!(plan.capability.status, "not_ready");
+        assert_eq!(
+            plan.capability.runtime_backend.as_deref(),
+            Some("docker_wsl2")
         );
+        assert_eq!(
+            plan.capability.runtime_provider.as_deref(),
+            Some("docker_desktop")
+        );
+        assert!(
+            plan.capability
+                .reason_codes
+                .iter()
+                .any(|reason| reason == "runtime_backend_verification_required")
+        );
+        assert!(!serde_json::to_string(&plan).unwrap().contains("target_os"));
+        assert!(plan.docker_args.is_empty());
+    }
+
+    #[test]
+    fn windows_without_docker_is_not_ready_with_actionable_reason() {
+        let capability = calculate_provider_runtime_capability(
+            "2026-01-01T00:00:00Z".to_string(),
+            &SecureRuntimeProbe {
+                host_os: "windows".to_string(),
+                wsl2_available: Some(false),
+                docker_available: false,
+                docker_server_version: None,
+                docker_os_type: None,
+                docker_operating_system: None,
+                docker_kernel_version: None,
+                nvidia_runtime_available: false,
+                gpu_uuids: vec!["GPU-test".to_string()],
+                warnings: Vec::new(),
+            },
+        );
+
+        assert_eq!(capability.status, "not_ready");
+        assert_eq!(
+            capability.reason_codes,
+            ["wsl2_unavailable", "docker_unavailable"]
+        );
+        assert!(capability.runtime_backend.is_none());
+    }
+
+    #[test]
+    fn undefined_host_backend_is_reported_as_unsupported() {
+        let capability = calculate_provider_runtime_capability(
+            "2026-01-01T00:00:00Z".to_string(),
+            &SecureRuntimeProbe {
+                host_os: "macos".to_string(),
+                ..ready_probe()
+            },
+        );
+
+        assert_eq!(capability.status, "unsupported");
+        assert!(capability.runtime_backend.is_none());
+        assert_eq!(capability.reason_codes, ["unsupported_host_os"]);
     }
 }

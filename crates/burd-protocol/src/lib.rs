@@ -121,6 +121,7 @@ pub use job_execution::{
     PROVIDER_JOB_EXECUTION_SCHEMA_VERSION, ProviderJobCancellationPolicy, ProviderJobCleanupPolicy,
     ProviderJobExecutionSpec, ProviderJobExecutionState, ProviderJobRuntimePolicy,
     validate_next_job_execution_response, validate_provider_job_execution_bundle,
+    validate_provider_job_runtime_policy, validate_provider_runtime_compatibility,
 };
 pub use lease::{
     JOB_LEASE_SCHEMA_VERSION, JobLeaseRecord, ListJobLeasesResponse, RunSchedulerRequest,
@@ -148,9 +149,12 @@ pub use remote_session::{
 };
 pub use report::{FullReport, ReportSignature, SignedReport, VerifyReportResult};
 pub use secure_runtime::{
-    SECURE_RUNTIME_POLICY_VERSION, SECURE_RUNTIME_SCHEMA_VERSION, SecureRuntimeCheck,
-    SecureRuntimeImageAllowlistEntry, SecureRuntimePlan, SecureRuntimeResourceLimits,
-    SecureRuntimeSecurityProfile, SecureRuntimeTmpfsMount,
+    PROVIDER_RUNTIME_CAPABILITY_SCHEMA_VERSION, PROVIDER_RUNTIME_VERIFICATION_SCHEMA_VERSION,
+    ProviderRuntimeCapability, ProviderRuntimeVerification, SECURE_RUNTIME_POLICY_VERSION,
+    SECURE_RUNTIME_SCHEMA_VERSION, SecureRuntimeCheck, SecureRuntimeImageAllowlistEntry,
+    SecureRuntimePlan, SecureRuntimeResourceLimits, SecureRuntimeSecurityProfile,
+    SecureRuntimeTmpfsMount, validate_provider_runtime_capability,
+    validate_provider_runtime_verification,
 };
 pub use security::{
     AgentReleasePosture, ArtifactIntegrityPosture, AttestationPosture, KeyStoragePosture,

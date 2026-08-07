@@ -1,12 +1,13 @@
 use crate::{
     JOB_DATA_PLANE_GRANT_VERSION, JOB_LEASE_SCHEMA_VERSION, JOB_SCHEMA_VERSION, JobDataPlaneGrant,
-    JobDataPlaneUrl, JobLeaseRecord, JobRecord, NextJobResponse,
+    JobDataPlaneUrl, JobLeaseRecord, JobRecord, NextJobResponse, ProviderRuntimeCapability,
+    validate_provider_runtime_capability,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-pub const PROVIDER_JOB_EXECUTION_SCHEMA_VERSION: &str = "burd-provider-job-execution-v1";
-pub const PROVIDER_JOB_EXECUTION_POLICY_VERSION: &str = "burd-provider-job-runtime-policy-v1";
+pub const PROVIDER_JOB_EXECUTION_SCHEMA_VERSION: &str = "burd-provider-job-execution-v2";
+pub const PROVIDER_JOB_EXECUTION_POLICY_VERSION: &str = "burd-provider-job-runtime-policy-v2";
 pub const PROVIDER_JOB_APPROVED_TEMPLATES: &[&str] = &[
     "llm_inference",
     "embeddings",
@@ -53,7 +54,9 @@ impl ProviderJobExecutionState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderJobRuntimePolicy {
     pub runtime_engine: String,
-    pub target_os: String,
+    pub container_os: String,
+    pub gpu_backend: String,
+    pub gpu_runtime: String,
     pub command_source: String,
     pub command_override_allowed: bool,
     pub entrypoint_override_allowed: bool,
@@ -70,10 +73,12 @@ pub struct ProviderJobRuntimePolicy {
 }
 
 impl ProviderJobRuntimePolicy {
-    pub fn v1() -> Self {
+    pub fn v2() -> Self {
         Self {
             runtime_engine: "docker".to_string(),
-            target_os: "linux".to_string(),
+            container_os: "linux".to_string(),
+            gpu_backend: "cuda".to_string(),
+            gpu_runtime: "nvidia".to_string(),
             command_source: "approved_template".to_string(),
             command_override_allowed: false,
             entrypoint_override_allowed: false,
@@ -185,7 +190,7 @@ pub fn validate_provider_job_execution_bundle(
     validate_identity_bindings(job, lease, grant, spec)?;
     validate_workload_bindings(job, lease, spec)?;
     validate_assignment(job, lease, grant, spec)?;
-    validate_runtime_policy(&spec.runtime)?;
+    validate_provider_job_runtime_policy(&spec.runtime)?;
     validate_cancellation_policy(&spec.cancellation)?;
     validate_cleanup_policy(&spec.cleanup)?;
     validate_data_plane_urls(job, grant)?;
@@ -292,9 +297,13 @@ fn validate_assignment(
     Ok(())
 }
 
-fn validate_runtime_policy(policy: &ProviderJobRuntimePolicy) -> Result<(), String> {
+pub fn validate_provider_job_runtime_policy(
+    policy: &ProviderJobRuntimePolicy,
+) -> Result<(), String> {
     if policy.runtime_engine != "docker"
-        || policy.target_os != "linux"
+        || policy.container_os != "linux"
+        || policy.gpu_backend != "cuda"
+        || policy.gpu_runtime != "nvidia"
         || policy.command_source != "approved_template"
         || policy.command_override_allowed
         || policy.entrypoint_override_allowed
@@ -310,6 +319,31 @@ fn validate_runtime_policy(policy: &ProviderJobRuntimePolicy) -> Result<(), Stri
         || policy.shm_size_mib == 0
     {
         return Err("provider runtime policy is unsafe".to_string());
+    }
+    Ok(())
+}
+
+/// Checks local requirement/capability compatibility without granting backend authority.
+///
+/// Scheduler admission must additionally require a persisted Control Plane verification record.
+pub fn validate_provider_runtime_compatibility(
+    policy: &ProviderJobRuntimePolicy,
+    capability: &ProviderRuntimeCapability,
+) -> Result<(), String> {
+    validate_provider_job_runtime_policy(policy)?;
+    validate_provider_runtime_capability(capability)?;
+    if capability.status != "ready" {
+        return Err("provider runtime capability is not ready".to_string());
+    }
+    if policy.container_os != capability.container_os
+        || policy.gpu_backend != capability.gpu_backend
+        || policy.gpu_runtime != capability.gpu_runtime
+        || !matches!(
+            capability.runtime_backend.as_deref(),
+            Some("docker_linux_native" | "docker_wsl2")
+        )
+    {
+        return Err("provider runtime capability does not satisfy job policy".to_string());
     }
     Ok(())
 }
@@ -399,7 +433,7 @@ fn validate_digest_pinned_image(image_ref: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::JobArtifact;
+    use crate::{JobArtifact, PROVIDER_RUNTIME_CAPABILITY_SCHEMA_VERSION};
 
     struct FakeExecutor {
         state: ProviderJobExecutionState,
@@ -532,11 +566,28 @@ mod tests {
             timeout_seconds: job.timeout_seconds,
             lease_expires_at: lease.expires_at.clone(),
             data_plane_credential_expires_at: grant.credential_expires_at.clone(),
-            runtime: ProviderJobRuntimePolicy::v1(),
+            runtime: ProviderJobRuntimePolicy::v2(),
             cancellation: ProviderJobCancellationPolicy::v1(),
             cleanup: ProviderJobCleanupPolicy::v1(),
         };
         (job, lease, grant, spec)
+    }
+
+    fn windows_runtime_capability() -> ProviderRuntimeCapability {
+        ProviderRuntimeCapability {
+            schema_version: PROVIDER_RUNTIME_CAPABILITY_SCHEMA_VERSION.to_string(),
+            observed_at: "2026-08-07T00:00:00Z".to_string(),
+            host_os: "windows".to_string(),
+            runtime_backend: Some("docker_wsl2".to_string()),
+            runtime_provider: Some("docker_desktop".to_string()),
+            container_os: "linux".to_string(),
+            gpu_backend: "cuda".to_string(),
+            gpu_runtime: "nvidia".to_string(),
+            isolation_mode: "linux_container".to_string(),
+            status: "ready".to_string(),
+            reason_codes: Vec::new(),
+            gpu_uuids: vec!["GPU-test".to_string()],
+        }
     }
 
     #[test]
@@ -568,6 +619,22 @@ mod tests {
         let serialized = serde_json::to_string(&spec).unwrap();
         assert!(!serialized.contains(&grant.credential));
         assert!(!serialized.contains("\"command\""));
+        assert!(!serialized.contains("target_os"));
+        assert!(serialized.contains("\"container_os\":\"linux\""));
+        assert!(serialized.contains("\"gpu_backend\":\"cuda\""));
+        assert!(serialized.contains("\"gpu_runtime\":\"nvidia\""));
+    }
+
+    #[test]
+    fn linux_container_policy_is_compatible_with_a_ready_windows_wsl2_host() {
+        let policy = ProviderJobRuntimePolicy::v2();
+        let capability = windows_runtime_capability();
+        validate_provider_runtime_compatibility(&policy, &capability).unwrap();
+
+        let mut unavailable = capability;
+        unavailable.status = "not_ready".to_string();
+        unavailable.reason_codes = vec!["runtime_backend_verification_required".to_string()];
+        assert!(validate_provider_runtime_compatibility(&policy, &unavailable).is_err());
     }
 
     #[test]
@@ -606,6 +673,14 @@ mod tests {
 
         spec.runtime.command_override_allowed = false;
         spec.runtime.run_as_user = "0".to_string();
+        assert!(validate_provider_job_execution_bundle(&job, &lease, &grant, &spec).is_err());
+
+        let (job, lease, grant, mut spec) = bundle();
+        spec.runtime.container_os = "windows".to_string();
+        assert!(validate_provider_job_execution_bundle(&job, &lease, &grant, &spec).is_err());
+
+        let (job, lease, grant, mut spec) = bundle();
+        spec.runtime.gpu_runtime = "directml".to_string();
         assert!(validate_provider_job_execution_bundle(&job, &lease, &grant, &spec).is_err());
     }
 }
