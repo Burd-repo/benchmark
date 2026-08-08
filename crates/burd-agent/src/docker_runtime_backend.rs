@@ -1013,26 +1013,23 @@ fn artifact_helper_create_args(
     helper_image_ref: &str,
     role: &'static str,
 ) -> Vec<String> {
-    let (user, volume_role, readonly_rootfs, readonly_volume, maximum_bytes, maximum_files) =
-        if role == "import" {
-            (
-                "0:0",
-                "input",
-                true,
-                false,
-                plan.input_artifact_bytes,
-                plan.input_artifact_count,
-            )
-        } else {
-            (
-                "1000:1000",
-                "output",
-                false,
-                true,
-                plan.output_artifact_bytes,
-                plan.output_artifact_count,
-            )
-        };
+    let (user, volume_role, readonly_volume, maximum_bytes, maximum_files) = if role == "import" {
+        (
+            "0:0",
+            "input",
+            false,
+            plan.input_artifact_bytes,
+            plan.input_artifact_count,
+        )
+    } else {
+        (
+            "1000:1000",
+            "output",
+            true,
+            plan.output_artifact_bytes,
+            plan.output_artifact_count,
+        )
+    };
     let mut args = vec![
         "create".into(),
         "--pull".into(),
@@ -1069,9 +1066,9 @@ fn artifact_helper_create_args(
         "--cpus".into(),
         ARTIFACT_HELPER_CPUS.into(),
     ]);
-    if readonly_rootfs {
-        args.push("--read-only".into());
-    }
+    // Docker copies staging bytes through the helper's ephemeral container layer.
+    // That layer must remain writable until the helper is removed; the workload
+    // rootfs is still read-only and never receives a host path.
     let readonly = if readonly_volume { ",readonly" } else { "" };
     args.extend([
         "--mount".into(),
@@ -1852,6 +1849,7 @@ mod tests {
             assert!(!joined.contains("docker.sock"));
             assert!(!joined.contains("sh -c"));
             assert!(!joined.contains("--privileged"));
+            assert!(!args.iter().any(|argument| argument == "--read-only"));
         }
         assert!(import_joined.contains("--user 0:0"));
         assert!(import_joined.contains("-artifact-input"));
