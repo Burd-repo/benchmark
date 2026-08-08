@@ -770,6 +770,13 @@ mod tests {
             "docker_linux_native"
         }
 
+        fn verify_platform(
+            &self,
+            _control: &DockerCommandControl,
+        ) -> Result<(), DockerRuntimeError> {
+            Ok(())
+        }
+
         fn verify_environment(
             &self,
             plan: &DockerContainerPlan,
@@ -790,6 +797,7 @@ mod tests {
                 docker_server_version: "test-docker".to_string(),
                 nvidia_driver_version: "test-driver".to_string(),
                 nvidia_runtime: "nvidia".to_string(),
+                gpu_uuids: vec!["GPU-test".to_string()],
             })
         }
 

@@ -136,6 +136,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "runtime_capability_verification",
         sql: include_str!("../migrations/0026_runtime_capability_verification.sql"),
     },
+    Migration {
+        version: "0027",
+        name: "runtime_verified_admission",
+        sql: include_str!("../migrations/0027_runtime_verified_admission.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -410,6 +415,18 @@ mod tests {
         assert!(sql.contains("runtime_verification_fingerprint TEXT NOT NULL"));
         assert!(sql.contains("idx_provider_runtime_verifications_active_gpu"));
         assert!(sql.contains("response_hash TEXT UNIQUE"));
+    }
+
+    #[test]
+    fn runtime_verified_admission_migration_binds_keys_and_current_observations() {
+        let sql = MIGRATIONS[26].sql;
+        assert!(sql.contains("ADD COLUMN IF NOT EXISTS public_key_id"));
+        assert!(sql.contains("runtime_admission_fingerprint"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS provider_runtime_observations"));
+        assert!(sql.contains("observation_hash TEXT NOT NULL UNIQUE"));
+        assert!(sql.contains("signature TEXT NOT NULL"));
+        assert!(sql.contains("provider_runtime_observations_no_update"));
+        assert!(sql.contains("status = 'superseded'"));
     }
 
     #[test]

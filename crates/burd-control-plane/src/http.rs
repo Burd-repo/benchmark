@@ -19,6 +19,7 @@ use crate::remote_session::{
     AuthorizedSession, ControlChannelLease, ControlChannelRegistry, RemoteSessionPolicy,
     SessionError,
 };
+use crate::runtime_admission::RuntimeAdmissionPolicy;
 use crate::runtime_verification::RuntimeVerificationPolicy;
 use crate::security_hardening::SecurityPolicy;
 use crate::telemetry::TelemetryPolicy;
@@ -42,10 +43,10 @@ use burd_protocol::{
     RunMarketplaceListingSweepRequest, RunSchedulerRequest, RunTrustSweepRequest,
     RunVerificationSweepRequest, RunWorkloadEligibilityRequest, ServerControlMessage,
     SettleReservationBillingRequest, Sha256Accumulator, SignedBenchmarkResult,
-    SignedDeviceGpuInventory, SignedProofCapabilityResponse, SignedRuntimeVerificationResponse,
-    SignedSecurityPosture, StartEnrollmentRequest, StartKeyRotationRequest,
-    StartRemoteSessionRequest, SubmitEvidenceRequest, SubmitJobResultRequest,
-    SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
+    SignedDeviceGpuInventory, SignedProofCapabilityResponse, SignedProviderRuntimeObservation,
+    SignedRuntimeVerificationResponse, SignedSecurityPosture, StartEnrollmentRequest,
+    StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
+    SubmitJobResultRequest, SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
     UpsertMarketplacePriceRequest, UpsertProjectQuotaRequest, UpsertProviderPayoutAccountRequest,
     UpsertWorkloadPolicyRequest, create_private_file_new, hash_canonical, sha256_hex,
 };
@@ -476,6 +477,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/providers/{provider_id}/runtime-verifications",
             get(list_provider_runtime_verifications),
+        )
+        .route(
+            "/v1/providers/{provider_id}/runtime-admissions",
+            get(list_provider_runtime_admissions),
+        )
+        .route(
+            "/v1/sessions/{session_id}/runtime-observations",
+            post(submit_provider_runtime_observation),
         )
         .route(
             "/v1/sessions/{session_id}/runtime-verifications/next",
@@ -2580,6 +2589,53 @@ async fn list_provider_runtime_verifications(
         .map_err(|error| session_api_error(error, request_id))
 }
 
+async fn submit_provider_runtime_observation(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<SignedProviderRuntimeObservation>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    let response = state
+        .db
+        .submit_provider_runtime_observation(
+            &request_id,
+            &authorized,
+            &session_id,
+            &payload,
+            &runtime_admission_policy(&state.config),
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    let status = if response.duplicate {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    Ok((status, Json(response)).into_response())
+}
+
+async fn list_provider_runtime_admissions(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListProviderRuntimeAdmissionsResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_runtime_admissions(
+            &request_id,
+            &provider_id,
+            &runtime_admission_policy(&state.config),
+        )
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
 async fn next_runtime_verification_challenge(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -2637,6 +2693,14 @@ fn runtime_verification_policy(config: &ControlPlaneConfig) -> RuntimeVerificati
         challenge_ttl_seconds: config.proof_challenge_ttl_seconds,
         clock_skew_seconds: config.proof_challenge_clock_skew_seconds,
         verification_ttl_seconds: config.verification_period_seconds.min(604_800),
+        approved_proof_image_ref: config.runtime_proof_image_ref.clone(),
+    }
+}
+fn runtime_admission_policy(config: &ControlPlaneConfig) -> RuntimeAdmissionPolicy {
+    RuntimeAdmissionPolicy {
+        clock_skew_seconds: config.proof_challenge_clock_skew_seconds,
+        observation_max_age_seconds: config.runtime_observation_max_age_seconds,
+        approved_proof_image_ref: config.runtime_proof_image_ref.clone(),
     }
 }
 fn verification_policy(config: &ControlPlaneConfig) -> VerificationPolicy {
@@ -3382,6 +3446,11 @@ mod tests {
             verification_sweep_limit: 25,
             verification_suspect_failures: 3,
             verification_proof_profile: None,
+            runtime_proof_image_ref: Some(format!(
+                "ghcr.io/burd/runtime-proof@sha256:{}",
+                "a".repeat(64)
+            )),
+            runtime_observation_max_age_seconds: 180,
             observability_deployment_id: "test".to_string(),
             observability_recent_events_limit: 16,
             slo_availability_target_bps: 9990,

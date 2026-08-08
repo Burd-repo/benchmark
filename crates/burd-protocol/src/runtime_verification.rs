@@ -1,4 +1,7 @@
-use crate::{canonical_json, hash_canonical};
+use crate::{
+    RuntimeAdmissionFingerprintClaims, canonical_json, hash_canonical,
+    runtime_admission_fingerprint, validate_runtime_admission_fingerprint_claims,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -7,7 +10,7 @@ pub const RUNTIME_VERIFICATION_CHALLENGE_SCHEMA_VERSION: &str =
     "burd-runtime-verification-challenge-v1";
 pub const RUNTIME_VERIFICATION_RESPONSE_SCHEMA_VERSION: &str =
     "burd-runtime-verification-response-v1";
-pub const RUNTIME_VERIFICATION_RECORD_SCHEMA_VERSION: &str = "burd-runtime-verification-record-v1";
+pub const RUNTIME_VERIFICATION_RECORD_SCHEMA_VERSION: &str = "burd-runtime-verification-record-v2";
 pub const RUNTIME_VERIFICATION_CANONICALIZATION_VERSION: &str = "burd-canonical-json-v1";
 pub const RUNTIME_VERIFICATION_SIGNATURE_DOMAIN: &str = "burd.runtime-verification.v1";
 pub const RUNTIME_VERIFICATION_FINGERPRINT_VERSION: &str =
@@ -153,6 +156,12 @@ pub struct ProviderRuntimeVerificationRecord {
     pub proof_policy_version: String,
     pub agent_runtime_contract_version: String,
     pub proof_image_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_admission_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_admission_claims: Option<RuntimeAdmissionFingerprintClaims>,
     pub verified_at: String,
     pub expires_at: String,
     #[serde(default)]
@@ -375,6 +384,26 @@ pub fn validate_provider_runtime_verification_record(
 ) -> Result<(), String> {
     let verified_at = parse_time(&record.verified_at)?;
     let expires_at = parse_time(&record.expires_at)?;
+    let public_key_id = record.public_key_id.as_deref().unwrap_or_default();
+    let admission_fingerprint = record
+        .runtime_admission_fingerprint
+        .as_deref()
+        .unwrap_or_default();
+    let admission_claims_valid = record
+        .runtime_admission_claims
+        .as_ref()
+        .is_some_and(|claims| {
+            validate_runtime_admission_fingerprint_claims(claims).is_ok()
+                && claims.provider_id == record.provider_id
+                && claims.device_id == record.device_id
+                && claims.hardware_fingerprint == record.hardware_fingerprint
+                && claims.gpu_uuid == record.gpu_uuid
+                && claims.host_os == record.host_os
+                && claims.runtime_backend == record.runtime_backend
+                && claims.agent_runtime_contract_version == record.agent_runtime_contract_version
+                && runtime_admission_fingerprint(claims)
+                    .is_ok_and(|value| value == admission_fingerprint)
+        });
     if record.schema_version != RUNTIME_VERIFICATION_RECORD_SCHEMA_VERSION
         || !safe_id(&record.verification_id, 128)
         || !safe_id(&record.challenge_id, 128)
@@ -387,6 +416,9 @@ pub fn validate_provider_runtime_verification_record(
         || record.proof_policy_version != RUNTIME_PROOF_POLICY_VERSION
         || record.agent_runtime_contract_version != AGENT_RUNTIME_CONTRACT_VERSION
         || !immutable_image_ref(&record.proof_image_digest)
+        || !safe_id(public_key_id, 128)
+        || !safe_hash(admission_fingerprint)
+        || !admission_claims_valid
         || record.status != "verified"
         || record.gpu_uuid_binding != "verified"
         || !record.reason_codes.is_empty()
@@ -582,6 +614,24 @@ mod tests {
 
     #[test]
     fn verified_record_is_rejected_after_ttl() {
+        let admission_claims = RuntimeAdmissionFingerprintClaims {
+            version: crate::RUNTIME_ADMISSION_FINGERPRINT_VERSION.to_string(),
+            provider_id: "provider_1".to_string(),
+            device_id: "device_1".to_string(),
+            hardware_fingerprint: "a".repeat(64),
+            gpu_uuid: "GPU-1111".to_string(),
+            host_os: "linux".to_string(),
+            runtime_backend: "docker_linux_native".to_string(),
+            container_os: "linux".to_string(),
+            gpu_backend: "cuda".to_string(),
+            gpu_runtime: "nvidia".to_string(),
+            isolation_mode: "linux_container".to_string(),
+            docker_server_version: "28.3.0".to_string(),
+            nvidia_driver_version: "580.1".to_string(),
+            nvidia_runtime: "nvidia".to_string(),
+            agent_runtime_contract_version: AGENT_RUNTIME_CONTRACT_VERSION.to_string(),
+        };
+        let admission_fingerprint = runtime_admission_fingerprint(&admission_claims).unwrap();
         let record = ProviderRuntimeVerificationRecord {
             schema_version: RUNTIME_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),
             verification_id: "runtime_verification_1".to_string(),
@@ -599,6 +649,9 @@ mod tests {
             proof_policy_version: RUNTIME_PROOF_POLICY_VERSION.to_string(),
             agent_runtime_contract_version: AGENT_RUNTIME_CONTRACT_VERSION.to_string(),
             proof_image_digest: format!("ghcr.io/burd/runtime-proof@sha256:{}", "c".repeat(64)),
+            public_key_id: Some("key_1".to_string()),
+            runtime_admission_fingerprint: Some(admission_fingerprint),
+            runtime_admission_claims: Some(admission_claims),
             verified_at: "2026-08-08T00:00:00Z".to_string(),
             expires_at: "2026-08-08T01:00:00Z".to_string(),
             reason_codes: Vec::new(),
@@ -614,6 +667,22 @@ mod tests {
             validate_provider_runtime_verification_record(
                 &record,
                 "2026-08-08T01:00:00Z".parse().unwrap()
+            )
+            .is_err()
+        );
+
+        let mut legacy = serde_json::to_value(&record).unwrap();
+        legacy["schema_version"] = serde_json::json!("burd-runtime-verification-record-v1");
+        let legacy = legacy.as_object_mut().unwrap();
+        legacy.remove("public_key_id");
+        legacy.remove("runtime_admission_fingerprint");
+        legacy.remove("runtime_admission_claims");
+        let legacy: ProviderRuntimeVerificationRecord =
+            serde_json::from_value(serde_json::Value::Object(legacy.clone())).unwrap();
+        assert!(
+            validate_provider_runtime_verification_record(
+                &legacy,
+                "2026-08-08T00:30:00Z".parse().unwrap()
             )
             .is_err()
         );

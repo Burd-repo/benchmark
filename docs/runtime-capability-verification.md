@@ -21,8 +21,9 @@ The challenge binds all of the following:
 - nonce, issue time, expiry and verification TTL.
 
 The administrator may request a shorter TTL, but cannot exceed the Control Plane policy. The
-proof image is selected through the administrator-only issue endpoint; it never comes from a
-customer workload or from the Agent response.
+proof image is pinned by `BURD_CONTROL_RUNTIME_PROOF_IMAGE_REF`; the administrator-only issue
+endpoint must use that exact configured digest. It never comes from a customer workload or from
+the Agent response.
 
 ## Execution
 
@@ -82,8 +83,17 @@ The canonical fingerprint includes:
 - digest-pinned proof image.
 
 A later successful proof for the same provider/device/GPU supersedes the previous active record.
-Records also expire by TTL. The admission slice must compare the current observed runtime against
-this fingerprint before making the record scheduler-authoritative.
+Records also expire by TTL. Runtime admission compares a recent signed runtime observation against
+the re-observable admission fingerprint stored with the proof record. The record remains
+device/GPU/runtime-bound across a session reconnect, but key rotation, hardware/runtime drift,
+expiry, blocking or a missing current observation denies admission.
+
+After key rotation, admission recovery requires a new signed GPU inventory, a new signed runtime
+observation and a new runtime verification proof, all bound to the new active device key.
+
+The result is named `runtime_verified`. It is a functional readiness/admission proof, not hardware
+attestation: a provider controls its host OS, Agent process and local signing key. TPM/TEE-backed
+integrity remains separate future work.
 
 ## Replay and failure behavior
 
@@ -115,7 +125,7 @@ Windows -> WSL2 -> Linux Docker engine -> NVIDIA chain.
 
 This slice intentionally does not implement:
 
-- scheduler filtering or runtime-verified admission;
+- scheduler consumption of runtime admission;
 - production provider-job activation;
 - remote cancellation of active jobs;
 - customer ingress, marketplace changes, billing or metering changes;
