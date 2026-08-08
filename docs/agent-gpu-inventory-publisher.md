@@ -39,6 +39,18 @@ GPU absence is represented by omission from the next complete snapshot. Control 
 queries use only that latest complete snapshot, so an omitted historical GPU is no longer current
 supply.
 
+### Known limitation: zero-GPU snapshots
+
+The v1 contract requires a non-empty GPU list, and PostgreSQL persists one row per GPU rather than
+a separate snapshot envelope. Therefore, omission is authoritative only while at least one GPU
+remains: a transition from one GPU to zero cannot publish an empty replacement snapshot.
+
+The publisher fails closed instead of reusing or fabricating hardware. Runtime observations stop
+renewing and runtime admission becomes stale or denied, but inventory history can still show the
+last non-empty snapshot. Before scheduler activation, this must be addressed with an authoritative
+signed empty snapshot/tombstone, likely backed by a snapshot entity separate from per-GPU rows.
+Inventory alone must not be treated as runtime readiness.
+
 ## Signing and deduplication
 
 The payload binds provider, device, session, current hardware fingerprint, observation time and the
