@@ -6,6 +6,7 @@ pub mod docker_nvidia_executor;
 pub mod docker_runtime_backend;
 pub mod exit_status;
 pub mod lifecycle;
+pub mod provider_job_data_plane;
 pub mod provider_job_executor;
 pub mod provider_job_worker;
 

@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
 use std::io::{self, Read};
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -66,6 +67,8 @@ pub struct DockerContainerPlan {
     pub pids_limit: u32,
     pub shm_size_mib: u64,
     pub labels: BTreeMap<String, String>,
+    pub artifact_workspace: bool,
+    pub output_tmpfs_mib: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,6 +182,18 @@ pub trait DockerRuntimeBackend: Send + Sync + 'static {
     fn start(
         &self,
         container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError>;
+    fn copy_inputs(
+        &self,
+        container_id: &str,
+        inputs_dir: &Path,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError>;
+    fn copy_outputs(
+        &self,
+        container_id: &str,
+        outputs_dir: &Path,
         control: &DockerCommandControl,
     ) -> Result<(), DockerRuntimeError>;
     fn inspect(
@@ -295,9 +310,53 @@ impl DockerCliRuntime {
             "/tmp:rw,noexec,nosuid,nodev,size=1024m".to_string(),
             "--tmpfs".to_string(),
             "/run/burd-secrets:rw,noexec,nosuid,nodev,size=16m,mode=0700".to_string(),
-            plan.image_ref.clone(),
         ]);
+        if plan.artifact_workspace {
+            args.extend([
+                "--mount".to_string(),
+                "type=volume,destination=/burd/input,volume-nocopy".to_string(),
+                "--tmpfs".to_string(),
+                format!(
+                    "/burd/output:rw,noexec,nosuid,nodev,size={}m,mode=0700,uid=1000,gid=1000",
+                    plan.output_tmpfs_mib
+                ),
+            ]);
+        }
+        args.push(plan.image_ref.clone());
         args
+    }
+
+    fn copy_inputs(
+        &self,
+        container_id: &str,
+        inputs_dir: &Path,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        let source = inputs_dir.join(".").display().to_string();
+        self.successful_docker(
+            &["cp".into(), source, format!("{container_id}:/burd/input")],
+            "container_input_copy_failed",
+            control,
+        )?;
+        Ok(())
+    }
+
+    fn copy_outputs(
+        &self,
+        container_id: &str,
+        outputs_dir: &Path,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.successful_docker(
+            &[
+                "cp".into(),
+                format!("{container_id}:/burd/output/."),
+                outputs_dir.display().to_string(),
+            ],
+            "container_output_copy_failed",
+            control,
+        )?;
+        Ok(())
     }
 }
 
@@ -559,6 +618,7 @@ impl DockerCliRuntime {
             &[
                 "rm".into(),
                 "--force".into(),
+                "--volumes".into(),
                 container_id_or_name.to_string(),
             ],
             "container_remove_failed",
@@ -617,6 +677,24 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
         control: &DockerCommandControl,
     ) -> Result<(), DockerRuntimeError> {
         self.cli.start(container_id, control)
+    }
+
+    fn copy_inputs(
+        &self,
+        container_id: &str,
+        inputs_dir: &Path,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.copy_inputs(container_id, inputs_dir, control)
+    }
+
+    fn copy_outputs(
+        &self,
+        container_id: &str,
+        outputs_dir: &Path,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.copy_outputs(container_id, outputs_dir, control)
     }
 
     fn inspect(
@@ -732,6 +810,24 @@ impl DockerRuntimeBackend for WindowsWsl2DockerBackend {
         control: &DockerCommandControl,
     ) -> Result<(), DockerRuntimeError> {
         self.cli.start(container_id, control)
+    }
+
+    fn copy_inputs(
+        &self,
+        container_id: &str,
+        inputs_dir: &Path,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.copy_inputs(container_id, inputs_dir, control)
+    }
+
+    fn copy_outputs(
+        &self,
+        container_id: &str,
+        outputs_dir: &Path,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.copy_outputs(container_id, outputs_dir, control)
     }
 
     fn inspect(
@@ -1096,6 +1192,8 @@ mod tests {
                 ("com.burd.managed".to_string(), "true".to_string()),
                 ("com.burd.job_id".to_string(), "job_1".to_string()),
             ]),
+            artifact_workspace: false,
+            output_tmpfs_mib: 1,
         }
     }
 
@@ -1149,6 +1247,26 @@ mod tests {
         }
         assert!(!joined.contains(" run "));
         assert!(!joined.contains("--rm"));
+    }
+
+    #[test]
+    fn artifact_plan_uses_docker_managed_storage_without_host_bind_paths() {
+        let mut plan = plan();
+        plan.artifact_workspace = true;
+        plan.output_tmpfs_mib = 32;
+        let args = LinuxNativeDockerBackend::create_args(&plan);
+        let joined = args.join(" ");
+        assert!(args.windows(2).any(|pair| {
+            pair == [
+                "--mount",
+                "type=volume,destination=/burd/input,volume-nocopy",
+            ]
+        }));
+        assert!(joined.contains("/burd/output:rw,noexec,nosuid,nodev,size=32m"));
+        assert!(!joined.contains("type=bind"));
+        assert!(!joined.contains("C:\\"));
+        assert!(!joined.contains("/mnt/"));
+        assert!(!joined.contains("\\\\wsl$"));
     }
 
     #[test]

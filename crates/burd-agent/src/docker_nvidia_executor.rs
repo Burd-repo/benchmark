@@ -23,6 +23,7 @@ const GPU_LABEL: &str = "com.burd.gpu_uuid";
 const BACKEND_LABEL: &str = "com.burd.runtime_backend";
 const RUNTIME_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_OUTPUT_WORKSPACE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
 pub trait ProviderJobImagePolicy: Send + Sync + 'static {
     fn image_is_allowed(&self, template_id: &str, image_ref: &str) -> bool;
@@ -113,6 +114,7 @@ where
         .map_err(|_| execution_error("executor_contract_invalid"))?;
         cancellation.ensure_not_cancelled()?;
         validate_runtime_identifiers(&assignment)?;
+        validate_workspace_binding(&assignment)?;
         if !self.image_policy.image_is_allowed(
             &assignment.execution.template_id,
             &assignment.execution.image_ref,
@@ -140,6 +142,15 @@ where
                 return Err(error);
             }
         };
+        if let Some(workspace) = assignment.workspace.as_ref()
+            && let Err(error) = self.run_active_command(&cancellation, deadlines, |control| {
+                self.backend
+                    .copy_inputs(&container_id, &workspace.inputs_dir, control)
+            })
+        {
+            self.remove_created_container(&container_id)?;
+            return Err(error);
+        }
         if let Err(error) = self.run_active_command(&cancellation, deadlines, |control| {
             self.backend.start(&container_id, control)
         }) {
@@ -315,6 +326,15 @@ where
                 return Err(error);
             }
         };
+        if let Some(workspace) = assignment.workspace.as_ref()
+            && let Err(error) = self.run_active_command(cancellation, deadlines, |control| {
+                self.backend
+                    .copy_outputs(container_id, &workspace.outputs_dir, control)
+            })
+        {
+            self.remove_created_container(container_id)?;
+            return Err(error);
+        }
         self.remove_created_container(container_id)?;
 
         if state.oom_killed {
@@ -472,6 +492,25 @@ fn validate_runtime_identifiers(
     Ok(())
 }
 
+fn validate_workspace_binding(
+    assignment: &ProviderJobAssignment,
+) -> Result<(), ProviderJobExecutionError> {
+    let artifacts_declared =
+        !assignment.job.input_artifacts.is_empty() || !assignment.job.expected_outputs.is_empty();
+    if artifacts_declared != assignment.workspace.is_some() {
+        return Err(execution_error("artifact_workspace_mismatch"));
+    }
+    assignment
+        .job
+        .expected_outputs
+        .iter()
+        .map(|artifact| artifact.size_bytes)
+        .try_fold(0_u64, |total, size| total.checked_add(size?))
+        .filter(|total| *total <= MAX_OUTPUT_WORKSPACE_BYTES)
+        .ok_or_else(|| execution_error("artifact_output_limit_invalid"))?;
+    Ok(())
+}
+
 fn build_container_plan(
     assignment: &ProviderJobAssignment,
     runtime_backend: &str,
@@ -488,6 +527,17 @@ fn build_container_plan(
     labels.insert(SESSION_LABEL.to_string(), assignment.job.session_id.clone());
     labels.insert(GPU_LABEL.to_string(), assignment.job.gpu_uuid.clone());
     labels.insert(BACKEND_LABEL.to_string(), runtime_backend.to_string());
+    let output_bytes = assignment
+        .job
+        .expected_outputs
+        .iter()
+        .filter_map(|artifact| artifact.size_bytes)
+        .fold(0_u64, u64::saturating_add);
+    let output_tmpfs_mib = output_bytes
+        .saturating_add(1024 * 1024 - 1)
+        .checked_div(1024 * 1024)
+        .unwrap_or(1)
+        .max(1);
     DockerContainerPlan {
         name: container_name(&assignment.job.job_id, &assignment.lease.lease_id),
         image_ref: assignment.execution.image_ref.clone(),
@@ -498,6 +548,8 @@ fn build_container_plan(
         pids_limit: assignment.execution.runtime.pids_limit,
         shm_size_mib: assignment.execution.runtime.shm_size_mib,
         labels,
+        artifact_workspace: assignment.workspace.is_some(),
+        output_tmpfs_mib,
     }
 }
 
@@ -536,6 +588,7 @@ fn execution_metrics(
     logs: &DockerContainerLogs,
     runtime_duration_ms: i64,
 ) -> serde_json::Value {
+    let artifact_workload = assignment.workspace.is_some();
     json!({
         "runtime_engine": "docker",
         "runtime_backend": runtime_backend,
@@ -550,10 +603,11 @@ fn execution_metrics(
         "runtime_duration_ms": runtime_duration_ms,
         "termination_reason": "completed",
         "cleanup_status": "completed",
-        "stdout_tail": logs.stdout_tail(),
-        "stderr_tail": logs.stderr_tail(),
+        "stdout_tail": if artifact_workload { "" } else { logs.stdout_tail() },
+        "stderr_tail": if artifact_workload { "" } else { logs.stderr_tail() },
         "stdout_truncated": logs.stdout_truncated(),
         "stderr_truncated": logs.stderr_truncated(),
+        "workload_logs_redacted": artifact_workload,
     })
 }
 
@@ -581,11 +635,11 @@ mod tests {
     use super::*;
     use crate::docker_runtime_backend::{ExistingDockerContainer, MAX_DOCKER_LOG_BYTES};
     use burd_protocol::{
-        JOB_DATA_PLANE_GRANT_VERSION, JOB_LEASE_SCHEMA_VERSION, JOB_SCHEMA_VERSION,
-        JobDataPlaneGrant, JobLeaseRecord, JobRecord, PROVIDER_JOB_EXECUTION_POLICY_VERSION,
-        PROVIDER_JOB_EXECUTION_SCHEMA_VERSION, ProviderJobCancellationPolicy,
-        ProviderJobCleanupPolicy, ProviderJobExecutionSpec, ProviderJobExecutionState,
-        ProviderJobRuntimePolicy,
+        JOB_DATA_PLANE_GRANT_VERSION, JOB_LEASE_SCHEMA_VERSION, JOB_SCHEMA_VERSION, JobArtifact,
+        JobDataPlaneGrant, JobDataPlaneUrl, JobLeaseRecord, JobRecord,
+        PROVIDER_JOB_EXECUTION_POLICY_VERSION, PROVIDER_JOB_EXECUTION_SCHEMA_VERSION,
+        ProviderJobCancellationPolicy, ProviderJobCleanupPolicy, ProviderJobExecutionSpec,
+        ProviderJobExecutionState, ProviderJobRuntimePolicy,
     };
     use std::collections::VecDeque;
     use std::sync::Mutex;
@@ -702,6 +756,34 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+
+        fn copy_inputs(
+            &self,
+            _container_id: &str,
+            _inputs_dir: &std::path::Path,
+            _control: &DockerCommandControl,
+        ) -> Result<(), DockerRuntimeError> {
+            self.state
+                .lock()
+                .unwrap()
+                .operations
+                .push("copy_inputs".to_string());
+            Ok(())
+        }
+
+        fn copy_outputs(
+            &self,
+            _container_id: &str,
+            _outputs_dir: &std::path::Path,
+            _control: &DockerCommandControl,
+        ) -> Result<(), DockerRuntimeError> {
+            self.state
+                .lock()
+                .unwrap()
+                .operations
+                .push("copy_outputs".to_string());
+            Ok(())
         }
 
         fn inspect(
@@ -892,6 +974,7 @@ mod tests {
             lease,
             data_plane,
             execution,
+            workspace: None,
         }
     }
 
@@ -942,6 +1025,80 @@ mod tests {
         assert_eq!(outcome.metrics["cleanup_status"], "completed");
         assert_eq!(outcome.metrics["stdout_tail"], "completed");
         assert!(!format!("{plan:?}").contains("jobcred_must_not_reach_backend"));
+    }
+
+    #[test]
+    fn artifact_workspace_is_copied_through_docker_without_entering_the_plan() {
+        let now = Utc::now();
+        let root = std::env::temp_dir().join("burd-executor-workspace-test");
+        let mut assignment = assignment_at(now);
+        assignment.job.input_artifacts = vec![JobArtifact {
+            artifact_id: "input".to_string(),
+            role: "input".to_string(),
+            object_key: "jobs/job_1/input".to_string(),
+            sha256: Some(format!("sha256:{}", "a".repeat(64))),
+            size_bytes: Some(1),
+            content_type: Some("application/octet-stream".to_string()),
+        }];
+        assignment.job.expected_outputs = vec![JobArtifact {
+            artifact_id: "output".to_string(),
+            role: "output".to_string(),
+            object_key: "jobs/job_1/output".to_string(),
+            sha256: None,
+            size_bytes: Some(1024),
+            content_type: Some("application/octet-stream".to_string()),
+        }];
+        assignment.data_plane.download_urls = vec![JobDataPlaneUrl {
+            artifact_id: "input".to_string(),
+            method: "GET".to_string(),
+            url: "/v1/jobs/job_1/artifacts/input/download".to_string(),
+            expires_at: assignment.data_plane.credential_expires_at.clone(),
+        }];
+        assignment.data_plane.upload_urls = vec![JobDataPlaneUrl {
+            artifact_id: "output".to_string(),
+            method: "PUT".to_string(),
+            url: "/v1/jobs/job_1/results/output/upload".to_string(),
+            expires_at: assignment.data_plane.credential_expires_at.clone(),
+        }];
+        assignment.workspace = Some(
+            crate::provider_job_executor::ProviderJobExecutionWorkspace {
+                inputs_dir: root.join("inputs"),
+                outputs_dir: root.join("outputs"),
+                root,
+            },
+        );
+        let backend = FakeBackend::default();
+        backend
+            .state
+            .lock()
+            .unwrap()
+            .inspect
+            .push_back(exited_state(0, false));
+
+        let outcome = executor(backend.clone(), now, &assignment)
+            .execute(assignment, JobCancellation::default())
+            .unwrap();
+
+        assert_eq!(
+            backend.operations(),
+            [
+                "verify",
+                "existing",
+                "create",
+                "copy_inputs",
+                "start",
+                "inspect",
+                "logs",
+                "copy_outputs",
+                "remove",
+            ]
+        );
+        let plan = backend.plan();
+        assert!(plan.artifact_workspace);
+        assert_eq!(plan.output_tmpfs_mib, 1);
+        assert!(!format!("{plan:?}").contains("burd-executor-workspace-test"));
+        assert_eq!(outcome.metrics["stdout_tail"], "");
+        assert_eq!(outcome.metrics["workload_logs_redacted"], true);
     }
 
     #[test]

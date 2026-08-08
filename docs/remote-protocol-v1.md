@@ -711,12 +711,12 @@ Backend-authoritative execution binding now implemented:
 - `burd-provider-job-execution-v2` binds provider, device, session, GPU UUID, job, lease, workload policy, timeout, and expiries;
 - `burd-provider-job-runtime-policy-v2` requires a Linux container with Docker,
   CUDA, and NVIDIA without requiring a Linux physical host;
-- the assignment includes a separate job-specific data-plane credential; byte transfer and signed object-storage URLs are not implemented;
+- the assignment includes a separate job-specific data-plane credential that authorizes scoped Control Plane byte transfer and never enters the workload container; external signed object-storage URLs are not implemented;
 - the runtime policy rejects arbitrary command and entrypoint overrides;
 - provider-generated runtime plans remain local evidence and are not final authority;
 - the Control Plane returns only a complete, validated `job`/`lease`/`data_plane`/`execution` bundle.
 
-BN-12 by itself does not create jobs, leases, scheduler assignment, data-plane artifact transfer, result upload, metering, billing, Pix, payouts, or marketplace listings. BN-13 adds the first `/v1/jobs` control-plane API and metadata-only data-plane grants.
+BN-12 by itself does not create jobs, leases, scheduler assignment, data-plane artifact transfer, result upload, metering, billing, Pix, payouts, or marketplace listings. BN-13 adds the first `/v1/jobs` control-plane API and provider artifact data plane.
 
 ## Job API And Data Plane
 
@@ -759,7 +759,12 @@ Device-session endpoint. It atomically consumes the oldest non-expired `offered`
 - `lease`, the scheduler lease record;
 - `execution`, the backend-authored runtime binding and restrictive execution policy.
 
-The grant contains an opaque credential, server expiry, and scoped artifact paths. URLs do not embed the raw credential. BN-13 does not transfer artifact bytes yet.
+The grant contains an opaque credential, server expiry, and scoped artifact paths. URLs do not embed the raw credential. The Agent uses the credential only in authorization headers, rejects redirects, verifies declared size and SHA-256 while streaming, and never passes the credential to the workload container.
+
+`GET /v1/jobs/{job_id}/artifacts/{artifact_id}/download` streams a declared
+input. `PUT /v1/jobs/{job_id}/results/{artifact_id}/upload` accepts a declared
+output with exact length and SHA-256, writes it atomically, and records the
+verified receipt. Successful terminal results must match every verified upload.
 
 ### `POST /v1/sessions/{session_id}/jobs/{job_id}/accept`
 
@@ -781,7 +786,7 @@ Device-session endpoint. Accepts final `succeeded` or `failed` result metadata, 
 - `GET /v1/providers/{provider_id}/leases` lists provider lease history with a bounded limit.
 - `POST /v1/jobs/{job_id}/cancel` moves a non-terminal job to `cancelled` and closes any active lease.
 
-BN-16 adds backend-owned marketplace listing snapshots. The job/data-plane layer still does not implement provider-side execution, object storage signing, byte upload/download enforcement, customer reservations, billing, Pix, payouts, multi-GPU jobs, or multi-provider jobs.
+BN-16 adds backend-owned marketplace listing snapshots. The disconnected provider executor and byte-level artifact plane now exist, but customer artifact ingress, external object-storage signing/adapters, controlled production activation, customer reservations, billing, Pix, payouts, multi-GPU jobs, and multi-provider jobs remain unimplemented.
 
 ## Scheduler And Leases
 

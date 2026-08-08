@@ -111,10 +111,11 @@ pub use identity::{
 };
 pub use job::{
     AcceptJobRequest, CancelJobRequest, CreateJobRequest, CreateJobResponse,
-    JOB_DATA_PLANE_GRANT_VERSION, JOB_EVENT_SCHEMA_VERSION, JOB_RESULT_SCHEMA_VERSION,
-    JOB_SCHEMA_VERSION, JobArtifact, JobDataPlaneGrant, JobDataPlaneUrl, JobEventRecord,
-    JobEventRequest, JobEventResponse, JobRecord, JobResponse, ListJobsResponse, NextJobResponse,
-    SubmitJobResultRequest, SubmitJobResultResponse,
+    JOB_ARTIFACT_UPLOAD_VERSION, JOB_DATA_PLANE_GRANT_VERSION, JOB_EVENT_SCHEMA_VERSION,
+    JOB_RESULT_SCHEMA_VERSION, JOB_SCHEMA_VERSION, JobArtifact, JobArtifactUploadResponse,
+    JobDataPlaneGrant, JobDataPlaneUrl, JobEventRecord, JobEventRequest, JobEventResponse,
+    JobRecord, JobResponse, ListJobsResponse, NextJobResponse, SubmitJobResultRequest,
+    SubmitJobResultResponse,
 };
 pub use job_execution::{
     PROVIDER_JOB_APPROVED_TEMPLATES, PROVIDER_JOB_EXECUTION_POLICY_VERSION,
@@ -127,7 +128,10 @@ pub use lease::{
     JOB_LEASE_SCHEMA_VERSION, JobLeaseRecord, ListJobLeasesResponse, RunSchedulerRequest,
     RunSchedulerResponse, SchedulerDecisionRecord,
 };
-pub use local_state::{write_bytes_atomic, write_json_atomic};
+pub use local_state::{
+    create_private_directory_all, create_private_file_new, restrict_private_file,
+    write_bytes_atomic, write_json_atomic,
+};
 pub use marketplace::{
     ListMarketplaceListingsResponse, MARKETPLACE_ENGINE_VERSION,
     MARKETPLACE_LISTING_SCHEMA_VERSION, MarketplaceListingRecord,
@@ -172,9 +176,9 @@ pub use session::{
     session_status_from_session,
 };
 pub use signature::{
-    KEY_ALGORITHM, KeyMaterial, canonical_json, canonical_json_value, generate_keypair,
-    hash_canonical, placeholder_signature, random_token, sha256_hex, sign_message,
-    validate_public_key, verify_message,
+    KEY_ALGORITHM, KeyMaterial, Sha256Accumulator, canonical_json, canonical_json_value,
+    generate_keypair, hash_canonical, placeholder_signature, random_token, sha256_hex,
+    sign_message, validate_public_key, verify_message,
 };
 pub use telemetry::{
     GpuProcessTelemetry, GpuTelemetrySample, LatestTelemetryResponse, SignedTelemetryBatch,

@@ -7,6 +7,7 @@ use crate::customer::{
 use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};
 use crate::enrollment::EnrollmentError;
 use crate::error::{ApiError, ErrorCode};
+use crate::job_artifact::JobArtifactDirection;
 use crate::job_control::{CreateJobCommand, CreateJobOutcome};
 use crate::observability::{
     ObservabilitySettings, ObservabilityState, ObservedHttpRequest, normalize_http_path,
@@ -21,12 +22,13 @@ use crate::remote_session::{
 use crate::security_hardening::SecurityPolicy;
 use crate::telemetry::TelemetryPolicy;
 use crate::verification_policy::{RecurringProofProfile, VerificationPolicy};
+use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use burd_protocol::{
     AcceptJobRequest, CancelJobRequest, CancelReservationRequest, ClientControlMessage,
@@ -34,17 +36,22 @@ use burd_protocol::{
     CreateJobRequest, CreateOrganizationRequest, CreatePixPaymentIntentRequest,
     CreateProjectRequest, CreateProviderPayoutRequest, CreateReservationRequest,
     EnrollmentProofRequest, GrantCustomerCreditsRequest, IssueProofChallengeRequest,
-    JobEventRequest, KeyRotationProofRequest, RevokeEvidenceRequest,
-    RunMarketplaceListingSweepRequest, RunSchedulerRequest, RunTrustSweepRequest,
-    RunVerificationSweepRequest, RunWorkloadEligibilityRequest, ServerControlMessage,
-    SettleReservationBillingRequest, SignedBenchmarkResult, SignedDeviceGpuInventory,
+    JOB_ARTIFACT_UPLOAD_VERSION, JobArtifactUploadResponse, JobEventRequest,
+    KeyRotationProofRequest, RevokeEvidenceRequest, RunMarketplaceListingSweepRequest,
+    RunSchedulerRequest, RunTrustSweepRequest, RunVerificationSweepRequest,
+    RunWorkloadEligibilityRequest, ServerControlMessage, SettleReservationBillingRequest,
+    Sha256Accumulator, SignedBenchmarkResult, SignedDeviceGpuInventory,
     SignedProofCapabilityResponse, SignedSecurityPosture, StartEnrollmentRequest,
     StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
     SubmitJobResultRequest, SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
     UpsertMarketplacePriceRequest, UpsertProjectQuotaRequest, UpsertProviderPayoutAccountRequest,
-    UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
+    UpsertWorkloadPolicyRequest, create_private_file_new, hash_canonical, sha256_hex,
 };
+use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Component, Path as FilePath, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
@@ -392,6 +399,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/jobs/{job_id}", get(get_job))
         .route("/v1/jobs/{job_id}/cancel", post(cancel_job))
         .route("/v1/jobs/{job_id}/usage-ledger", get(list_job_usage_ledger))
+        .route(
+            "/v1/jobs/{job_id}/artifacts/{artifact_id}/download",
+            get(download_job_artifact),
+        )
+        .route(
+            "/v1/jobs/{job_id}/results/{artifact_id}/upload",
+            put(upload_job_artifact),
+        )
         .route(
             "/v1/jobs/{job_id}/usage-ledger/finalize",
             post(finalize_job_usage),
@@ -1824,6 +1839,426 @@ async fn list_provider_usage_ledger(
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
 }
+
+async fn download_job_artifact(
+    State(state): State<Arc<AppState>>,
+    Path((job_id, artifact_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let credential = required_bearer_token(&headers, &request_id)?;
+    let authorized = state
+        .db
+        .authorize_job_artifact(
+            &job_id,
+            &artifact_id,
+            &credential,
+            JobArtifactDirection::Download,
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    let expected_size = authorized.artifact.size_bytes.ok_or_else(|| {
+        ApiError::invalid_request("input artifact size_bytes is required", request_id.clone())
+    })?;
+    let expected_digest = authorized.artifact.sha256.as_deref().ok_or_else(|| {
+        ApiError::invalid_request("input artifact sha256 is required", request_id.clone())
+    })?;
+    let path = existing_object_path(
+        &state.config.object_storage_dir,
+        &authorized.artifact.object_key,
+    )
+    .map_err(|_| artifact_storage_error(&request_id))?;
+    let metadata = fs::metadata(&path).map_err(|_| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            ErrorCode::NotFound,
+            "input artifact object was not found",
+            request_id.clone(),
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() != expected_size {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            ErrorCode::Conflict,
+            "input artifact object does not match its manifest",
+            request_id,
+        ));
+    }
+    let file = File::open(path).map_err(|_| artifact_storage_error(&request_id))?;
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    std::thread::spawn(move || stream_file_chunks(file, sender));
+    let body_stream = stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|item| (item, receiver))
+    });
+    let content_type = authorized
+        .artifact
+        .content_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_LENGTH, expected_size.to_string())
+        .header(header::CONTENT_TYPE, content_type)
+        .header("x-burd-content-sha256", expected_digest)
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::PRAGMA, "no-cache")
+        .header("x-content-type-options", "nosniff")
+        .body(Body::from_stream(body_stream))
+        .map_err(|_| artifact_storage_error(&request_id))
+}
+
+async fn upload_job_artifact(
+    State(state): State<Arc<AppState>>,
+    Path((job_id, artifact_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let credential = required_bearer_token(&headers, &request_id)?;
+    let authorized = state
+        .db
+        .authorize_job_artifact(
+            &job_id,
+            &artifact_id,
+            &credential,
+            JobArtifactDirection::Upload,
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    let maximum_size = authorized.artifact.size_bytes.ok_or_else(|| {
+        ApiError::invalid_request(
+            "expected output size_bytes limit is required",
+            request_id.clone(),
+        )
+    })?;
+    let content_length = required_content_length(&headers, maximum_size, &request_id)?;
+    let declared_digest = required_artifact_digest(&headers, &request_id)?;
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    if authorized
+        .artifact
+        .content_type
+        .as_deref()
+        .is_some_and(|expected| expected != content_type)
+    {
+        return Err(ApiError::invalid_request(
+            "artifact Content-Type does not match its manifest",
+            request_id,
+        ));
+    }
+
+    let destination = writable_object_path(
+        &state.config.object_storage_dir,
+        &authorized.artifact.object_key,
+    )
+    .map_err(|_| artifact_storage_error(&request_id))?;
+    let temporary =
+        destination.with_file_name(format!(".burd-upload-{}.tmp", Uuid::new_v4().simple()));
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(4);
+    let writer_digest = declared_digest.clone();
+    let writer = tokio::task::spawn_blocking(move || {
+        write_upload_stream(
+            &temporary,
+            receiver,
+            content_length,
+            maximum_size,
+            &writer_digest,
+        )
+    });
+    let mut stream = body.into_data_stream();
+    let mut received = 0_u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| {
+            ApiError::invalid_request("artifact upload body is invalid", request_id.clone())
+        })?;
+        received = received
+            .checked_add(chunk.len() as u64)
+            .filter(|size| *size <= content_length && *size <= maximum_size)
+            .ok_or_else(|| {
+                ApiError::invalid_request(
+                    "artifact upload exceeds its declared size",
+                    request_id.clone(),
+                )
+            })?;
+        sender
+            .send(chunk)
+            .await
+            .map_err(|_| artifact_storage_error(&request_id))?;
+    }
+    drop(sender);
+    if received != content_length {
+        return Err(ApiError::invalid_request(
+            "artifact upload size does not match Content-Length",
+            request_id,
+        ));
+    }
+    let written = writer
+        .await
+        .map_err(|_| artifact_storage_error(&request_id))?
+        .map_err(|_| artifact_storage_error(&request_id))?;
+    finalize_uploaded_object(
+        &written.temporary,
+        &destination,
+        &written.sha256,
+        written.size_bytes,
+    )
+    .map_err(|_| artifact_storage_error(&request_id))?;
+    let artifact = state
+        .db
+        .record_job_artifact_upload(
+            &job_id,
+            &artifact_id,
+            &credential,
+            &written.sha256,
+            written.size_bytes,
+            Some(&content_type),
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok(sensitive_json_response(
+        StatusCode::OK,
+        JobArtifactUploadResponse {
+            schema_version: JOB_ARTIFACT_UPLOAD_VERSION.to_string(),
+            request_id,
+            job_id,
+            artifact,
+        },
+    ))
+}
+
+struct WrittenUpload {
+    temporary: PathBuf,
+    sha256: String,
+    size_bytes: u64,
+}
+
+fn write_upload_stream(
+    temporary: &FilePath,
+    mut receiver: tokio::sync::mpsc::Receiver<Bytes>,
+    content_length: u64,
+    maximum_size: u64,
+    declared_digest: &str,
+) -> Result<WrittenUpload, String> {
+    let mut file = create_private_file_new(temporary)?;
+    let mut digest = Sha256Accumulator::new();
+    let mut written = 0_u64;
+    let result = (|| {
+        while let Some(chunk) = receiver.blocking_recv() {
+            written = written
+                .checked_add(chunk.len() as u64)
+                .filter(|size| *size <= content_length && *size <= maximum_size)
+                .ok_or_else(|| "artifact upload exceeds its declared size".to_string())?;
+            digest.update(&chunk);
+            file.write_all(&chunk)
+                .map_err(|error| format!("artifact upload write failed: {error}"))?;
+        }
+        if written != content_length {
+            return Err("artifact upload size mismatch".to_string());
+        }
+        let sha256 = format!("sha256:{}", digest.finish_hex());
+        if sha256 != declared_digest {
+            return Err("artifact upload digest mismatch".to_string());
+        }
+        file.sync_all()
+            .map_err(|error| format!("artifact upload sync failed: {error}"))?;
+        Ok(WrittenUpload {
+            temporary: temporary.to_path_buf(),
+            sha256,
+            size_bytes: written,
+        })
+    })();
+    if result.is_err() {
+        drop(file);
+        let _ = fs::remove_file(temporary);
+    }
+    result
+}
+
+fn stream_file_chunks(
+    mut file: File,
+    sender: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+) {
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                if sender
+                    .blocking_send(Ok(Bytes::copy_from_slice(&buffer[..read])))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(error) => {
+                let _ = sender.blocking_send(Err(error));
+                break;
+            }
+        }
+    }
+}
+
+fn required_content_length(
+    headers: &HeaderMap,
+    maximum: u64,
+    request_id: &str,
+) -> Result<u64, ApiError> {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|size| *size <= maximum)
+        .ok_or_else(|| {
+            ApiError::invalid_request(
+                "valid Content-Length within the artifact limit is required",
+                request_id.to_string(),
+            )
+        })
+}
+
+fn required_artifact_digest(headers: &HeaderMap, request_id: &str) -> Result<String, ApiError> {
+    let value = headers
+        .get("x-burd-content-sha256")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let valid = value.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    });
+    if valid {
+        Ok(value.to_ascii_lowercase())
+    } else {
+        Err(ApiError::invalid_request(
+            "X-Burd-Content-Sha256 must use sha256:<64 hex>",
+            request_id.to_string(),
+        ))
+    }
+}
+
+fn existing_object_path(root: &str, object_key: &str) -> Result<PathBuf, String> {
+    let root = FilePath::new(root)
+        .canonicalize()
+        .map_err(|error| format!("object storage root is unavailable: {error}"))?;
+    let candidate = object_path(&root, object_key)?
+        .canonicalize()
+        .map_err(|error| format!("artifact object is unavailable: {error}"))?;
+    if !candidate.starts_with(&root) {
+        return Err("artifact object escapes object storage".to_string());
+    }
+    Ok(candidate)
+}
+
+fn writable_object_path(root: &str, object_key: &str) -> Result<PathBuf, String> {
+    fs::create_dir_all(root).map_err(|error| format!("object storage root failed: {error}"))?;
+    let root = FilePath::new(root)
+        .canonicalize()
+        .map_err(|error| format!("object storage root is unavailable: {error}"))?;
+    let candidate = object_path(&root, object_key)?;
+    let relative = FilePath::new(object_key);
+    let parent_components = relative
+        .parent()
+        .ok_or_else(|| "artifact object has no parent".to_string())?
+        .components();
+    let mut current = root.clone();
+    for component in parent_components {
+        let Component::Normal(component) = component else {
+            return Err("artifact object key is unsafe".to_string());
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err("artifact object directory is unsafe".to_string());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&current)
+                    .map_err(|error| format!("artifact object directory failed: {error}"))?;
+            }
+            Err(error) => {
+                return Err(format!("artifact object directory failed: {error}"));
+            }
+        }
+        let canonical = current
+            .canonicalize()
+            .map_err(|error| format!("artifact object directory failed: {error}"))?;
+        if !canonical.starts_with(&root) {
+            return Err("artifact object escapes object storage".to_string());
+        }
+    }
+    if fs::symlink_metadata(&candidate).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err("artifact object path is a symbolic link".to_string());
+    }
+    Ok(candidate)
+}
+
+fn object_path(root: &FilePath, object_key: &str) -> Result<PathBuf, String> {
+    let relative = FilePath::new(object_key);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("artifact object key is unsafe".to_string());
+    }
+    Ok(root.join(relative))
+}
+
+fn finalize_uploaded_object(
+    temporary: &FilePath,
+    destination: &FilePath,
+    sha256: &str,
+    size_bytes: u64,
+) -> Result<(), String> {
+    if destination.exists() {
+        let metadata = fs::symlink_metadata(destination)
+            .map_err(|error| format!("existing artifact inspection failed: {error}"))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() != size_bytes
+        {
+            let _ = fs::remove_file(temporary);
+            return Err("existing artifact conflicts with upload".to_string());
+        }
+        let existing_sha256 = hash_file(destination)?;
+        if existing_sha256 != sha256 {
+            let _ = fs::remove_file(temporary);
+            return Err("existing artifact conflicts with upload".to_string());
+        }
+        fs::remove_file(temporary)
+            .map_err(|error| format!("duplicate upload cleanup failed: {error}"))?;
+        return Ok(());
+    }
+    fs::rename(temporary, destination)
+        .map_err(|error| format!("artifact upload finalize failed: {error}"))
+}
+
+fn hash_file(path: &FilePath) -> Result<String, String> {
+    let mut file =
+        File::open(path).map_err(|error| format!("artifact hash open failed: {error}"))?;
+    let mut digest = Sha256Accumulator::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("artifact hash read failed: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("sha256:{}", digest.finish_hex()))
+}
+
+fn artifact_storage_error(request_id: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        ErrorCode::Internal,
+        "artifact storage operation failed",
+        request_id.to_string(),
+    )
+}
+
 async fn next_job(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
@@ -4980,5 +5415,47 @@ mod tests {
         assert!(authorize_admin(&headers, &config, "req_test").is_ok());
         headers.insert("authorization", "Bearer wrong".parse().unwrap());
         assert!(authorize_admin(&headers, &config, "req_test").is_err());
+    }
+
+    #[test]
+    fn artifact_object_paths_reject_escape_components() {
+        let root = std::env::temp_dir().join(format!(
+            "burd-artifact-path-test-{}",
+            Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        assert!(object_path(&root, "jobs/job_1/input.bin").is_ok());
+        assert!(object_path(&root, "../outside.bin").is_err());
+        assert!(object_path(&root, "/absolute.bin").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn upload_writer_streams_exact_size_and_digest() {
+        let root = std::env::temp_dir().join(format!(
+            "burd-artifact-upload-test-{}",
+            Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let temporary = root.join("upload.tmp");
+        let payload = Bytes::from_static(b"artifact-bytes");
+        let digest = format!("sha256:{}", sha256_hex(&payload));
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        sender.try_send(payload.clone()).unwrap();
+        drop(sender);
+
+        let written = write_upload_stream(
+            &temporary,
+            receiver,
+            payload.len() as u64,
+            payload.len() as u64,
+            &digest,
+        )
+        .unwrap();
+
+        assert_eq!(written.sha256, digest);
+        assert_eq!(written.size_bytes, payload.len() as u64);
+        assert_eq!(fs::read(&temporary).unwrap(), payload);
+        fs::remove_dir_all(root).unwrap();
     }
 }

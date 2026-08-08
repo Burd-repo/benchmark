@@ -2,6 +2,7 @@ use burd_protocol::{
     JobArtifact, JobDataPlaneGrant, JobLeaseRecord, JobRecord, ProviderJobExecutionSpec,
 };
 use std::fmt::{self, Display, Formatter};
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -17,6 +18,19 @@ pub struct ProviderJobAssignment {
     pub lease: JobLeaseRecord,
     pub data_plane: JobDataPlaneGrant,
     pub execution: ProviderJobExecutionSpec,
+    /// Burd-owned staging area. It contains artifact bytes only and never credentials.
+    pub workspace: Option<ProviderJobExecutionWorkspace>,
+}
+
+/// Host-side staging paths created by the Agent, never by a workload request.
+///
+/// This type intentionally does not implement `Debug` so local host paths do not
+/// accidentally enter logs or audit metadata.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProviderJobExecutionWorkspace {
+    pub root: PathBuf,
+    pub inputs_dir: PathBuf,
+    pub outputs_dir: PathBuf,
 }
 
 #[derive(Clone, Default)]

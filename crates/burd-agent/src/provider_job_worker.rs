@@ -1,3 +1,4 @@
+use crate::provider_job_data_plane::{NoArtifactProviderJobDataPlane, ProviderJobDataPlane};
 use crate::provider_job_executor::{
     JobCancellation, ProviderJobAssignment, ProviderJobExecutionError, ProviderJobExecutionOutcome,
     ProviderJobExecutor,
@@ -362,6 +363,23 @@ pub async fn run_worker(
 pub async fn run_worker_with_config(
     control_plane: Arc<dyn ProviderJobControlPlane>,
     executor: Arc<dyn ProviderJobExecutor>,
+    shutdown: watch::Receiver<bool>,
+    config: ProviderJobWorkerConfig,
+) -> Result<(), String> {
+    run_worker_with_data_plane_and_config(
+        control_plane,
+        executor,
+        Arc::new(NoArtifactProviderJobDataPlane),
+        shutdown,
+        config,
+    )
+    .await
+}
+
+pub async fn run_worker_with_data_plane_and_config(
+    control_plane: Arc<dyn ProviderJobControlPlane>,
+    executor: Arc<dyn ProviderJobExecutor>,
+    data_plane: Arc<dyn ProviderJobDataPlane>,
     mut shutdown: watch::Receiver<bool>,
     config: ProviderJobWorkerConfig,
 ) -> Result<(), String> {
@@ -424,6 +442,7 @@ pub async fn run_worker_with_config(
         let disposition = run_assignment(
             Arc::clone(&control_plane),
             Arc::clone(&executor),
+            Arc::clone(&data_plane),
             poll.context,
             assignment,
             &mut shutdown,
@@ -485,6 +504,7 @@ fn validated_assignment(
         lease,
         data_plane,
         execution,
+        workspace: None,
     })
 }
 
@@ -497,8 +517,9 @@ enum AssignmentDisposition {
 async fn run_assignment(
     control_plane: Arc<dyn ProviderJobControlPlane>,
     executor: Arc<dyn ProviderJobExecutor>,
+    data_plane: Arc<dyn ProviderJobDataPlane>,
     context: ProviderJobWorkerContext,
-    assignment: ProviderJobAssignment,
+    mut assignment: ProviderJobAssignment,
     shutdown: &mut watch::Receiver<bool>,
     shutdown_grace: Duration,
 ) -> Result<AssignmentDisposition, String> {
@@ -552,205 +573,340 @@ async fn run_assignment(
         Ok(_) => {}
     }
 
-    for (sequence, event_type) in [(1, "provisioning"), (2, "running")] {
-        let Some(result) = report_event(
+    let Some(provisioning) = report_bound_event(
+        Arc::clone(&control_plane),
+        &context,
+        &job_id,
+        JobEventTransition {
+            sequence: 1,
+            event_type: "provisioning",
+            expected_status: "provisioning",
+        },
+        shutdown,
+        shutdown_grace,
+    )
+    .await?
+    else {
+        return Ok(AssignmentDisposition::Shutdown);
+    };
+    if let Err(error) = provisioning {
+        return submit_failed_best_effort(
             Arc::clone(&control_plane),
             &context,
             &job_id,
-            sequence,
-            event_type,
+            error,
             shutdown,
             shutdown_grace,
         )
-        .await?
-        else {
-            return Ok(AssignmentDisposition::Shutdown);
-        };
-        let response = match result {
-            Ok(response) => response,
-            Err(error) => {
-                log_worker_event(
-                    "provider_job_event_failed",
-                    Some(&job_id),
-                    Some(&assignment.lease.lease_id),
-                    error.kind(),
-                );
-                return submit_failed_best_effort(
-                    Arc::clone(&control_plane),
-                    &context,
-                    &job_id,
-                    ProviderJobExecutionError::new(
-                        "state_reporting_failed",
-                        "provider job state reporting failed",
-                    ),
-                    shutdown,
-                    shutdown_grace,
-                )
-                .await;
-            }
-        };
-        let expected_status = if event_type == "provisioning" {
-            "provisioning"
-        } else {
-            "running"
-        };
-        if !event_response_is_bound(
-            &response,
-            &context,
-            &job_id,
-            sequence,
-            event_type,
-            expected_status,
-        ) {
+        .await;
+    }
+
+    let cancellation = JobCancellation::default();
+    let prepared = run_provider_stage(
+        {
+            let data_plane = Arc::clone(&data_plane);
+            let assignment = assignment.clone();
+            let cancellation = cancellation.clone();
+            move || data_plane.prepare_workspace(&assignment, &cancellation)
+        },
+        &cancellation,
+        deadline,
+        shutdown,
+        shutdown_grace,
+    )
+    .await?;
+    match prepared {
+        ProviderStage::Shutdown => return Ok(AssignmentDisposition::Shutdown),
+        ProviderStage::Deadline => {
             return submit_failed_best_effort(
                 Arc::clone(&control_plane),
                 &context,
                 &job_id,
                 ProviderJobExecutionError::new(
-                    "state_reporting_failed",
-                    "provider job state response violated its contract",
+                    "execution_deadline_exceeded",
+                    "provider job data-plane preparation exceeded its authoritative deadline",
                 ),
                 shutdown,
                 shutdown_grace,
             )
             .await;
         }
-    }
-
-    let remaining = (deadline - Utc::now()).to_std().unwrap_or(Duration::ZERO);
-    if remaining.is_zero() {
-        return submit_failed_best_effort(
-            Arc::clone(&control_plane),
-            &context,
-            &job_id,
-            ProviderJobExecutionError::new(
-                "execution_deadline_exceeded",
-                "provider job assignment expired before executor start",
-            ),
-            shutdown,
-            shutdown_grace,
-        )
-        .await;
-    }
-    let cancellation = JobCancellation::default();
-    let executor_cancellation = cancellation.clone();
-    let mut execution_task =
-        tokio::task::spawn_blocking(move || executor.execute(assignment, executor_cancellation));
-    let execution = tokio::select! {
-        biased;
-        _ = wait_for_shutdown(shutdown) => {
-            cancellation.cancel();
-            finish_cancelled_execution(&mut execution_task, shutdown_grace).await;
-            return Ok(AssignmentDisposition::Shutdown);
-        }
-        _ = tokio::time::sleep(remaining) => {
-            cancellation.cancel();
-            finish_cancelled_execution(&mut execution_task, shutdown_grace).await;
-            Err(ProviderJobExecutionError::new(
-                "execution_deadline_exceeded",
-                "provider job execution exceeded its authoritative deadline",
-            ))
-        }
-        result = &mut execution_task => {
-            match result {
-                Ok(result) => result,
-                Err(_) => Err(ProviderJobExecutionError::new(
-                    "executor_task_failed",
-                    "provider job executor task failed",
-                )),
-            }
-        }
-    };
-
-    match execution {
-        Ok(outcome) => {
-            if !outcome.metrics.is_object() {
-                return submit_failed_best_effort(
-                    Arc::clone(&control_plane),
-                    &context,
-                    &job_id,
-                    ProviderJobExecutionError::new(
-                        "executor_contract_invalid",
-                        "provider job executor metrics must be a JSON object",
-                    ),
-                    shutdown,
-                    shutdown_grace,
-                )
-                .await;
-            }
-            let Some(uploading) = report_event(
+        ProviderStage::Completed(Err(error)) => {
+            return submit_failed_best_effort(
                 Arc::clone(&control_plane),
-                &context,
-                &job_id,
-                3,
-                "uploading",
-                shutdown,
-                shutdown_grace,
-            )
-            .await?
-            else {
-                return Ok(AssignmentDisposition::Shutdown);
-            };
-            let uploading = match uploading {
-                Ok(response) => response,
-                Err(error) => {
-                    log_worker_event(
-                        "provider_job_event_failed",
-                        Some(&job_id),
-                        None,
-                        error.kind(),
-                    );
-                    return submit_failed_best_effort(
-                        Arc::clone(&control_plane),
-                        &context,
-                        &job_id,
-                        ProviderJobExecutionError::new(
-                            "state_reporting_failed",
-                            "provider job uploading state reporting failed",
-                        ),
-                        shutdown,
-                        shutdown_grace,
-                    )
-                    .await;
-                }
-            };
-            if !event_response_is_bound(&uploading, &context, &job_id, 3, "uploading", "uploading")
-            {
-                return submit_failed_best_effort(
-                    Arc::clone(&control_plane),
-                    &context,
-                    &job_id,
-                    ProviderJobExecutionError::new(
-                        "state_reporting_failed",
-                        "provider job uploading response violated its contract",
-                    ),
-                    shutdown,
-                    shutdown_grace,
-                )
-                .await;
-            }
-            submit_outcome(
-                control_plane,
-                &context,
-                &job_id,
-                outcome,
-                shutdown,
-                shutdown_grace,
-            )
-            .await
-        }
-        Err(error) => {
-            submit_failed_best_effort(
-                control_plane,
                 &context,
                 &job_id,
                 error,
                 shutdown,
                 shutdown_grace,
             )
-            .await
+            .await;
         }
+        ProviderStage::Completed(Ok(workspace)) => assignment.workspace = workspace,
     }
+
+    let Some(running) = report_bound_event(
+        Arc::clone(&control_plane),
+        &context,
+        &job_id,
+        JobEventTransition {
+            sequence: 2,
+            event_type: "running",
+            expected_status: "running",
+        },
+        shutdown,
+        shutdown_grace,
+    )
+    .await?
+    else {
+        let _ = cleanup_assignment_workspace(&*data_plane, &assignment);
+        return Ok(AssignmentDisposition::Shutdown);
+    };
+    if let Err(error) = running {
+        let error = cleanup_or_replace(&*data_plane, &assignment, error);
+        return submit_failed_best_effort(
+            Arc::clone(&control_plane),
+            &context,
+            &job_id,
+            error,
+            shutdown,
+            shutdown_grace,
+        )
+        .await;
+    }
+
+    let execution = run_provider_stage(
+        {
+            let executor = Arc::clone(&executor);
+            let assignment = assignment.clone();
+            let cancellation = cancellation.clone();
+            move || executor.execute(assignment, cancellation)
+        },
+        &cancellation,
+        deadline,
+        shutdown,
+        shutdown_grace,
+    )
+    .await?;
+
+    let mut outcome = match execution {
+        ProviderStage::Shutdown => {
+            let _ = cleanup_assignment_workspace(&*data_plane, &assignment);
+            return Ok(AssignmentDisposition::Shutdown);
+        }
+        ProviderStage::Deadline => {
+            let error = cleanup_or_replace(
+                &*data_plane,
+                &assignment,
+                ProviderJobExecutionError::new(
+                    "execution_deadline_exceeded",
+                    "provider job execution exceeded its authoritative deadline",
+                ),
+            );
+            return submit_failed_best_effort(
+                Arc::clone(&control_plane),
+                &context,
+                &job_id,
+                error,
+                shutdown,
+                shutdown_grace,
+            )
+            .await;
+        }
+        ProviderStage::Completed(Err(error)) => {
+            let error = cleanup_or_replace(&*data_plane, &assignment, error);
+            return submit_failed_best_effort(
+                Arc::clone(&control_plane),
+                &context,
+                &job_id,
+                error,
+                shutdown,
+                shutdown_grace,
+            )
+            .await;
+        }
+        ProviderStage::Completed(Ok(outcome)) => outcome,
+    };
+
+    if !outcome.metrics.is_object() || !outcome.result_artifacts.is_empty() {
+        let error = cleanup_or_replace(
+            &*data_plane,
+            &assignment,
+            ProviderJobExecutionError::new(
+                "executor_contract_invalid",
+                "provider job executor returned invalid metrics or artifact metadata",
+            ),
+        );
+        return submit_failed_best_effort(
+            Arc::clone(&control_plane),
+            &context,
+            &job_id,
+            error,
+            shutdown,
+            shutdown_grace,
+        )
+        .await;
+    }
+
+    let Some(uploading) = report_bound_event(
+        Arc::clone(&control_plane),
+        &context,
+        &job_id,
+        JobEventTransition {
+            sequence: 3,
+            event_type: "uploading",
+            expected_status: "uploading",
+        },
+        shutdown,
+        shutdown_grace,
+    )
+    .await?
+    else {
+        let _ = cleanup_assignment_workspace(&*data_plane, &assignment);
+        return Ok(AssignmentDisposition::Shutdown);
+    };
+    if let Err(error) = uploading {
+        let error = cleanup_or_replace(&*data_plane, &assignment, error);
+        return submit_failed_best_effort(
+            Arc::clone(&control_plane),
+            &context,
+            &job_id,
+            error,
+            shutdown,
+            shutdown_grace,
+        )
+        .await;
+    }
+
+    let uploaded = run_provider_stage(
+        {
+            let data_plane = Arc::clone(&data_plane);
+            let assignment = assignment.clone();
+            let cancellation = cancellation.clone();
+            move || data_plane.upload_outputs(&assignment, &cancellation)
+        },
+        &cancellation,
+        deadline,
+        shutdown,
+        shutdown_grace,
+    )
+    .await?;
+    let artifacts = match uploaded {
+        ProviderStage::Shutdown => {
+            let _ = cleanup_assignment_workspace(&*data_plane, &assignment);
+            return Ok(AssignmentDisposition::Shutdown);
+        }
+        ProviderStage::Deadline => {
+            let error = ProviderJobExecutionError::new(
+                "execution_deadline_exceeded",
+                "provider job artifact upload exceeded its authoritative deadline",
+            );
+            let error = cleanup_or_replace(&*data_plane, &assignment, error);
+            return submit_failed_best_effort(
+                Arc::clone(&control_plane),
+                &context,
+                &job_id,
+                error,
+                shutdown,
+                shutdown_grace,
+            )
+            .await;
+        }
+        ProviderStage::Completed(Err(error)) => {
+            let error = cleanup_or_replace(&*data_plane, &assignment, error);
+            return submit_failed_best_effort(
+                Arc::clone(&control_plane),
+                &context,
+                &job_id,
+                error,
+                shutdown,
+                shutdown_grace,
+            )
+            .await;
+        }
+        ProviderStage::Completed(Ok(artifacts)) => artifacts,
+    };
+    outcome.result_artifacts = artifacts;
+    if let Err(error) = cleanup_assignment_workspace(&*data_plane, &assignment) {
+        return submit_failed_best_effort(
+            Arc::clone(&control_plane),
+            &context,
+            &job_id,
+            error,
+            shutdown,
+            shutdown_grace,
+        )
+        .await;
+    }
+    submit_outcome(
+        control_plane,
+        &context,
+        &job_id,
+        outcome,
+        shutdown,
+        shutdown_grace,
+    )
+    .await
+}
+
+enum ProviderStage<T> {
+    Completed(Result<T, ProviderJobExecutionError>),
+    Shutdown,
+    Deadline,
+}
+
+async fn run_provider_stage<T, F>(
+    operation: F,
+    cancellation: &JobCancellation,
+    deadline: DateTime<Utc>,
+    shutdown: &mut watch::Receiver<bool>,
+    shutdown_grace: Duration,
+) -> Result<ProviderStage<T>, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, ProviderJobExecutionError> + Send + 'static,
+{
+    let remaining = (deadline - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+    if remaining.is_zero() {
+        return Ok(ProviderStage::Deadline);
+    }
+    let mut task = tokio::task::spawn_blocking(operation);
+    tokio::select! {
+        biased;
+        _ = wait_for_shutdown(shutdown) => {
+            cancellation.cancel();
+            finish_cancelled_task(&mut task, shutdown_grace).await;
+            Ok(ProviderStage::Shutdown)
+        }
+        _ = tokio::time::sleep(remaining) => {
+            cancellation.cancel();
+            finish_cancelled_task(&mut task, shutdown_grace).await;
+            Ok(ProviderStage::Deadline)
+        }
+        result = &mut task => result
+            .map(ProviderStage::Completed)
+            .map_err(|_| "provider job blocking task failed".to_string()),
+    }
+}
+
+fn cleanup_assignment_workspace(
+    data_plane: &dyn ProviderJobDataPlane,
+    assignment: &ProviderJobAssignment,
+) -> Result<(), ProviderJobExecutionError> {
+    assignment
+        .workspace
+        .as_ref()
+        .map_or(Ok(()), |workspace| data_plane.cleanup_workspace(workspace))
+}
+
+fn cleanup_or_replace(
+    data_plane: &dyn ProviderJobDataPlane,
+    assignment: &ProviderJobAssignment,
+    original: ProviderJobExecutionError,
+) -> ProviderJobExecutionError {
+    cleanup_assignment_workspace(data_plane, assignment)
+        .err()
+        .unwrap_or(original)
 }
 
 fn job_response_is_bound(
@@ -822,6 +978,66 @@ async fn report_event(
         shutdown_grace,
     )
     .await
+}
+
+#[derive(Clone, Copy)]
+struct JobEventTransition {
+    sequence: u64,
+    event_type: &'static str,
+    expected_status: &'static str,
+}
+
+async fn report_bound_event(
+    control_plane: Arc<dyn ProviderJobControlPlane>,
+    context: &ProviderJobWorkerContext,
+    job_id: &str,
+    transition: JobEventTransition,
+    shutdown: &mut watch::Receiver<bool>,
+    shutdown_grace: Duration,
+) -> Result<Option<Result<(), ProviderJobExecutionError>>, String> {
+    let Some(result) = report_event(
+        control_plane,
+        context,
+        job_id,
+        transition.sequence,
+        transition.event_type,
+        shutdown,
+        shutdown_grace,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let response = match result {
+        Ok(response) => response,
+        Err(error) => {
+            log_worker_event(
+                "provider_job_event_failed",
+                Some(job_id),
+                None,
+                error.kind(),
+            );
+            return Ok(Some(Err(ProviderJobExecutionError::new(
+                "state_reporting_failed",
+                "provider job state reporting failed",
+            ))));
+        }
+    };
+    if event_response_is_bound(
+        &response,
+        context,
+        job_id,
+        transition.sequence,
+        transition.event_type,
+        transition.expected_status,
+    ) {
+        Ok(Some(Ok(())))
+    } else {
+        Ok(Some(Err(ProviderJobExecutionError::new(
+            "state_reporting_failed",
+            "provider job state response violated its contract",
+        ))))
+    }
 }
 
 async fn submit_outcome(
@@ -941,12 +1157,12 @@ fn parse_utc(value: &str) -> Result<DateTime<Utc>, String> {
         .map_err(|_| "provider job assignment contains an invalid timestamp".to_string())
 }
 
-async fn finish_cancelled_execution(
-    task: &mut tokio::task::JoinHandle<
-        Result<ProviderJobExecutionOutcome, ProviderJobExecutionError>,
-    >,
+async fn finish_cancelled_task<T>(
+    task: &mut tokio::task::JoinHandle<Result<T, ProviderJobExecutionError>>,
     grace: Duration,
-) {
+) where
+    T: Send + 'static,
+{
     if tokio::time::timeout(grace, &mut *task).await.is_err() {
         task.abort();
         log_worker_event(

@@ -44,13 +44,11 @@ the Windows Docker CLI connected to the Linux engine.
 ## Filesystem boundary
 
 The Windows and Linux backends share the same no-bind-mount container contract.
-The plan contains only the approved tmpfs mounts for `/tmp` and
-`/run/burd-secrets`. It does not expose Windows drives, user profiles, `/mnt/c`,
-`/mnt/d`, `\\wsl$`, the Docker socket, or any persistent host path.
-
-No artifact workspace exists in this slice. A later data-plane implementation
-must use Docker-managed storage or a Burd-controlled Linux workspace and must
-not turn arbitrary customer or Windows paths into mounts.
+Artifact inputs use an anonymous Docker-managed volume and outputs use bounded
+tmpfs. The Agent transfers them with structured `docker cp`; no workspace path
+enters Docker arguments. The plan does not expose Windows drives, user
+profiles, `/mnt/c`, `/mnt/d`, `\\wsl$`, the Docker socket, or any persistent
+host path.
 
 ## Physical NVIDIA isolation test
 
@@ -73,6 +71,5 @@ physical test and Control Plane verification exist, Windows capability remains
 ## Explicit non-goals
 
 This slice does not install WSL2, Docker, drivers, or NVIDIA components. It does
-not add a Burd-managed container engine, artifact transfer, secret injection,
-runtime proof persistence, scheduler admission, production worker wiring, or
-paid execution.
+not add a Burd-managed container engine, secret injection, runtime proof
+persistence, scheduler admission, production worker wiring, or paid execution.

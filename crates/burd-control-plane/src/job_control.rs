@@ -1,5 +1,6 @@
 use crate::db::{Database, DbError, IdempotencyRecord, NewAuditEvent, insert_audit_event};
 use crate::gpu_inventory::assert_gpu_inventory_contains;
+use crate::job_artifact::validate_uploaded_job_results;
 use crate::metering::append_usage_ledger_for_job;
 use crate::remote_session::{AuthorizedSession, SessionError};
 use crate::scheduler::{
@@ -443,12 +444,20 @@ impl Database {
                 "job must be accepted before a result can be submitted".to_string(),
             ));
         }
+        validate_uploaded_job_results(
+            &transaction,
+            &job.job_id,
+            &job.expected_outputs,
+            &request.status,
+            &request.result_artifacts,
+        )
+        .await?;
         let result_artifacts_json = artifacts_json(&request.result_artifacts)?;
         let result_metrics_json = normalized_json_object(&request.metrics, "job result metrics")?;
         let completed_at = Utc::now().to_rfc3339();
         transaction
             .execute(
-                "UPDATE compute_jobs SET status = $1, result_artifacts_json = $2, result_metrics_json = $3, error_code = $4, error_message = $5, completed_at = $6, updated_at = $6 WHERE job_id = $7",
+                "UPDATE compute_jobs SET status = $1, result_artifacts_json = $2, result_metrics_json = $3, error_code = $4, error_message = $5, completed_at = $6, updated_at = $6, job_credential_hash = NULL, job_credential_expires_at = NULL WHERE job_id = $7",
                 &[
                     &request.status,
                     &result_artifacts_json,
@@ -515,7 +524,7 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         transaction
             .execute(
-                "UPDATE compute_jobs SET status = 'cancelled', cancellation_reason = $1, completed_at = $2, updated_at = $2 WHERE job_id = $3",
+                "UPDATE compute_jobs SET status = 'cancelled', cancellation_reason = $1, completed_at = $2, updated_at = $2, job_credential_hash = NULL, job_credential_expires_at = NULL WHERE job_id = $3",
                 &[&request.reason, &now, &job.job_id],
             )
             .await?;
@@ -820,7 +829,54 @@ fn validate_create_job_request(request: &CreateJobRequest) -> Result<(), Session
     }
     normalized_json_object(&request.parameters, "job parameters")?;
     validate_artifacts(&request.input_artifacts, "input_artifacts")?;
-    validate_artifacts(&request.expected_outputs, "expected_outputs")
+    validate_artifacts(&request.expected_outputs, "expected_outputs")?;
+    validate_transfer_manifests(&request.input_artifacts, &request.expected_outputs)
+}
+
+fn validate_transfer_manifests(
+    inputs: &[JobArtifact],
+    outputs: &[JobArtifact],
+) -> Result<(), SessionError> {
+    let mut ids = std::collections::HashSet::new();
+    let mut total_input = 0_u64;
+    let mut total_output = 0_u64;
+    for artifact in inputs {
+        if artifact.role != "input"
+            || artifact.sha256.is_none()
+            || artifact.size_bytes.is_none()
+            || !ids.insert(artifact.artifact_id.as_str())
+        {
+            return Err(SessionError::Invalid(
+                "input artifacts require unique IDs, input role, size_bytes, and sha256"
+                    .to_string(),
+            ));
+        }
+        total_input = total_input
+            .checked_add(artifact.size_bytes.unwrap_or_default())
+            .filter(|total| *total <= 10 * 1024 * 1024 * 1024)
+            .ok_or_else(|| {
+                SessionError::Invalid("total input artifact size exceeds limit".to_string())
+            })?;
+    }
+    ids.clear();
+    for artifact in outputs {
+        if artifact.role != "output"
+            || artifact.size_bytes.is_none()
+            || !ids.insert(artifact.artifact_id.as_str())
+        {
+            return Err(SessionError::Invalid(
+                "expected outputs require unique IDs, output role, and a size_bytes limit"
+                    .to_string(),
+            ));
+        }
+        total_output = total_output
+            .checked_add(artifact.size_bytes.unwrap_or_default())
+            .filter(|total| *total <= 10 * 1024 * 1024 * 1024)
+            .ok_or_else(|| {
+                SessionError::Invalid("total output artifact size exceeds limit".to_string())
+            })?;
+    }
+    Ok(())
 }
 
 fn validate_job_event_request(request: &JobEventRequest) -> Result<(), SessionError> {
@@ -1139,7 +1195,7 @@ mod tests {
                 role: "output".to_string(),
                 object_key: "jobs/client_job_1/response.json".to_string(),
                 sha256: None,
-                size_bytes: None,
+                size_bytes: Some(2048),
                 content_type: Some("application/json".to_string()),
             }],
             timeout_seconds: Some(900),
@@ -1354,6 +1410,7 @@ mod tests {
             .unwrap();
         assert_eq!(next.job.as_ref().unwrap().job_id, created.job.job_id);
         assert_eq!(next.job.as_ref().unwrap().status, "assigned");
+        let job_credential = next.data_plane.as_ref().unwrap().credential.clone();
         assert!(
             next.data_plane
                 .as_ref()
@@ -1401,6 +1458,35 @@ mod tests {
         assert_eq!(event.event.sequence, 1);
         assert_eq!(event.job.status, "running");
 
+        let uploading = db
+            .record_job_event(
+                "req_uploading",
+                &authorized,
+                &created.job.job_id,
+                &JobEventRequest {
+                    sequence: 2,
+                    event_type: "uploading".to_string(),
+                    progress_percent: None,
+                    message: Some("uploading".to_string()),
+                    metadata: serde_json::json!({}),
+                    occurred_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(uploading.job.status, "uploading");
+        let uploaded = db
+            .record_job_artifact_upload(
+                &created.job.job_id,
+                "response",
+                &job_credential,
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                1536,
+                Some("application/json"),
+            )
+            .await
+            .unwrap();
+
         let result = db
             .submit_job_result(
                 "req_result",
@@ -1408,7 +1494,7 @@ mod tests {
                 &created.job.job_id,
                 &SubmitJobResultRequest {
                     status: "succeeded".to_string(),
-                    result_artifacts: Vec::new(),
+                    result_artifacts: vec![uploaded],
                     metrics: serde_json::json!({"tokens_per_second": 42.0}),
                     error_code: None,
                     error_message: None,

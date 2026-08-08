@@ -32,7 +32,7 @@ pub fn document() -> serde_json::Value {
         "info": {
             "title": "Burd Control Plane API",
             "version": "v1",
-            "description": "BN-21 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, first job API/data-plane grants, scheduler-issued job leases, usage metering ledger receipts, marketplace registry listings, customer accounts, project quotas, customer API keys, credits, marketplace reservations, customer usage views, billing price book, Pix payment intents, financial ledger, invoices, customer balances, provider payable balances, payout accounts, provider payouts, customer audit logs, observability metrics, SLO snapshot, signed security posture registry, security hardening policy, attestation posture metadata, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
+            "description": "BN-21 control plane API for provider identity, remote sessions, signed GPU telemetry, remote evidence registry, active proof-of-capability challenges, recurring/risk-based verification state, regional network probes, global trust/antifraud state, versioned benchmark profiles, signed benchmark results, backend-owned workload policies, workload eligibility state, job control and provider artifact streaming, scheduler-issued job leases, usage metering ledger receipts, marketplace registry listings, customer accounts, project quotas, customer API keys, credits, marketplace reservations, customer usage views, billing price book, Pix payment intents, financial ledger, invoices, customer balances, provider payable balances, payout accounts, provider payouts, customer audit logs, observability metrics, SLO snapshot, signed security posture registry, security hardening policy, attestation posture metadata, outbound WebSocket control channels, revocation, health, readiness, and audit-backed persistence."
         },
         "components": {
             "securitySchemes": {
@@ -45,6 +45,11 @@ pub fn document() -> serde_json::Value {
                     "type": "http",
                     "scheme": "bearer",
                     "description": "Short-lived device credential issued after enrollment proof. Send only as Authorization: Bearer; session resume token stays in x-burd-session-token."
+                },
+                "jobDataPlaneBearer": {
+                    "type": "http",
+                    "scheme": "bearer",
+                    "description": "Short-lived credential bound to one assigned job and its declared artifact paths. It is hash-only at rest and never enters workload containers."
                 },
                 "customerBearer": {
                     "type": "http",
@@ -835,6 +840,33 @@ pub fn document() -> serde_json::Value {
                     "responses": {
                         "200": { "description": "job usage ledger entries returned" },
                         "401": { "description": "admin credential missing or invalid" }
+                    }
+                }
+            },
+            "/v1/jobs/{job_id}/artifacts/{artifact_id}/download": {
+                "get": {
+                    "summary": "Stream one declared input artifact to the assigned provider",
+                    "security": [{ "jobDataPlaneBearer": [] }],
+                    "responses": {
+                        "200": { "description": "verified manifest object streamed", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
+                        "401": { "description": "job-scoped credential missing, invalid, or expired" },
+                        "404": { "description": "job or artifact not found" },
+                        "409": { "description": "job state or stored object conflicts with the manifest" }
+                    }
+                }
+            },
+            "/v1/jobs/{job_id}/results/{artifact_id}/upload": {
+                "put": {
+                    "summary": "Stream one declared provider output into controlled object storage",
+                    "security": [{ "jobDataPlaneBearer": [] }],
+                    "parameters": [{ "name": "X-Burd-Content-Sha256", "in": "header", "required": true, "schema": { "type": "string", "pattern": "^sha256:[0-9a-fA-F]{64}$" } }],
+                    "requestBody": { "required": true, "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
+                    "responses": {
+                        "200": { "description": "artifact bytes, size, and digest recorded" },
+                        "400": { "description": "size, digest, content type, or body mismatch" },
+                        "401": { "description": "job-scoped credential missing, invalid, or expired" },
+                        "404": { "description": "job or artifact not found" },
+                        "409": { "description": "job is not in uploading state" }
                     }
                 }
             },
@@ -2568,6 +2600,19 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
         }),
     );
     schemas.insert(
+        "JobArtifactUploadResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["schema_version", "request_id", "job_id", "artifact"],
+            "properties": {
+                "schema_version": { "type": "string", "const": "burd-job-artifact-upload-v1" },
+                "request_id": { "type": "string" },
+                "job_id": { "type": "string" },
+                "artifact": { "$ref": "#/components/schemas/JobArtifact" }
+            }
+        }),
+    );
+    schemas.insert(
         "ProviderJobExecutionState".to_string(),
         serde_json::json!({
             "type": "string",
@@ -3078,6 +3123,13 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
     );
     set_json_response(
         document,
+        "/v1/jobs/{job_id}/results/{artifact_id}/upload",
+        "put",
+        "200",
+        "JobArtifactUploadResponse",
+    );
+    set_json_response(
+        document,
         "/v1/customer/projects/{project_id}/reservations",
         "get",
         "200",
@@ -3290,6 +3342,8 @@ mod tests {
             "/v1/jobs",
             "/v1/jobs/{job_id}",
             "/v1/jobs/{job_id}/usage-ledger",
+            "/v1/jobs/{job_id}/artifacts/{artifact_id}/download",
+            "/v1/jobs/{job_id}/results/{artifact_id}/upload",
             "/v1/jobs/{job_id}/usage-ledger/finalize",
             "/v1/jobs/{job_id}/leases",
             "/v1/jobs/{job_id}/cancel",
@@ -3319,6 +3373,7 @@ mod tests {
         assert!(document["components"]["securitySchemes"]["adminBearer"].is_object());
         assert!(document["components"]["securitySchemes"]["deviceBearer"].is_object());
         assert!(document["components"]["securitySchemes"]["customerBearer"].is_object());
+        assert!(document["components"]["securitySchemes"]["jobDataPlaneBearer"].is_object());
     }
     #[test]
     fn openapi_documents_security_boundaries_and_idempotency_header_limits() {
@@ -4149,6 +4204,7 @@ mod tests {
             "RunSchedulerRequest",
             "RunSchedulerResponse",
             "ListJobLeasesResponse",
+            "JobArtifactUploadResponse",
             "CreateReservationRequest",
             "CancelReservationRequest",
             "MarketplaceReservationRecord",
