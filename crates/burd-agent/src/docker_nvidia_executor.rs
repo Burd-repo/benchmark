@@ -609,6 +609,7 @@ fn build_container_plan(
         pids_limit: assignment.execution.runtime.pids_limit,
         shm_size_mib: assignment.execution.runtime.shm_size_mib,
         labels,
+        environment: BTreeMap::new(),
         artifact_workspace: assignment.workspace.is_some(),
         input_artifact_count: assignment.job.input_artifacts.len() as u32,
         output_artifact_count: assignment.job.expected_outputs.len() as u32,
@@ -778,6 +779,18 @@ mod tests {
             state.operations.push("verify".to_string());
             state.observed_plans.push(plan.clone());
             Ok(())
+        }
+
+        fn runtime_environment(
+            &self,
+            _control: &DockerCommandControl,
+        ) -> Result<crate::docker_runtime_backend::DockerRuntimeEnvironment, DockerRuntimeError>
+        {
+            Ok(crate::docker_runtime_backend::DockerRuntimeEnvironment {
+                docker_server_version: "test-docker".to_string(),
+                nvidia_driver_version: "test-driver".to_string(),
+                nvidia_runtime: "nvidia".to_string(),
+            })
         }
 
         fn existing_container(

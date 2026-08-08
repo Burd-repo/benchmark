@@ -131,6 +131,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "job_artifact_transfers",
         sql: include_str!("../migrations/0025_job_artifact_transfers.sql"),
     },
+    Migration {
+        version: "0026",
+        name: "runtime_capability_verification",
+        sql: include_str!("../migrations/0026_runtime_capability_verification.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -395,6 +400,16 @@ mod tests {
         assert!(sql.contains("PRIMARY KEY(job_id, artifact_id)"));
         assert!(sql.contains("sha256 TEXT NOT NULL"));
         assert!(sql.contains("size_bytes BIGINT NOT NULL"));
+    }
+
+    #[test]
+    fn runtime_capability_verification_migration_declares_authoritative_registry() {
+        let sql = MIGRATIONS[25].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS runtime_verification_challenges"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS provider_runtime_verifications"));
+        assert!(sql.contains("runtime_verification_fingerprint TEXT NOT NULL"));
+        assert!(sql.contains("idx_provider_runtime_verifications_active_gpu"));
+        assert!(sql.contains("response_hash TEXT UNIQUE"));
     }
 
     #[test]
