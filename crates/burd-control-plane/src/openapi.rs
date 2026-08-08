@@ -1227,12 +1227,36 @@ fn add_runtime_verification_contracts(document: &mut serde_json::Value) {
         }),
     );
     schemas.insert(
+        "RuntimeAdmissionFingerprintClaims".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["version", "provider_id", "device_id", "hardware_fingerprint", "gpu_uuid", "host_os", "runtime_backend", "container_os", "gpu_backend", "gpu_runtime", "isolation_mode", "docker_server_version", "nvidia_driver_version", "nvidia_runtime", "agent_runtime_contract_version"],
+            "properties": {
+                "version": { "type": "string", "const": "burd-runtime-admission-fingerprint-v1" },
+                "provider_id": { "type": "string" },
+                "device_id": { "type": "string" },
+                "hardware_fingerprint": { "type": "string" },
+                "gpu_uuid": { "type": "string" },
+                "host_os": { "type": "string", "enum": ["linux", "windows"] },
+                "runtime_backend": { "type": "string", "enum": ["docker_linux_native", "docker_wsl2"] },
+                "container_os": { "type": "string", "const": "linux" },
+                "gpu_backend": { "type": "string", "const": "cuda" },
+                "gpu_runtime": { "type": "string", "const": "nvidia" },
+                "isolation_mode": { "type": "string", "const": "linux_container" },
+                "docker_server_version": { "type": "string" },
+                "nvidia_driver_version": { "type": "string" },
+                "nvidia_runtime": { "type": "string", "const": "nvidia" },
+                "agent_runtime_contract_version": { "type": "string", "const": "burd-agent-runtime-contract-v1" }
+            }
+        }),
+    );
+    schemas.insert(
         "ProviderRuntimeVerificationRecord".to_string(),
         serde_json::json!({
             "type": "object",
-            "required": ["schema_version", "verification_id", "challenge_id", "provider_id", "device_id", "session_id", "hardware_fingerprint", "gpu_uuid", "host_os", "runtime_backend", "status", "gpu_uuid_binding", "runtime_verification_fingerprint", "proof_policy_version", "agent_runtime_contract_version", "proof_image_digest", "verified_at", "expires_at", "reason_codes"],
+            "required": ["schema_version", "verification_id", "challenge_id", "provider_id", "device_id", "session_id", "hardware_fingerprint", "gpu_uuid", "host_os", "runtime_backend", "status", "gpu_uuid_binding", "runtime_verification_fingerprint", "proof_policy_version", "agent_runtime_contract_version", "proof_image_digest", "public_key_id", "runtime_admission_fingerprint", "runtime_admission_claims", "verified_at", "expires_at", "reason_codes"],
             "properties": {
-                "schema_version": { "type": "string", "const": "burd-runtime-verification-record-v1" },
+                "schema_version": { "type": "string", "const": "burd-runtime-verification-record-v2" },
                 "verification_id": { "type": "string" },
                 "challenge_id": { "type": "string" },
                 "provider_id": { "type": "string" },
@@ -1248,6 +1272,9 @@ fn add_runtime_verification_contracts(document: &mut serde_json::Value) {
                 "proof_policy_version": { "type": "string" },
                 "agent_runtime_contract_version": { "type": "string" },
                 "proof_image_digest": { "type": "string" },
+                "public_key_id": { "type": "string" },
+                "runtime_admission_fingerprint": { "type": "string" },
+                "runtime_admission_claims": { "$ref": "#/components/schemas/RuntimeAdmissionFingerprintClaims" },
                 "verified_at": { "type": "string", "format": "date-time" },
                 "expires_at": { "type": "string", "format": "date-time" },
                 "reason_codes": { "type": "array", "items": { "type": "string" } }
@@ -1322,6 +1349,92 @@ fn add_runtime_verification_contracts(document: &mut serde_json::Value) {
             }
         }),
     );
+    schemas.insert(
+        "ProviderRuntimeObservationPayload".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["schema_version", "provider_id", "device_id", "session_id", "hardware_fingerprint", "host_os", "runtime_backend", "container_os", "gpu_backend", "gpu_runtime", "isolation_mode", "docker_server_version", "nvidia_driver_version", "nvidia_runtime", "gpu_uuids", "agent_runtime_contract_version", "observed_at"],
+            "properties": {
+                "schema_version": { "type": "string", "const": "burd-provider-runtime-observation-v1" },
+                "provider_id": { "type": "string" },
+                "device_id": { "type": "string" },
+                "session_id": { "type": "string" },
+                "hardware_fingerprint": { "type": "string" },
+                "host_os": { "type": "string", "enum": ["linux", "windows"] },
+                "runtime_backend": { "type": "string", "enum": ["docker_linux_native", "docker_wsl2"] },
+                "container_os": { "type": "string", "const": "linux" },
+                "gpu_backend": { "type": "string", "const": "cuda" },
+                "gpu_runtime": { "type": "string", "const": "nvidia" },
+                "isolation_mode": { "type": "string", "const": "linux_container" },
+                "docker_server_version": { "type": "string" },
+                "nvidia_driver_version": { "type": "string" },
+                "nvidia_runtime": { "type": "string", "const": "nvidia" },
+                "gpu_uuids": { "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": { "type": "string" } },
+                "agent_runtime_contract_version": { "type": "string", "const": "burd-agent-runtime-contract-v1" },
+                "observed_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "SignedProviderRuntimeObservation".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["payload", "observation_hash", "public_key_id", "signature", "canonicalization_version"],
+            "properties": {
+                "payload": { "$ref": "#/components/schemas/ProviderRuntimeObservationPayload" },
+                "observation_hash": { "type": "string" },
+                "public_key_id": { "type": "string" },
+                "signature": { "type": "string" },
+                "canonicalization_version": { "type": "string", "const": "burd-canonical-json-v1" }
+            }
+        }),
+    );
+    schemas.insert(
+        "SubmitProviderRuntimeObservationResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "observation_hash", "duplicate", "server_received_at"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "observation_hash": { "type": "string" },
+                "duplicate": { "type": "boolean" },
+                "server_received_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "RuntimeAdmissionDecision".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["schema_version", "provider_id", "device_id", "gpu_uuid", "status", "reason_codes", "evaluated_at"],
+            "description": "Derived, fail-closed runtime admission. runtime_verified is a functional readiness proof, not hardware attestation.",
+            "properties": {
+                "schema_version": { "type": "string", "const": "burd-runtime-admission-v1" },
+                "provider_id": { "type": "string" },
+                "device_id": { "type": "string" },
+                "gpu_uuid": { "type": "string" },
+                "status": { "type": "string", "enum": ["admitted", "denied"] },
+                "reason_codes": { "type": "array", "items": { "type": "string" } },
+                "runtime_backend": { "type": "string" },
+                "verification_id": { "type": "string" },
+                "runtime_verification_fingerprint": { "type": "string" },
+                "runtime_observation_hash": { "type": "string" },
+                "evaluated_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "ListProviderRuntimeAdmissionsResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "provider_id", "admissions"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "provider_id": { "type": "string" },
+                "admissions": { "type": "array", "items": { "$ref": "#/components/schemas/RuntimeAdmissionDecision" } }
+            }
+        }),
+    );
 
     let paths = document["paths"]
         .as_object_mut()
@@ -1382,6 +1495,29 @@ fn add_runtime_verification_contracts(document: &mut serde_json::Value) {
                 ],
                 "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SignedRuntimeVerificationResponse" } } } },
                 "responses": { "200": { "description": "Verification evaluated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmitRuntimeVerificationResponse" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "409": { "$ref": "#/components/responses/Conflict" }, "410": { "$ref": "#/components/responses/Gone" } }
+            }
+        }),
+    );
+    paths.insert(
+        "/v1/sessions/{session_id}/runtime-observations".to_string(),
+        serde_json::json!({
+            "post": {
+                "summary": "Submit a current signed runtime observation",
+                "security": [{ "deviceBearer": [] }],
+                "parameters": [{ "name": "session_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SignedProviderRuntimeObservation" } } } },
+                "responses": { "201": { "description": "Observation accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmitProviderRuntimeObservationResponse" } } } }, "200": { "description": "Duplicate observation accepted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SubmitProviderRuntimeObservationResponse" } } } }, "400": { "$ref": "#/components/responses/BadRequest" }, "401": { "$ref": "#/components/responses/Unauthorized" }, "409": { "$ref": "#/components/responses/Conflict" } }
+            }
+        }),
+    );
+    paths.insert(
+        "/v1/providers/{provider_id}/runtime-admissions".to_string(),
+        serde_json::json!({
+            "get": {
+                "summary": "Inspect derived runtime admission decisions",
+                "security": [{ "adminBearer": [] }],
+                "parameters": [{ "name": "provider_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                "responses": { "200": { "description": "Current fail-closed admission decisions", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ListProviderRuntimeAdmissionsResponse" } } } }, "401": { "$ref": "#/components/responses/Unauthorized" }, "404": { "$ref": "#/components/responses/NotFound" } }
             }
         }),
     );
@@ -3682,6 +3818,16 @@ mod tests {
                 "post",
                 "deviceBearer",
             ),
+            (
+                "/v1/sessions/{session_id}/runtime-observations",
+                "post",
+                "deviceBearer",
+            ),
+            (
+                "/v1/providers/{provider_id}/runtime-admissions",
+                "get",
+                "adminBearer",
+            ),
         ] {
             let operation = &document["paths"][path][method];
             assert!(operation.is_object(), "missing {method} {path}");
@@ -3701,6 +3847,9 @@ mod tests {
             "ProviderRuntimeVerificationRecord",
             "RuntimeVerificationChallengeRecord",
             "ListProviderRuntimeVerificationsResponse",
+            "SignedProviderRuntimeObservation",
+            "RuntimeAdmissionDecision",
+            "ListProviderRuntimeAdmissionsResponse",
         ] {
             assert!(
                 document["components"]["schemas"][schema].is_object(),

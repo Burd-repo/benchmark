@@ -1,4 +1,4 @@
-use burd_protocol::{PROOF_CAPABILITY_REQUIRED_PROOFS, sha256_hex};
+use burd_protocol::{PROOF_CAPABILITY_REQUIRED_PROOFS, immutable_image_ref, sha256_hex};
 use std::collections::HashSet;
 use std::env;
 use std::fmt;
@@ -30,6 +30,8 @@ pub struct ControlPlaneConfig {
     pub verification_sweep_limit: u32,
     pub verification_suspect_failures: u32,
     pub verification_proof_profile: Option<VerificationProofProfileConfig>,
+    pub runtime_proof_image_ref: Option<String>,
+    pub runtime_observation_max_age_seconds: u32,
     pub observability_deployment_id: String,
     pub observability_recent_events_limit: u32,
     pub slo_availability_target_bps: u32,
@@ -203,6 +205,26 @@ impl ControlPlaneConfig {
             verification_min_tokens_per_second,
             verification_max_ttft_ms,
         )?;
+        let runtime_proof_image_ref =
+            lookup("BURD_CONTROL_RUNTIME_PROOF_IMAGE_REF").filter(|value| !value.trim().is_empty());
+        if runtime_proof_image_ref
+            .as_deref()
+            .is_some_and(|value| !immutable_image_ref(value))
+        {
+            return Err(ConfigError::new(
+                "BURD_CONTROL_RUNTIME_PROOF_IMAGE_REF must be digest-pinned with sha256",
+            ));
+        }
+        let runtime_observation_max_age_seconds = parse_u32(
+            lookup("BURD_CONTROL_RUNTIME_OBSERVATION_MAX_AGE_SECONDS")
+                .unwrap_or_else(|| "180".to_string()),
+            "BURD_CONTROL_RUNTIME_OBSERVATION_MAX_AGE_SECONDS",
+        )?;
+        if !(60..=3600).contains(&runtime_observation_max_age_seconds) {
+            return Err(ConfigError::new(
+                "BURD_CONTROL_RUNTIME_OBSERVATION_MAX_AGE_SECONDS must be between 60 and 3600",
+            ));
+        }
 
         let observability_recent_events_limit = parse_u32(
             lookup("BURD_CONTROL_OBSERVABILITY_RECENT_EVENTS_LIMIT")
@@ -275,6 +297,8 @@ impl ControlPlaneConfig {
             verification_sweep_limit,
             verification_suspect_failures,
             verification_proof_profile,
+            runtime_proof_image_ref,
+            runtime_observation_max_age_seconds,
             observability_deployment_id: lookup("BURD_CONTROL_DEPLOYMENT_ID")
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "local".to_string()),
@@ -487,6 +511,8 @@ mod tests {
         assert_eq!(config.verification_sweep_limit, 25);
         assert_eq!(config.verification_suspect_failures, 3);
         assert!(config.verification_proof_profile.is_none());
+        assert_eq!(config.runtime_proof_image_ref, None);
+        assert_eq!(config.runtime_observation_max_age_seconds, 180);
         assert_eq!(config.observability_deployment_id, "local");
         assert_eq!(config.observability_recent_events_limit, 100);
         assert_eq!(config.slo_availability_target_bps, 9990);
@@ -535,6 +561,46 @@ mod tests {
                 .contains("SECURITY_REQUIRE_REMOTE_ATTESTATION")
         );
     }
+
+    #[test]
+    fn config_accepts_only_digest_pinned_runtime_proof_image() {
+        let mut values = base_values();
+        values.insert(
+            "BURD_CONTROL_RUNTIME_PROOF_IMAGE_REF",
+            "ghcr.io/burd/runtime-proof:latest",
+        );
+        let error = ControlPlaneConfig::from_lookup(|key| {
+            values.get(key).map(|value| (*value).to_string())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("RUNTIME_PROOF_IMAGE_REF"));
+
+        values.insert(
+            "BURD_CONTROL_RUNTIME_PROOF_IMAGE_REF",
+            "ghcr.io/burd/runtime-proof@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        let config = ControlPlaneConfig::from_lookup(|key| {
+            values.get(key).map(|value| (*value).to_string())
+        })
+        .unwrap();
+        assert!(config.runtime_proof_image_ref.is_some());
+    }
+
+    #[test]
+    fn config_bounds_runtime_observation_freshness() {
+        let mut values = base_values();
+        values.insert("BURD_CONTROL_RUNTIME_OBSERVATION_MAX_AGE_SECONDS", "59");
+        let error = ControlPlaneConfig::from_lookup(|key| {
+            values.get(key).map(|value| (*value).to_string())
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("RUNTIME_OBSERVATION_MAX_AGE_SECONDS")
+        );
+    }
+
     fn base_values() -> HashMap<&'static str, &'static str> {
         HashMap::from([
             ("DATABASE_URL", "postgres://localhost/burd"),

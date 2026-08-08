@@ -9,6 +9,7 @@ use crate::remote_enrollment::{
 use crate::remote_proof::{
     ProofExecutor, ProofTelemetryRequest, ProofTelemetryWindow, execute_remote_proof, run_worker,
 };
+use crate::runtime_observation::run_worker as run_runtime_observation_worker;
 use crate::runtime_verification::{
     execute_runtime_verification, run_worker as run_runtime_verification_worker,
 };
@@ -415,6 +416,19 @@ async fn run_session_supervisor(
     let (proof_telemetry_tx, mut proof_telemetry_rx) = mpsc::channel(1);
     let (session_shutdown_tx, session_shutdown_rx) = watch::channel(false);
     let mut workers = JoinSet::new();
+    if let Some(runtime_observation_agent_version) = proof_agent_version.clone() {
+        let runtime_observation_shutdown = session_shutdown_rx.clone();
+        workers.spawn(async move {
+            (
+                "runtime_observation_worker",
+                run_runtime_observation_worker(
+                    runtime_observation_agent_version,
+                    runtime_observation_shutdown,
+                )
+                .await,
+            )
+        });
+    }
     if let Some(runtime_agent_version) = proof_agent_version.clone() {
         let runtime_shutdown = session_shutdown_rx.clone();
         workers.spawn(async move {

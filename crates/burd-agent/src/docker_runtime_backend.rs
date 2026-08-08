@@ -91,6 +91,7 @@ pub struct DockerRuntimeEnvironment {
     pub docker_server_version: String,
     pub nvidia_driver_version: String,
     pub nvidia_runtime: String,
+    pub gpu_uuids: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,6 +191,9 @@ impl std::error::Error for DockerRuntimeError {}
 
 pub trait DockerRuntimeBackend: Send + Sync + 'static {
     fn runtime_backend(&self) -> &'static str;
+
+    /// Verifies only the host/backend platform boundary without requiring a workload image.
+    fn verify_platform(&self, control: &DockerCommandControl) -> Result<(), DockerRuntimeError>;
 
     /// Performs read-only host, Docker, image and GPU checks before container creation.
     fn verify_environment(
@@ -790,7 +794,7 @@ impl DockerCliRuntime {
         let driver = run_bounded_command(
             &self.nvidia_smi_program,
             &[
-                "--query-gpu=driver_version".into(),
+                "--query-gpu=uuid,driver_version".into(),
                 "--format=csv,noheader".into(),
             ],
             control,
@@ -798,16 +802,41 @@ impl DockerCliRuntime {
         if !driver.status.success() || docker_version.stdout_truncated || driver.stdout_truncated {
             return Err(DockerRuntimeError::new("runtime_version_probe_failed"));
         }
-        let mut driver_versions = driver
+        let mut gpu_uuids = Vec::new();
+        let mut driver_version: Option<&str> = None;
+        for line in driver
             .stdout
             .lines()
             .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let Some(driver_version) = driver_versions.next() else {
+            .filter(|value| !value.is_empty())
+        {
+            let Some((gpu_uuid, observed_driver)) = line.split_once(',') else {
+                return Err(DockerRuntimeError::new("runtime_version_probe_invalid"));
+            };
+            let gpu_uuid = gpu_uuid.trim();
+            let observed_driver = observed_driver.trim();
+            if gpu_uuid.is_empty()
+                || gpu_uuid.len() > 128
+                || !gpu_uuid.is_ascii()
+                || observed_driver.is_empty()
+                || observed_driver.len() > 128
+                || !observed_driver.is_ascii()
+            {
+                return Err(DockerRuntimeError::new("runtime_version_probe_invalid"));
+            }
+            if driver_version.is_some_and(|value| value != observed_driver) {
+                return Err(DockerRuntimeError::new("runtime_version_probe_ambiguous"));
+            }
+            driver_version = Some(observed_driver);
+            gpu_uuids.push(gpu_uuid.to_string());
+        }
+        let Some(driver_version) = driver_version else {
             return Err(DockerRuntimeError::new("runtime_version_probe_invalid"));
         };
-        if driver_versions.any(|value| value != driver_version) {
-            return Err(DockerRuntimeError::new("runtime_version_probe_ambiguous"));
+        gpu_uuids.sort_by_key(|value| value.to_ascii_lowercase());
+        gpu_uuids.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+        if gpu_uuids.is_empty() || gpu_uuids.len() > 32 {
+            return Err(DockerRuntimeError::new("runtime_version_probe_invalid"));
         }
         let docker_server_version = docker_version.stdout.trim();
         if docker_server_version.is_empty() || docker_server_version.len() > 128 {
@@ -817,16 +846,8 @@ impl DockerCliRuntime {
             docker_server_version: docker_server_version.to_string(),
             nvidia_driver_version: driver_version.to_string(),
             nvidia_runtime: "nvidia".to_string(),
+            gpu_uuids,
         })
-    }
-
-    fn verify_linux_container_environment(
-        &self,
-        plan: &DockerContainerPlan,
-        control: &DockerCommandControl,
-    ) -> Result<(), DockerRuntimeError> {
-        self.verify_linux_docker_server(control)?;
-        self.verify_nvidia_gpu_and_image(plan, control)
     }
 
     fn verify_linux_docker_server(
@@ -1300,15 +1321,20 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
         "docker_linux_native"
     }
 
+    fn verify_platform(&self, control: &DockerCommandControl) -> Result<(), DockerRuntimeError> {
+        if std::env::consts::OS != "linux" {
+            return Err(DockerRuntimeError::new("linux_native_host_required"));
+        }
+        self.cli.verify_linux_docker_server(control)
+    }
+
     fn verify_environment(
         &self,
         plan: &DockerContainerPlan,
         control: &DockerCommandControl,
     ) -> Result<(), DockerRuntimeError> {
-        if std::env::consts::OS != "linux" {
-            return Err(DockerRuntimeError::new("linux_native_host_required"));
-        }
-        self.cli.verify_linux_container_environment(plan, control)?;
+        self.verify_platform(control)?;
+        self.cli.verify_nvidia_gpu_and_image(plan, control)?;
         if plan.artifact_workspace {
             self.cli
                 .verify_artifact_helper_image(self.artifact_helper_image()?, control)?;
@@ -1477,11 +1503,7 @@ impl DockerRuntimeBackend for WindowsWsl2DockerBackend {
         "docker_wsl2"
     }
 
-    fn verify_environment(
-        &self,
-        plan: &DockerContainerPlan,
-        control: &DockerCommandControl,
-    ) -> Result<(), DockerRuntimeError> {
+    fn verify_platform(&self, control: &DockerCommandControl) -> Result<(), DockerRuntimeError> {
         if std::env::consts::OS != "windows" {
             return Err(DockerRuntimeError::new("windows_wsl2_host_required"));
         }
@@ -1493,7 +1515,15 @@ impl DockerRuntimeBackend for WindowsWsl2DockerBackend {
             return Err(DockerRuntimeError::new("wsl2_runtime_unavailable"));
         }
         self.cli.verify_linux_docker_server(control)?;
-        self.cli.verify_wsl2_docker_kernel(control)?;
+        self.cli.verify_wsl2_docker_kernel(control)
+    }
+
+    fn verify_environment(
+        &self,
+        plan: &DockerContainerPlan,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.verify_platform(control)?;
         self.cli.verify_nvidia_gpu_and_image(plan, control)?;
         if plan.artifact_workspace {
             self.cli

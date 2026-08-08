@@ -14,6 +14,7 @@ pub mod marketplace;
 pub mod network_probe;
 pub mod remote_session;
 pub mod report;
+pub mod runtime_admission;
 pub mod runtime_verification;
 pub mod secure_runtime;
 pub mod security;
@@ -153,6 +154,17 @@ pub use remote_session::{
     show_remote_session, update_remote_session_sequence, update_remote_telemetry_sequence,
 };
 pub use report::{FullReport, ReportSignature, SignedReport, VerifyReportResult};
+pub use runtime_admission::{
+    ListProviderRuntimeAdmissionsResponse, PROVIDER_RUNTIME_OBSERVATION_SCHEMA_VERSION,
+    ProviderRuntimeObservationPayload, RUNTIME_ADMISSION_FINGERPRINT_VERSION,
+    RUNTIME_ADMISSION_SCHEMA_VERSION, RUNTIME_OBSERVATION_SIGNATURE_DOMAIN,
+    RuntimeAdmissionDecision, RuntimeAdmissionFingerprintClaims, SignedProviderRuntimeObservation,
+    SubmitProviderRuntimeObservationResponse, provider_runtime_observation_hash,
+    provider_runtime_observation_signature_message, runtime_admission_claims_from_observation,
+    runtime_admission_claims_from_verification, runtime_admission_fingerprint,
+    validate_provider_runtime_observation_payload, validate_runtime_admission_decision,
+    validate_runtime_admission_fingerprint_claims, validate_signed_provider_runtime_observation,
+};
 pub use runtime_verification::{
     AGENT_RUNTIME_CONTRACT_VERSION, IssueRuntimeVerificationChallengeRequest,
     IssueRuntimeVerificationChallengeResponse, ListProviderRuntimeVerificationsResponse,

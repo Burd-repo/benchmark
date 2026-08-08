@@ -1055,6 +1055,23 @@ Admin endpoint that lists immutable GPU inventory records for a provider, includ
 
 BN-21 does not add distributed placement, cluster orchestration, or multi-provider GPU reservation.
 
+## Runtime Observation And Admission API
+
+### `POST /v1/sessions/{session_id}/runtime-observations`
+
+Device-session endpoint. Accepts a canonical current Docker/NVIDIA runtime observation signed by
+the active Ed25519 device key. The Control Plane requires an online/degraded matching session,
+matching hardware fingerprint, fresh timestamp, valid signature and exact agreement with the
+latest signed active GPU inventory. Accepted observations are immutable and contain no transport
+credential.
+
+### `GET /v1/providers/{provider_id}/runtime-admissions`
+
+Admin endpoint. Returns derived per-GPU `admitted` or `denied` decisions with stable reason codes.
+The evaluator binds current provider/device/GPU/session state, active key, current runtime
+observation, unexpired v2 runtime verification fingerprint and the configured proof image. It does
+not activate the scheduler or Provider Job Worker.
+
 ## Trust And Antifraud API
 
 BN-09 calculates backend-owned trust and antifraud state from prior remote

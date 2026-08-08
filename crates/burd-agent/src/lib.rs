@@ -13,4 +13,5 @@ pub mod provider_job_worker;
 pub mod remote_enrollment;
 pub mod remote_proof;
 pub mod remote_session;
+pub mod runtime_observation;
 pub mod runtime_verification;

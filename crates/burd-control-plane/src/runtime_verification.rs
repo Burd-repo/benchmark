@@ -9,6 +9,7 @@ use burd_protocol::{
     RUNTIME_VERIFICATION_RECORD_SCHEMA_VERSION, RuntimeVerificationChallenge,
     RuntimeVerificationChallengeRecord, SignedRuntimeVerificationResponse,
     SubmitRuntimeVerificationResponse, fingerprint_claims, immutable_image_ref, random_token,
+    runtime_admission_claims_from_verification, runtime_admission_fingerprint,
     runtime_verification_fingerprint, runtime_verification_response_hash,
     runtime_verification_signature_message, validate_provider_runtime_verification_record,
     validate_runtime_verification_challenge, validate_runtime_verification_evidence,
@@ -18,11 +19,12 @@ use chrono::{DateTime, Duration, Utc};
 use tokio_postgres::Row;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RuntimeVerificationPolicy {
     pub challenge_ttl_seconds: u32,
     pub clock_skew_seconds: u32,
     pub verification_ttl_seconds: u32,
+    pub approved_proof_image_ref: Option<String>,
 }
 
 impl Database {
@@ -340,6 +342,10 @@ impl Database {
             let verification_id = format!("runtime_verification_{}", Uuid::new_v4());
             let ttl: i32 = row.get("verification_ttl_seconds");
             let expires_at = (now + Duration::seconds(i64::from(ttl))).to_rfc3339();
+            let admission_claims =
+                runtime_admission_claims_from_verification(&challenge, &signed.payload.evidence);
+            let admission_fingerprint =
+                runtime_admission_fingerprint(&admission_claims).map_err(SessionError::Invalid)?;
             let record = ProviderRuntimeVerificationRecord {
                 schema_version: RUNTIME_VERIFICATION_RECORD_SCHEMA_VERSION.to_string(),
                 verification_id: verification_id.clone(),
@@ -360,6 +366,9 @@ impl Database {
                 proof_policy_version: challenge.proof_policy_version.clone(),
                 agent_runtime_contract_version: challenge.agent_runtime_contract_version.clone(),
                 proof_image_digest: challenge.proof_image_ref.clone(),
+                public_key_id: Some(signed.public_key_id.clone()),
+                runtime_admission_fingerprint: Some(admission_fingerprint.clone()),
+                runtime_admission_claims: Some(admission_claims.clone()),
                 verified_at: server_received_at.clone(),
                 expires_at: expires_at.clone(),
                 reason_codes: Vec::new(),
@@ -367,6 +376,8 @@ impl Database {
             validate_provider_runtime_verification_record(&record, now)
                 .map_err(SessionError::Invalid)?;
             let record_json = serde_json::to_string(&record)
+                .map_err(|error| SessionError::Invalid(error.to_string()))?;
+            let admission_claims_json = serde_json::to_string(&admission_claims)
                 .map_err(|error| SessionError::Invalid(error.to_string()))?;
             transaction
                 .execute(
@@ -376,7 +387,7 @@ impl Database {
                 .await?;
             transaction
                 .execute(
-                    "INSERT INTO provider_runtime_verifications (verification_id, challenge_id, provider_id, device_id, session_id, gpu_uuid, runtime_backend, hardware_fingerprint, runtime_verification_fingerprint, status, verified_at, expires_at, record_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'verified', $10, $11, $12)",
+                    "INSERT INTO provider_runtime_verifications (verification_id, challenge_id, provider_id, device_id, session_id, gpu_uuid, runtime_backend, hardware_fingerprint, runtime_verification_fingerprint, status, verified_at, expires_at, record_json, public_key_id, runtime_admission_fingerprint, runtime_admission_claims_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'verified', $10, $11, $12, $13, $14, $15)",
                     &[
                         &verification_id,
                         &challenge_id,
@@ -390,6 +401,9 @@ impl Database {
                         &server_received_at,
                         &expires_at,
                         &record_json,
+                        &signed.public_key_id,
+                        &admission_fingerprint,
+                        &admission_claims_json,
                     ],
                 )
                 .await?;
@@ -468,6 +482,9 @@ fn validate_issue_request(
     let verification_ttl = request
         .verification_ttl_seconds
         .unwrap_or(policy.verification_ttl_seconds);
+    let approved_proof_image_ref = policy.approved_proof_image_ref.as_deref().ok_or_else(|| {
+        SessionError::Conflict("runtime proof policy is not configured".to_string())
+    })?;
     if !safe_id(&request.provider_id)
         || !safe_id(&request.device_id)
         || !safe_id(&request.session_id)
@@ -476,6 +493,7 @@ fn validate_issue_request(
         || !request.gpu_uuid.is_ascii()
         || request.gpu_uuid.chars().any(char::is_whitespace)
         || !immutable_image_ref(&request.proof_image_ref)
+        || request.proof_image_ref != approved_proof_image_ref
         || challenge_ttl == 0
         || challenge_ttl > policy.challenge_ttl_seconds
         || verification_ttl == 0
@@ -625,6 +643,7 @@ mod tests {
             challenge_ttl_seconds: 600,
             clock_skew_seconds: 300,
             verification_ttl_seconds: 86_400,
+            approved_proof_image_ref: Some(format!("ghcr.io/burd/proof@sha256:{}", "a".repeat(64))),
         }
     }
 
@@ -648,6 +667,9 @@ mod tests {
         assert!(validate_issue_request(&request, policy()).is_err());
         request.proof_image_ref = format!("ghcr.io/burd/proof@sha256:{}", "a".repeat(64));
         request.ttl_seconds = Some(601);
+        assert!(validate_issue_request(&request, policy()).is_err());
+        request.ttl_seconds = Some(600);
+        request.proof_image_ref = format!("ghcr.io/burd/proof@sha256:{}", "b".repeat(64));
         assert!(validate_issue_request(&request, policy()).is_err());
     }
 
