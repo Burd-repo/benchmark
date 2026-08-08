@@ -1220,4 +1220,36 @@ mod tests {
         assert!(logs.contains(&gpu_uuid));
         assert_eq!(logs.matches("GPU-").count(), 1);
     }
+
+    #[test]
+    #[ignore = "requires Windows, WSL2, a Linux Docker engine, NVIDIA GPU-PV, and a digest-pinned image whose default command prints nvidia-smi -L"]
+    fn physical_windows_wsl2_nvidia_container_sees_only_leased_gpu() {
+        use crate::docker_runtime_backend::WindowsWsl2DockerBackend;
+
+        let image_ref = std::env::var("BURD_WINDOWS_WSL2_NVIDIA_TEST_IMAGE")
+            .expect("BURD_WINDOWS_WSL2_NVIDIA_TEST_IMAGE is required");
+        let gpu_uuid = std::env::var("BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID")
+            .expect("BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID is required");
+        let now = Utc::now();
+        let mut assignment = assignment_at(now);
+        assignment.job.image_ref = image_ref.clone();
+        assignment.execution.image_ref = image_ref.clone();
+        assignment.job.gpu_uuid = gpu_uuid.clone();
+        assignment.lease.gpu_uuid = gpu_uuid.clone();
+        assignment.execution.gpu_uuid = gpu_uuid.clone();
+        let executor = DockerNvidiaProviderJobExecutor::new(
+            WindowsWsl2DockerBackend::default(),
+            StaticProviderJobImagePolicy::new([("llm_inference", image_ref)]),
+        );
+        let outcome = executor
+            .execute(assignment, JobCancellation::default())
+            .unwrap();
+        let logs = format!(
+            "{}\n{}",
+            outcome.metrics["stdout_tail"].as_str().unwrap_or_default(),
+            outcome.metrics["stderr_tail"].as_str().unwrap_or_default()
+        );
+        assert!(logs.contains(&gpu_uuid));
+        assert_eq!(logs.matches("GPU-").count(), 1);
+    }
 }

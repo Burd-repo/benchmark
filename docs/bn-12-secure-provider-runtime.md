@@ -59,8 +59,9 @@ contract does not bind Burd to Docker Desktop.
 
 Windows is not globally unsupported. In this slice, a detected
 `docker_wsl2` backend remains `not_ready` with
-`runtime_backend_verification_required` until the Windows backend and its
-physical NVIDIA isolation test are implemented.
+`runtime_backend_verification_required`. The isolated Agent backend now exists,
+but the physical NVIDIA isolation test and Control Plane verification have not
+been completed.
 
 ## Reported Versus Verified
 

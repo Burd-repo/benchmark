@@ -91,7 +91,8 @@ Implemented:
 - Runtime Platform Model v2, which separates provider host capability from the
   Linux-container job policy.
 - `DockerNvidiaProviderJobExecutor` separated from the `DockerRuntimeBackend`
-  interface, with `LinuxNativeDockerBackend` as the first implementation;
+  interface, with `LinuxNativeDockerBackend` and
+  `WindowsWsl2DockerBackend` sharing one Linux-container CLI runtime;
 - exact template/image-digest authorization with no permissive default;
 - read-only Docker/NVIDIA/GPU/image probes before side effects;
 - structured `docker create`, `start`, `inspect`, bounded/redacted `logs`,
@@ -104,10 +105,10 @@ Implemented:
 - deterministic container names, Burd ownership labels, controlled stale
   cleanup, resource limits, GPU UUID binding, timeout/cancellation, distinct
   exit/OOM failures, and mandatory removal;
-- fake-backend unit coverage and an ignored physical Linux/NVIDIA isolation
-  test.
+- fake-backend unit coverage plus ignored physical Linux/NVIDIA and
+  Windows/WSL2/NVIDIA isolation tests.
 
-The production `remote-session connect` command does not start the worker yet. The Linux executor is intentionally disconnected until Windows support, the real data plane, runtime verification, and controlled activation are complete.
+The production `remote-session connect` command does not start the worker yet. Both platform backends are intentionally disconnected until the real data plane, physical runtime verification, and controlled activation are complete.
 
 Not implemented:
 
@@ -117,8 +118,8 @@ Not implemented:
 - remote cancellation discovery while an execution is active;
 - Control Plane persistence or verification of reported runtime capabilities;
 - scheduler filtering by verified runtime capability;
-- the Windows WSL2 Docker backend;
 - production worker/executor wiring;
+- automatic WSL2, Docker, driver, or NVIDIA component installation;
 - paid workload execution.
 
 The current worker revalidates the complete bundle before acceptance and reports persisted transitions through the existing authenticated job endpoints. Its cancellation token currently represents local shutdown and authoritative assignment deadlines only. `POST /v1/jobs/{job_id}/cancel` remains administrative, and the remote control protocol has no typed `job_cancel` command or provider-authenticated job-status query; tests must not describe this boundary as remote cancellation.
