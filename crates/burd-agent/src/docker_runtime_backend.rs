@@ -567,11 +567,15 @@ impl DockerCliRuntime {
         loop {
             let state = self.inspect(helper_id, control)?;
             if !state.running {
-                return if state.exit_code == Some(0) && !state.oom_killed {
-                    Ok(())
-                } else {
-                    Err(DockerRuntimeError::new("artifact_helper_failed"))
-                };
+                if state.exit_code == Some(0) && !state.oom_killed {
+                    return Ok(());
+                }
+                #[cfg(test)]
+                if let Ok(logs) = self.logs(helper_id, control) {
+                    eprintln!("artifact helper stdout: {}", logs.stdout_tail());
+                    eprintln!("artifact helper stderr: {}", logs.stderr_tail());
+                }
+                return Err(DockerRuntimeError::new("artifact_helper_failed"));
             }
             if control.remaining().is_zero() {
                 return Err(DockerRuntimeError::new("runtime_command_timed_out"));
