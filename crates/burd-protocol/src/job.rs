@@ -6,6 +6,7 @@ pub const JOB_SCHEMA_VERSION: &str = "burd-job-v1";
 pub const JOB_EVENT_SCHEMA_VERSION: &str = "burd-job-event-v1";
 pub const JOB_RESULT_SCHEMA_VERSION: &str = "burd-job-result-v1";
 pub const JOB_DATA_PLANE_GRANT_VERSION: &str = "burd-job-data-plane-grant-v1";
+pub const JOB_ARTIFACT_UPLOAD_VERSION: &str = "burd-job-artifact-upload-v1";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JobArtifact {
@@ -38,6 +39,14 @@ pub struct JobDataPlaneGrant {
     pub download_urls: Vec<JobDataPlaneUrl>,
     #[serde(default)]
     pub upload_urls: Vec<JobDataPlaneUrl>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobArtifactUploadResponse {
+    pub schema_version: String,
+    pub request_id: String,
+    pub job_id: String,
+    pub artifact: JobArtifact,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

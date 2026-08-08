@@ -13,6 +13,7 @@ path = "src/main.rs"
 axum.workspace = true
 burd-protocol = { path = "../burd-protocol" }
 chrono.workspace = true
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -22,7 +23,6 @@ uuid.workspace = true
 [dev-dependencies]
 burd-agent = { path = "../burd-agent", features = ["integration-test-support"] }
 burd-hardware = { path = "../burd-hardware" }
-futures-util.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
 tokio-tungstenite.workspace = true
 tower.workspace = true

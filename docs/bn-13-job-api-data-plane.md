@@ -1,8 +1,8 @@
 # BN-13 - Job API And Data Plane
 
-BN-13 introduces the first backend-owned compute job registry and data-plane metadata contract. It creates jobs for a specific provider, device, and active remote session, lets the provider pull the next assignment over authenticated session credentials, records sequenced progress events, and accepts final result metadata.
+BN-13 introduces the backend-owned compute job registry and data-plane contract. It creates jobs for a specific provider, device, and active remote session, lets the provider pull the next assignment over authenticated session credentials, records sequenced progress events, transfers declared provider-side artifacts, and accepts final result metadata.
 
-BN-13 does not implement scheduler leases, marketplace reservations, billing, metering, arbitrary shell execution, byte streaming, or paid workload execution. It is the control-plane foundation that BN-14 leases and BN-15 metering can consume.
+BN-13 does not implement customer artifact ingress, external object-storage signing, marketplace reservations, billing, arbitrary shell execution, or paid workload execution. It is the control-plane foundation that BN-14 leases and BN-15 metering can consume.
 
 ## Backend Scope
 
@@ -10,6 +10,7 @@ BN-13 adds:
 
 - `compute_jobs`, an appendable job metadata and state table;
 - `job_events`, a sequenced provider progress event table;
+- `job_artifact_uploads`, a registry of output bytes verified by the Control Plane;
 - `burd-protocol` job, artifact, event, result, cancel, list, next-job, and data-plane grant contracts;
 - admin job creation with `Idempotency-Key` replay protection;
 - provider pull of the next queued job using an authenticated remote session;
@@ -44,6 +45,11 @@ Provider-session endpoints:
 - `POST /v1/sessions/{session_id}/jobs/{job_id}/events` appends a sequenced progress event and may move the job to `provisioning`, `running`, or `uploading`.
 - `POST /v1/sessions/{session_id}/jobs/{job_id}/result` submits final `succeeded` or `failed` result metadata and output artifact references.
 
+Job-credential endpoints:
+
+- `GET /v1/jobs/{job_id}/artifacts/{artifact_id}/download` streams one declared input.
+- `PUT /v1/jobs/{job_id}/results/{artifact_id}/upload` streams and records one declared output.
+
 ## Data Plane Contract
 
 The data-plane grant includes:
@@ -55,7 +61,15 @@ The data-plane grant includes:
 - scoped download paths for declared input artifacts;
 - scoped upload paths for declared expected outputs.
 
-The scoped paths are metadata-only in BN-13. They do not embed the raw credential in the URL and do not transfer bytes yet. Object storage signing, byte upload/download, checksum enforcement, and storage retention belong to later data-plane hardening.
+The paths do not embed the credential. The Agent sends it only in the
+`Authorization` header, never forwards it to the workload container, and
+accepts no redirects. Input and output bytes are streamed with exact size and
+SHA-256 verification. Uploads finalize atomically and terminal success is
+accepted only when every declared output matches a verified upload record.
+
+The current transport is a Control Plane-owned filesystem object-store adapter.
+Customer input ingestion, externally signed object-store URLs, retention, and
+garbage collection remain separate production work.
 
 ## State Machine
 
@@ -78,7 +92,7 @@ BN-13 does not implement:
 - scheduler selection or leases;
 - provider-side container execution of jobs;
 - arbitrary shell or customer-defined commands;
-- data-plane byte transfer;
+- customer-side artifact ingestion;
 - object storage signed URL generation;
 - usage metering or job receipts;
 - marketplace listing, reservation, billing, Pix, payouts, refunds, or disputes;

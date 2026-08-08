@@ -62,6 +62,124 @@ pub fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 
+/// Creates a new owner-only file without a permissive creation window.
+pub fn create_private_file_new(path: &Path) -> Result<File, String> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    create_private_directory_all(parent)?;
+    create_private_file(path)
+        .map_err(|error| format!("failed to create private file {}: {error}", path.display()))
+}
+
+/// Creates a directory tree and restricts the final directory to its owner.
+pub fn create_private_directory_all(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|error| {
+        format!(
+            "failed to create private directory {}: {error}",
+            path.display()
+        )
+    })?;
+    restrict_private_directory(path).map_err(|error| {
+        format!(
+            "failed to restrict private directory {}: {error}",
+            path.display()
+        )
+    })
+}
+
+pub fn restrict_private_file(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("failed to inspect private file {}: {error}", path.display()))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "private path {} is not a regular file",
+            path.display()
+        ));
+    }
+    restrict_private_file_platform(path).map_err(|error| {
+        format!(
+            "failed to restrict private file {}: {error}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(unix)]
+fn restrict_private_file_platform(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(windows)]
+fn restrict_private_file_platform(path: &Path) -> std::io::Result<()> {
+    restrict_private_directory(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn restrict_private_file_platform(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict_private_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(windows)]
+fn restrict_private_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SetFileSecurityW,
+    };
+
+    let path_wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let descriptor_sddl = "D:P(A;;FA;;;OW)(A;;FA;;;SY)"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            descriptor_sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if converted == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let applied =
+        unsafe { SetFileSecurityW(path_wide.as_ptr(), DACL_SECURITY_INFORMATION, descriptor) };
+    let result = if applied == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    };
+    unsafe {
+        LocalFree(descriptor);
+    }
+    result
+}
+
+#[cfg(not(any(unix, windows)))]
+fn restrict_private_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 fn validate_destination(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
@@ -396,6 +514,20 @@ mod tests {
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_directories_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_root("private-directory");
+        create_private_directory_all(&root).unwrap();
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
         );
         fs::remove_dir_all(root).unwrap();
     }

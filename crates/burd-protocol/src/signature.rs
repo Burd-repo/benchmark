@@ -114,6 +114,32 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex_encode(&digest)
 }
 
+/// Incremental SHA-256 state for bounded artifact streaming.
+///
+/// Keeping this wrapper in `burd-protocol` lets callers hash streams without
+/// depending directly on the selected SHA-256 implementation.
+pub struct Sha256Accumulator(Sha256);
+
+impl Sha256Accumulator {
+    pub fn new() -> Self {
+        Self(Sha256::new())
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+
+    pub fn finish_hex(self) -> String {
+        hex_encode(&self.0.finalize())
+    }
+}
+
+impl Default for Sha256Accumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn hash_canonical<T: Serialize>(value: &T) -> Result<String, String> {
     let canonical = canonical_json(value)?;
     Ok(sha256_hex(canonical.as_bytes()))

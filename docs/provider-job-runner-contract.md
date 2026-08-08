@@ -106,14 +106,23 @@ Implemented:
   cleanup, resource limits, GPU UUID binding, timeout/cancellation, distinct
   exit/OOM failures, and mandatory removal;
 - fake-backend unit coverage plus ignored physical Linux/NVIDIA and
-  Windows/WSL2/NVIDIA isolation tests.
+  Windows/WSL2/NVIDIA isolation tests;
+- a separate `JobDataPlaneClient` boundary that downloads declared inputs into
+  a private per-job workspace, verifies size and SHA-256 while streaming,
+  uploads only declared outputs, and always attempts bounded cleanup;
+- separate bounded tmpfs volumes for read-only workload inputs and UID-1000
+  outputs, bridged through a digest-pinned, fixed-operation Burd helper without
+  host bind mounts, workload network, shell, or job credentials;
+- Control Plane artifact GET/PUT endpoints with job-scoped bearer
+  authorization, bounded streaming, no redirects, atomic private-file writes,
+  verified upload persistence, and terminal-result/upload consistency checks.
 
-The production `remote-session connect` command does not start the worker yet. Both platform backends are intentionally disconnected until the real data plane, physical runtime verification, and controlled activation are complete.
+The production `remote-session connect` command does not start the worker yet. Both platform backends and the artifact data plane remain intentionally disconnected until physical runtime verification and controlled activation are complete.
 
 Not implemented:
 
-- byte-level artifact download or result upload;
 - signed object-storage URLs;
+- customer input ingestion and production object-storage adapters;
 - secret injection;
 - remote cancellation discovery while an execution is active;
 - Control Plane persistence or verification of reported runtime capabilities;

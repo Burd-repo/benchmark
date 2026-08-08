@@ -1,0 +1,4 @@
+FROM scratch
+COPY --chmod=0555 target/debug/burd-artifact-helper /burd-artifact-helper
+COPY --chown=1000:1000 containers/artifact-helper/rootfs/burd/staging/.burd-placeholder /burd/staging/.burd-placeholder
+ENTRYPOINT ["/burd-artifact-helper"]

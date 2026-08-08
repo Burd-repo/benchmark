@@ -2,10 +2,9 @@
 
 This threat model covers the first Burd Network control-plane phase: provider
 enrollment, remote sessions, signed evidence, challenge response, telemetry,
-trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control metadata, BN-14 scheduler leases, BN-15 usage ledger receipts, BN-16 marketplace listing registry snapshots, BN-17 customer accounts/reservations, BN-18 billing/Pix/payout settlement primitives, BN-19 observability/SRE primitives, and BN-20 security posture/attestation registry primitives, and BN-21 multi-GPU inventory registry primitives.
+trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control and provider artifact transfer, BN-14 scheduler leases, BN-15 usage ledger receipts, BN-16 marketplace listing registry snapshots, BN-17 customer accounts/reservations, BN-18 billing/Pix/payout settlement primitives, BN-19 observability/SRE primitives, and BN-20 security posture/attestation registry primitives, and BN-21 multi-GPU inventory registry primitives.
 
-It does not cover paid job execution, raw customer workload payload bytes, customer data
-plane byte transfer, real Pix gateway integration, signed payment webhooks, executed bank payouts, completed KYC/tax/legal workflows, Kubernetes, distributed training, or
+It does not cover paid job execution, customer artifact ingress, external object-storage adapters, real Pix gateway integration, signed payment webhooks, executed bank payouts, completed KYC/tax/legal workflows, Kubernetes, distributed training, or
 marketplace UI beyond backend listing/reservation/billing registry, vendor-specific telemetry export, alert routing, automated backup/restore tooling, production TPM/HSM/OS keychain migration, TPM quote verification, signed updater infrastructure, SBOM generation, vulnerability scanner execution, or external supply-chain scanning.
 
 ## Security Goals
@@ -45,7 +44,7 @@ marketplace UI beyond backend listing/reservation/billing registry, vendor-speci
 - audit log;
 - runtime image digests and allowlists;
 - secure runtime plans;
-- job-scoped data-plane credentials, introduced as metadata in BN-13 and still requiring later byte-transfer enforcement;
+- job-scoped data-plane credentials, private provider workspaces, customer input artifacts, verified output uploads, and artifact object storage;
 - scheduler leases, lease status, lease expiry, and active GPU reservations;
 - usage ledger entries, receipt hashes, source hashes, and metering quantities;
 - customer organizations, projects, API key hashes, quotas, reservations, customer credit ledger entries, and customer audit events;
@@ -122,11 +121,15 @@ evidence, and backend observations.
 | Provider disappears after lease offer | Offered leases have short server-side TTL and later scheduler passes expire stale offers. |
 | Lease replay after expiry | `jobs/next` requires `status = offered` and `expires_at` later than server time before assignment. |
 | Data-plane credential leakage through URLs | BN-13 returns scoped artifact paths separately from the opaque job credential; raw credentials are not embedded in URLs. |
+| Data-plane credential exposed to customer code | The Agent performs HTTP transfer and never copies the credential into the container plan, filesystem, environment, logs, or metrics. |
+| Artifact path traversal or host mount escape | Manifests reject unsafe paths; object storage canonicalizes containment and rejects symlinks; workloads receive separate bounded tmpfs volumes held by a fixed offline anchor and populated through trusted helpers, never a host bind mount. |
+| Artifact helper substitution or command injection | The backend accepts only an immutable helper image reference, verifies it locally before side effects, invokes fixed `import`/`export` operations without a shell or customer path, and applies no-network, default-capability drop, no-new-privileges, seccomp, PID, CPU, and memory limits. Import alone receives `DAC_READ_SEARCH` to read private staged files inside its isolated container namespace; it receives no host mount. |
+| Oversized or tampered artifact | Transfer enforces declared counts and sizes while streaming, verifies SHA-256, finalizes atomically, and rejects mismatched terminal results. |
 | Duplicate or reordered job progress | Job events require a unique monotonically provided sequence per job; duplicate sequences are rejected. |
 | Terminal result rewrite | BN-13 rejects result changes after a job reaches a terminal state. |
 | Usage ledger tampering | BN-15 stores canonical receipt/source hashes and database triggers reject update/delete on usage ledger entries. |
 | Duplicate usage finalization | `UNIQUE(job_id, entry_type)` makes finalize idempotent and returns the existing receipt. |
-| Provider-inflated transfer bytes | BN-15 uses backend-recorded artifact metadata only; byte-level verification remains future data-plane hardening. |
+| Provider-inflated transfer bytes | The Control Plane records only streamed output size and SHA-256 that it verified, and terminal success must match those upload records. Billing-grade network accounting remains future work. |
 | Customer API key replay or leakage | BN-17 stores only token hashes, scopes keys to projects, supports expiry, and uses bearer auth over authenticated transport. |
 | Double reservation of one listing | BN-17 enforces a unique active reservation per marketplace listing and checks listing current status transactionally. |
 | Reservation quota bypass | BN-17 locks project quota and active reservation state before accepting a reservation. |

@@ -126,6 +126,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "refund_dispute_placeholder_integrity",
         sql: include_str!("../migrations/0024_refund_dispute_placeholder_integrity.sql"),
     },
+    Migration {
+        version: "0025",
+        name: "job_artifact_transfers",
+        sql: include_str!("../migrations/0025_job_artifact_transfers.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -381,6 +386,15 @@ mod tests {
         ] {
             assert!(sql.contains(needle));
         }
+    }
+
+    #[test]
+    fn job_artifact_transfer_migration_records_verified_uploads() {
+        let sql = MIGRATIONS[24].sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS job_artifact_uploads"));
+        assert!(sql.contains("PRIMARY KEY(job_id, artifact_id)"));
+        assert!(sql.contains("sha256 TEXT NOT NULL"));
+        assert!(sql.contains("size_bytes BIGINT NOT NULL"));
     }
 
     #[test]
