@@ -102,7 +102,7 @@ pub use gpu_inventory::{
     DeviceGpuInventoryRecord, DeviceGpuInventoryVerification,
     ListProviderDeviceGpuInventoryResponse, SignedDeviceGpuInventory,
     SubmitDeviceGpuInventoryResponse, device_gpu_inventory_hash,
-    device_gpu_inventory_signature_message,
+    device_gpu_inventory_signature_message, validate_device_gpu_inventory_payload,
 };
 pub use identity::{
     AgentConfig, AgentIdentityPublic, AgentStatePaths, ApiTokenStatus, IdentityInitResult,

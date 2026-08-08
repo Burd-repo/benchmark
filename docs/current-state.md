@@ -638,6 +638,8 @@ starting the API server or depending on host state:
 - `burd-protocol` defines signed device GPU inventory payloads, per-GPU inventory rows, canonical inventory hashing, and signature-message binding.
 - PostgreSQL migration `0019_multi_gpu_inventory` adds immutable `device_gpu_inventory` records with append-only enforcement.
 - The control plane exposes `POST /v1/sessions/{session_id}/gpu-inventory` and `GET /v1/providers/{provider_id}/gpu-inventory`.
+- The Agent supervises an automatic signed inventory publisher with immediate session/key-change publication, 60-second hardware probes, stable unchanged-snapshot suppression, bounded retry and pre-submit identity revalidation.
+- NVIDIA discovery publishes one atomic, index-sorted snapshot with UUID, physical index, CUDA backend, PCI IDs, VRAM and active status; malformed or incomplete discovery fails closed instead of publishing a partial snapshot.
 - Job creation and scheduler selection require an active inventory row for the requested GPU UUID.
 - BN-21 does not implement distributed placement, cluster orchestration, or GPU reservation across multiple providers.
 

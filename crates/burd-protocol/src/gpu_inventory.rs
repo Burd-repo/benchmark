@@ -1,5 +1,7 @@
 use crate::{canonical_json, hash_canonical};
+use chrono::DateTime;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 pub const DEVICE_GPU_INVENTORY_SCHEMA_VERSION: &str = "burd-device-gpu-inventory-v1";
 pub const DEVICE_GPU_INVENTORY_CANONICALIZATION_VERSION: &str = "burd-json-c14n-v1";
@@ -119,6 +121,84 @@ pub fn device_gpu_inventory_signature_message(
     })
 }
 
+pub fn validate_device_gpu_inventory_payload(
+    payload: &DeviceGpuInventoryPayload,
+) -> Result<(), String> {
+    if payload.schema_version != DEVICE_GPU_INVENTORY_SCHEMA_VERSION {
+        return Err("unsupported device GPU inventory schema version".to_string());
+    }
+    for (label, value) in [
+        ("provider_id", payload.provider_id.as_str()),
+        ("device_id", payload.device_id.as_str()),
+        ("session_id", payload.session_id.as_str()),
+        (
+            "hardware_fingerprint",
+            payload.hardware_fingerprint.as_str(),
+        ),
+    ] {
+        if !safe_short_ascii(value, 256) {
+            return Err(format!("device GPU inventory {label} is invalid"));
+        }
+    }
+    if DateTime::parse_from_rfc3339(&payload.observed_at).is_err() {
+        return Err("device GPU inventory observed_at is invalid".to_string());
+    }
+    if payload.gpus.is_empty() || payload.gpus.len() > 32 {
+        return Err("device GPU inventory must contain between 1 and 32 GPUs".to_string());
+    }
+    let mut seen_gpu_uuids = HashSet::new();
+    let mut seen_gpu_indices = HashSet::new();
+    for gpu in &payload.gpus {
+        if !safe_gpu_uuid(&gpu.gpu_uuid) {
+            return Err("device GPU inventory gpu_uuid is invalid".to_string());
+        }
+        if !seen_gpu_uuids.insert(gpu.gpu_uuid.to_ascii_lowercase()) {
+            return Err("device GPU inventory must not repeat GPU UUIDs".to_string());
+        }
+        if !seen_gpu_indices.insert(gpu.gpu_index) {
+            return Err("device GPU inventory must not repeat GPU indices".to_string());
+        }
+        for (label, value) in [
+            ("backend", gpu.backend.as_str()),
+            ("pci_vendor_id", gpu.pci_vendor_id.as_str()),
+            ("pci_device_id", gpu.pci_device_id.as_str()),
+        ] {
+            if !safe_short_ascii(value, 128) {
+                return Err(format!("device GPU inventory {label} is invalid"));
+            }
+        }
+        if !matches!(
+            gpu.status.as_str(),
+            "active" | "inactive" | "degraded" | "retired"
+        ) {
+            return Err(
+                "device GPU inventory status must be active, inactive, degraded, or retired"
+                    .to_string(),
+            );
+        }
+        if gpu.vram_total_mib == Some(0) {
+            return Err("device GPU inventory VRAM must be positive when present".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn safe_short_ascii(value: &str, maximum_len: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum_len
+        && value.is_ascii()
+        && !value.chars().any(char::is_control)
+}
+
+fn safe_gpu_uuid(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.is_ascii()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +257,24 @@ mod tests {
                 &signature
             )
             .unwrap()
+        );
+    }
+
+    #[test]
+    fn payload_validation_rejects_duplicate_or_invalid_gpu_identity() {
+        let mut payload = payload();
+        validate_device_gpu_inventory_payload(&payload).unwrap();
+
+        payload.gpus[1].gpu_uuid = "gpu-1".to_string();
+        assert_eq!(
+            validate_device_gpu_inventory_payload(&payload).unwrap_err(),
+            "device GPU inventory must not repeat GPU UUIDs"
+        );
+
+        payload.gpus[1].gpu_uuid = "GPU\nsecret".to_string();
+        assert_eq!(
+            validate_device_gpu_inventory_payload(&payload).unwrap_err(),
+            "device GPU inventory gpu_uuid is invalid"
         );
     }
 }

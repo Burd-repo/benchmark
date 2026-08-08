@@ -5,7 +5,8 @@ use sha2::{Digest, Sha256};
 use std::process::Command;
 pub mod telemetry;
 pub use telemetry::{
-    NVIDIA_SMI_COLLECTOR_VERSION, NvidiaTelemetryCollection, collect_nvidia_telemetry,
+    NVIDIA_SMI_COLLECTOR_VERSION, NvidiaGpuInventoryDevice, NvidiaTelemetryCollection,
+    collect_nvidia_telemetry,
 };
 
 pub const BENCHMARK_VERSION: &str = "2026.06-mvp";

@@ -1,15 +1,25 @@
 use burd_protocol::{GpuProcessTelemetry, GpuTelemetrySample};
 use chrono::Utc;
 use csv::{ReaderBuilder, Trim};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::process::Command;
 
 pub const NVIDIA_SMI_COLLECTOR_VERSION: &str = "nvidia-smi-csv-v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NvidiaGpuInventoryDevice {
+    pub gpu_index: u32,
+    pub gpu_uuid: String,
+    pub pci_vendor_id: Option<String>,
+    pub pci_device_id: Option<String>,
+    pub vram_total_mib: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct NvidiaTelemetryCollection {
     pub collector: String,
     pub samples: Vec<GpuTelemetrySample>,
+    pub inventory: Vec<NvidiaGpuInventoryDevice>,
     pub warnings: Vec<String>,
 }
 
@@ -17,6 +27,7 @@ pub fn collect_nvidia_telemetry(
     first_sample_sequence: u64,
 ) -> Result<NvidiaTelemetryCollection, String> {
     let identity = required_query(&[
+        "index",
         "uuid",
         "name",
         "pci.bus_id",
@@ -27,44 +38,64 @@ pub fn collect_nvidia_telemetry(
     let observed_at = Utc::now().to_rfc3339();
     let cuda_driver_version = detect_cuda_driver_version();
     let mut samples = BTreeMap::new();
+    let mut inventory = Vec::new();
+    let mut gpu_indices = HashSet::new();
     for row in identity {
-        require_columns(&row, 6, "GPU identity")?;
-        let uuid = required_value(&row[0], "GPU UUID")?;
-        let (pci_vendor_id, pci_device_id) = parse_pci_device_id(&row[3]);
-        samples.insert(
-            uuid.clone(),
-            GpuTelemetrySample {
-                sample_sequence: 0,
-                observed_at: observed_at.clone(),
-                gpu_uuid: uuid,
-                gpu_name: required_value(&row[1], "GPU name")?,
-                pci_bus_id: required_value(&row[2], "PCI bus ID")?,
-                pci_vendor_id,
-                pci_device_id,
-                compute_capability: None,
-                driver_version: required_value(&row[4], "driver version")?,
-                cuda_driver_version: cuda_driver_version.clone(),
-                cuda_runtime_version: None,
-                vram_total_mib: parse_required_u64(&row[5], "total VRAM")?,
-                vram_used_mib: None,
-                vram_free_mib: None,
-                gpu_utilization_percent: None,
-                memory_utilization_percent: None,
-                temperature_celsius: None,
-                power_draw_watts: None,
-                power_limit_watts: None,
-                graphics_clock_mhz: None,
-                sm_clock_mhz: None,
-                memory_clock_mhz: None,
-                performance_state: None,
-                throttle_reasons: vec![],
-                ecc_corrected_errors: None,
-                ecc_uncorrected_errors: None,
-                processes: vec![],
-                container_id: None,
-                job_id: None,
-            },
-        );
+        require_columns(&row, 7, "GPU identity")?;
+        let gpu_index =
+            parse_u32(&row[0]).ok_or_else(|| "GPU index is invalid or unavailable".to_string())?;
+        if !gpu_indices.insert(gpu_index) {
+            return Err("nvidia-smi returned duplicate GPU indices".to_string());
+        }
+        let uuid = required_value(&row[1], "GPU UUID")?;
+        let (pci_vendor_id, pci_device_id) = parse_pci_device_id(&row[4]);
+        let vram_total_mib = parse_required_u64(&row[6], "total VRAM")?;
+        inventory.push(NvidiaGpuInventoryDevice {
+            gpu_index,
+            gpu_uuid: uuid.clone(),
+            pci_vendor_id: pci_vendor_id.clone(),
+            pci_device_id: pci_device_id.clone(),
+            vram_total_mib,
+        });
+        if samples
+            .insert(
+                uuid.clone(),
+                GpuTelemetrySample {
+                    sample_sequence: 0,
+                    observed_at: observed_at.clone(),
+                    gpu_uuid: uuid,
+                    gpu_name: required_value(&row[2], "GPU name")?,
+                    pci_bus_id: required_value(&row[3], "PCI bus ID")?,
+                    pci_vendor_id,
+                    pci_device_id,
+                    compute_capability: None,
+                    driver_version: required_value(&row[5], "driver version")?,
+                    cuda_driver_version: cuda_driver_version.clone(),
+                    cuda_runtime_version: None,
+                    vram_total_mib,
+                    vram_used_mib: None,
+                    vram_free_mib: None,
+                    gpu_utilization_percent: None,
+                    memory_utilization_percent: None,
+                    temperature_celsius: None,
+                    power_draw_watts: None,
+                    power_limit_watts: None,
+                    graphics_clock_mhz: None,
+                    sm_clock_mhz: None,
+                    memory_clock_mhz: None,
+                    performance_state: None,
+                    throttle_reasons: vec![],
+                    ecc_corrected_errors: None,
+                    ecc_uncorrected_errors: None,
+                    processes: vec![],
+                    container_id: None,
+                    job_id: None,
+                },
+            )
+            .is_some()
+        {
+            return Err("nvidia-smi returned duplicate GPU UUIDs".to_string());
+        }
     }
     if samples.is_empty() {
         return Err("nvidia-smi returned no NVIDIA GPUs".to_string());
@@ -174,6 +205,10 @@ pub fn collect_nvidia_telemetry(
     collect_compute_processes(&mut samples, &mut warnings);
 
     let mut output = samples.into_values().collect::<Vec<_>>();
+    inventory.sort_by(|left, right| {
+        (left.gpu_index, left.gpu_uuid.to_ascii_lowercase())
+            .cmp(&(right.gpu_index, right.gpu_uuid.to_ascii_lowercase()))
+    });
     for (offset, sample) in output.iter_mut().enumerate() {
         sample.sample_sequence = first_sample_sequence
             .checked_add(offset as u64)
@@ -182,6 +217,7 @@ pub fn collect_nvidia_telemetry(
     Ok(NvidiaTelemetryCollection {
         collector: NVIDIA_SMI_COLLECTOR_VERSION.to_string(),
         samples: output,
+        inventory,
         warnings,
     })
 }

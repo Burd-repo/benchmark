@@ -1049,6 +1049,12 @@ BN-21 adds backend-owned GPU inventory snapshots so the backend can validate whi
 
 Device endpoint. Requires the short-lived device bearer credential for the remote session. The payload is signed by an active device key and binds provider, device, session, hardware fingerprint, public key, and inventory hash.
 
+The Agent publishes one complete, deterministically ordered NVIDIA snapshot immediately after a
+session/key binding becomes available and probes again every 60 seconds. Unchanged hardware is
+suppressed locally; session, key, hardware or GPU changes require a new signed snapshot. The Agent
+reloads its current binding before submission and retries transient failures without terminating
+the remote session. Inventory signing material and transport credentials are never logged.
+
 ### `GET /v1/providers/{provider_id}/gpu-inventory`
 
 Admin endpoint that lists immutable GPU inventory records for a provider, including GPU UUID, GPU index, backend, PCI IDs, VRAM, status, and backend verification state.
