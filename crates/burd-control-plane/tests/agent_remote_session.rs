@@ -3,7 +3,7 @@ use burd_agent::exit_status::AgentExitCategory;
 use burd_agent::lifecycle::{AgentLifecyclePhase, AgentLifecycleStatus, lifecycle_status};
 use burd_agent::remote_proof::{ProofExecution, ProofExecutionRequest};
 use burd_control_plane::{AppState, ControlPlaneConfig, Database, router};
-use burd_hardware::NvidiaTelemetryCollection;
+use burd_hardware::{NvidiaGpuInventoryDevice, NvidiaTelemetryCollection};
 use burd_protocol::{
     GpuTelemetrySample, ProofCapabilityMetrics, SignedProofCapabilityResponse,
     TelemetryBatchPayload,
@@ -76,6 +76,13 @@ fn deterministic_nvidia_telemetry(
             processes: vec![],
             container_id: None,
             job_id: None,
+        }],
+        inventory: vec![NvidiaGpuInventoryDevice {
+            gpu_index: 0,
+            gpu_uuid: "GPU-agent-integration".to_string(),
+            pci_vendor_id: Some("10de".to_string()),
+            pci_device_id: Some("2684".to_string()),
+            vram_total_mib: 24_564,
         }],
         warnings: vec![],
     })
@@ -417,6 +424,55 @@ where
     loop {
         let rows = telemetry_batch_rows(client, session_id).await;
         if condition(&rows) {
+            return rows;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {description}; last rows: {rows:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GpuInventoryRow {
+    session_id: String,
+    inventory_hash: String,
+    public_key_id: String,
+    gpu_uuid: String,
+    gpu_index: u32,
+    status: String,
+    payload_json: String,
+    verification_json: String,
+}
+
+async fn gpu_inventory_rows(client: &Client) -> Vec<GpuInventoryRow> {
+    client
+        .query(
+            "SELECT session_id, inventory_hash, public_key_id, gpu_uuid, gpu_index, status, payload_json, verification_json FROM device_gpu_inventory ORDER BY server_received_at, gpu_index",
+            &[],
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| GpuInventoryRow {
+            session_id: row.get("session_id"),
+            inventory_hash: row.get("inventory_hash"),
+            public_key_id: row.get("public_key_id"),
+            gpu_uuid: row.get("gpu_uuid"),
+            gpu_index: row.get::<_, i32>("gpu_index").max(0) as u32,
+            status: row.get("status"),
+            payload_json: row.get("payload_json"),
+            verification_json: row.get("verification_json"),
+        })
+        .collect()
+}
+
+async fn wait_for_gpu_inventory(client: &Client, description: &str) -> Vec<GpuInventoryRow> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let rows = gpu_inventory_rows(client).await;
+        if !rows.is_empty() {
             return rows;
         }
         assert!(
@@ -835,6 +891,27 @@ async fn live_agent_signed_telemetry_persists_ack_resumes_and_handles_rejection(
     )
     .await;
     let initial_session = initial_sessions[0].clone();
+    let inventory =
+        wait_for_gpu_inventory(&client, "the Agent-produced signed GPU inventory snapshot").await;
+    assert_eq!(inventory.len(), 1);
+    assert_eq!(inventory[0].session_id, initial_session.session_id);
+    assert_eq!(inventory[0].public_key_id, enrollment.public_key_id);
+    assert_eq!(inventory[0].gpu_uuid, "GPU-agent-integration");
+    assert_eq!(inventory[0].gpu_index, 0);
+    assert_eq!(inventory[0].status, "active");
+    let inventory_payload: burd_protocol::DeviceGpuInventoryPayload =
+        serde_json::from_str(&inventory[0].payload_json).unwrap();
+    assert_eq!(
+        burd_protocol::device_gpu_inventory_hash(&inventory_payload).unwrap(),
+        inventory[0].inventory_hash
+    );
+    let inventory_verification: burd_protocol::DeviceGpuInventoryVerification =
+        serde_json::from_str(&inventory[0].verification_json).unwrap();
+    assert!(inventory_verification.inventory_hash_valid);
+    assert!(inventory_verification.signature_valid);
+    assert!(inventory_verification.session_bound);
+    assert!(inventory_verification.fingerprint_bound);
+    assert!(inventory_verification.active_key_bound);
     let accepted = wait_for_telemetry_batches(
         &client,
         &initial_session.session_id,

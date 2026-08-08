@@ -242,7 +242,7 @@ impl Database {
             .ok_or_else(|| SessionError::NotFound("provider not found".to_string()))?;
         let rows = client
             .query(
-                "SELECT DISTINCT ON (i.device_id, lower(i.gpu_uuid)) i.device_id, d.status AS device_status, i.gpu_uuid, i.status AS gpu_status, i.public_key_id FROM device_gpu_inventory i JOIN devices d ON d.device_id = i.device_id AND d.provider_id = i.provider_id WHERE i.provider_id = $1 ORDER BY i.device_id, lower(i.gpu_uuid), i.server_received_at DESC, i.observed_at DESC LIMIT $2",
+                "SELECT i.device_id, d.status AS device_status, i.gpu_uuid, i.status AS gpu_status, i.public_key_id FROM device_gpu_inventory i JOIN devices d ON d.device_id = i.device_id AND d.provider_id = i.provider_id WHERE i.provider_id = $1 AND i.inventory_hash = (SELECT latest.inventory_hash FROM device_gpu_inventory latest WHERE latest.provider_id = i.provider_id AND latest.device_id = i.device_id ORDER BY latest.server_received_at DESC, latest.observed_at DESC LIMIT 1) ORDER BY i.device_id, lower(i.gpu_uuid) LIMIT $2",
                 &[&provider_id, &MAX_ADMISSION_GPUS],
             )
             .await?;

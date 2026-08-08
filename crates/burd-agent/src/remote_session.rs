@@ -1,4 +1,5 @@
 use crate::exit_status::AgentExitError;
+use crate::gpu_inventory_publisher::run_worker as run_gpu_inventory_publisher;
 use crate::lifecycle::{AgentLifecyclePhase, LifecycleReporter};
 use crate::provider_job_executor::ProviderJobExecutor;
 use crate::provider_job_worker::{ProviderJobControlPlane, run_worker as run_provider_job_worker};
@@ -416,6 +417,19 @@ async fn run_session_supervisor(
     let (proof_telemetry_tx, mut proof_telemetry_rx) = mpsc::channel(1);
     let (session_shutdown_tx, session_shutdown_rx) = watch::channel(false);
     let mut workers = JoinSet::new();
+    let inventory_agent_version = agent_version.clone();
+    let inventory_shutdown = session_shutdown_rx.clone();
+    workers.spawn(async move {
+        (
+            "gpu_inventory_publisher",
+            run_gpu_inventory_publisher(
+                inventory_agent_version,
+                telemetry_collector,
+                inventory_shutdown,
+            )
+            .await,
+        )
+    });
     if let Some(runtime_observation_agent_version) = proof_agent_version.clone() {
         let runtime_observation_shutdown = session_shutdown_rx.clone();
         workers.spawn(async move {

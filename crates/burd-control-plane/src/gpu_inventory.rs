@@ -5,14 +5,11 @@ use burd_protocol::{
     DeviceGpuInventoryRecord, DeviceGpuInventoryVerification,
     ListProviderDeviceGpuInventoryResponse, SignedDeviceGpuInventory,
     SubmitDeviceGpuInventoryResponse, device_gpu_inventory_hash,
-    device_gpu_inventory_signature_message, verify_message,
+    device_gpu_inventory_signature_message, validate_device_gpu_inventory_payload, verify_message,
 };
 use chrono::Utc;
-use std::collections::HashSet;
 use tokio_postgres::{Row, Transaction};
 use uuid::Uuid;
-
-const MAX_GPU_INVENTORY_ITEMS: usize = 32;
 
 impl Database {
     pub async fn submit_device_gpu_inventory(
@@ -308,51 +305,17 @@ fn validate_signed_inventory_shape(
     authorized: &AuthorizedSession,
 ) -> Result<(), SessionError> {
     let payload = &signed.payload;
-    if payload.schema_version != DEVICE_GPU_INVENTORY_SCHEMA_VERSION
-        || signed.canonicalization_version != DEVICE_GPU_INVENTORY_CANONICALIZATION_VERSION
-    {
+    if signed.canonicalization_version != DEVICE_GPU_INVENTORY_CANONICALIZATION_VERSION {
         return Err(SessionError::Invalid(
             "unsupported device GPU inventory schema or canonicalization version".to_string(),
         ));
     }
+    validate_device_gpu_inventory_payload(payload).map_err(SessionError::Invalid)?;
     if payload.provider_id != authorized.provider_id
         || payload.device_id != authorized.device_id
         || payload.session_id != authorized.session_id
     {
         return Err(SessionError::Unauthorized);
-    }
-    if payload.gpus.is_empty() || payload.gpus.len() > MAX_GPU_INVENTORY_ITEMS {
-        return Err(SessionError::Invalid(
-            "device GPU inventory must contain between 1 and 32 GPUs".to_string(),
-        ));
-    }
-    let mut seen_gpu_uuids = HashSet::new();
-    let mut seen_gpu_indices = HashSet::new();
-    for gpu in &payload.gpus {
-        validate_short_ascii("gpu_uuid", &gpu.gpu_uuid)?;
-        validate_short_ascii("backend", &gpu.backend)?;
-        validate_short_ascii("pci_vendor_id", &gpu.pci_vendor_id)?;
-        validate_short_ascii("pci_device_id", &gpu.pci_device_id)?;
-        validate_short_ascii("status", &gpu.status)?;
-        if !matches!(
-            gpu.status.as_str(),
-            "active" | "inactive" | "degraded" | "retired"
-        ) {
-            return Err(SessionError::Invalid(
-                "device GPU inventory status must be active, inactive, degraded, or retired"
-                    .to_string(),
-            ));
-        }
-        if !seen_gpu_uuids.insert(gpu.gpu_uuid.clone()) {
-            return Err(SessionError::Invalid(
-                "device GPU inventory must not repeat GPU UUIDs".to_string(),
-            ));
-        }
-        if !seen_gpu_indices.insert(gpu.gpu_index) {
-            return Err(SessionError::Invalid(
-                "device GPU inventory must not repeat GPU indices".to_string(),
-            ));
-        }
     }
     if signed.public_key_id.trim().is_empty()
         || signed.signature.trim().is_empty()
@@ -379,20 +342,6 @@ fn validate_id(label: &str, value: &str, maximum_len: usize) -> Result<(), Sessi
         )))
     }
 }
-fn validate_short_ascii(field: &str, value: &str) -> Result<(), SessionError> {
-    if value.trim().is_empty()
-        || value.len() > 128
-        || !value
-            .chars()
-            .all(|character| character.is_ascii() && !character.is_ascii_control())
-    {
-        return Err(SessionError::Invalid(format!(
-            "device GPU inventory {field} is invalid"
-        )));
-    }
-    Ok(())
-}
-
 fn device_gpu_inventory_select_columns() -> &'static str {
     "SELECT inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, verification_json FROM device_gpu_inventory"
 }
@@ -455,7 +404,7 @@ pub(crate) async fn assert_gpu_inventory_contains(
 ) -> Result<(), SessionError> {
     let latest_status = transaction
         .query_opt(
-            "SELECT status FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 AND gpu_uuid = $3 ORDER BY server_received_at DESC, observed_at DESC LIMIT 1",
+            "SELECT status FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 AND lower(gpu_uuid) = lower($3) AND inventory_hash = (SELECT inventory_hash FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 ORDER BY server_received_at DESC, observed_at DESC LIMIT 1)",
             &[&provider_id, &device_id, &gpu_uuid],
         )
         .await?
@@ -640,7 +589,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore]
-    async fn postgres_inventory_presence_uses_latest_gpu_status() {
+    async fn postgres_inventory_presence_uses_complete_latest_snapshot() {
         let db = setup_inventory_database().await;
         let mut client = db.connect().await.unwrap();
         let first = Utc::now().to_rfc3339();
@@ -657,11 +606,11 @@ mod tests {
         .await;
         insert_inventory_row(
             &client,
-            "inventory_hash_inactive",
-            "inventory_inactive",
-            "GPU-stale",
+            "inventory_hash_current",
+            "inventory_current",
+            "GPU-current",
             0,
-            "inactive",
+            "active",
             &second,
         )
         .await;
@@ -671,6 +620,11 @@ mod tests {
             assert_gpu_inventory_contains(&transaction, "provider_1", "device_1", "GPU-stale")
                 .await;
         assert!(matches!(result, Err(SessionError::Conflict(_))));
+        assert!(
+            assert_gpu_inventory_contains(&transaction, "provider_1", "device_1", "gpu-CURRENT",)
+                .await
+                .is_ok()
+        );
         transaction.commit().await.unwrap();
         drop(client);
         db.drop_schema_for_test().await.unwrap();
