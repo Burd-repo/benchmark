@@ -21,8 +21,10 @@ derived runtime admission
 
 The challenge is session-bound. The resulting verification is device/GPU/runtime-bound and can
 survive a reconnect when the provider, device, active key, hardware fingerprint, GPU UUID and
-runtime fingerprint remain unchanged. A rotated or revoked key requires a new observation and a
-new runtime proof.
+runtime fingerprint remain unchanged. Because admission binds the proof, observation and latest
+signed GPU inventory to the active device key, recovery after rotation or revocation requires the
+Agent to republish all three artifacts with the new key, in order: GPU inventory, runtime
+observation and runtime verification proof.
 
 `runtime_verified` means that Burd accepted a cryptographically bound functional proof and that the
 currently observed runtime still matches it. It does not mean `hardware_attested`: the provider
@@ -68,6 +70,8 @@ Admission requires:
 
 Driver, Docker, hardware, GPU or backend drift changes the admission fingerprint and produces
 `denied`. A session reconnect alone does not. Reason codes are stable and sorted for operator use.
+Key rotation remains fail-closed until a new signed GPU inventory, signed runtime observation and
+runtime verification proof have all been accepted under the new active key.
 
 Windows remains denied with `windows_physical_gate_required` even when the code path is otherwise
 valid. That reason can only be removed after the physical Windows/WSL2 multi-GPU isolation gate is

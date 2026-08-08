@@ -88,6 +88,9 @@ the re-observable admission fingerprint stored with the proof record. The record
 device/GPU/runtime-bound across a session reconnect, but key rotation, hardware/runtime drift,
 expiry, blocking or a missing current observation denies admission.
 
+After key rotation, admission recovery requires a new signed GPU inventory, a new signed runtime
+observation and a new runtime verification proof, all bound to the new active device key.
+
 The result is named `runtime_verified`. It is a functional readiness/admission proof, not hardware
 attestation: a provider controls its host OS, Agent process and local signing key. TPM/TEE-backed
 integrity remains separate future work.

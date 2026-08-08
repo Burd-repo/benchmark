@@ -559,11 +559,14 @@ fn safe_id(value: &str) -> bool {
 mod tests {
     use super::*;
     use burd_protocol::{
-        AGENT_RUNTIME_CONTRACT_VERSION, RUNTIME_PROOF_POLICY_VERSION,
-        RUNTIME_VERIFICATION_CANONICALIZATION_VERSION, RUNTIME_VERIFICATION_RECORD_SCHEMA_VERSION,
-        RuntimeAdmissionFingerprintClaims, generate_keypair, provider_runtime_observation_hash,
-        provider_runtime_observation_signature_message, runtime_admission_claims_from_observation,
-        sign_message,
+        AGENT_RUNTIME_CONTRACT_VERSION, DEVICE_GPU_INVENTORY_CANONICALIZATION_VERSION,
+        DEVICE_GPU_INVENTORY_SCHEMA_VERSION, DeviceGpuInventoryGpu, DeviceGpuInventoryPayload,
+        RUNTIME_PROOF_POLICY_VERSION, RUNTIME_VERIFICATION_CANONICALIZATION_VERSION,
+        RUNTIME_VERIFICATION_RECORD_SCHEMA_VERSION, RuntimeAdmissionFingerprintClaims,
+        SignedDeviceGpuInventory, device_gpu_inventory_hash,
+        device_gpu_inventory_signature_message, generate_keypair,
+        provider_runtime_observation_hash, provider_runtime_observation_signature_message,
+        runtime_admission_claims_from_observation, sign_message,
     };
 
     fn proof_image() -> String {
@@ -690,11 +693,16 @@ mod tests {
     }
 
     #[test]
-    fn key_rotation_requires_a_new_observation_and_verification() {
+    fn key_rotation_requires_new_inventory_observation_and_verification() {
         let now = Utc::now();
         let mut context = context(now);
         context.active_public_key_ids = vec!["key_2".to_string()];
         let decision = evaluate_runtime_admission(context, &policy(), now);
+        assert!(
+            decision
+                .reason_codes
+                .contains(&"inventory_key_changed".to_string())
+        );
         assert!(
             decision
                 .reason_codes
@@ -739,7 +747,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore]
-    async fn postgres_signed_observation_admits_across_reconnect_and_key_rotation_denies() {
+    async fn postgres_admission_recovers_after_complete_key_rotation_refresh() {
         let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
             .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
         let schema = format!("burd_runtime_admission_{}", Uuid::new_v4().simple());
@@ -908,6 +916,174 @@ mod tests {
                 .reason_codes
                 .contains(&"runtime_verification_key_changed".to_string())
         );
+        assert!(
+            decisions.admissions[0]
+                .reason_codes
+                .contains(&"inventory_key_changed".to_string())
+        );
+        assert!(
+            decisions.admissions[0]
+                .reason_codes
+                .contains(&"runtime_observation_key_changed".to_string())
+        );
+
+        let recovery_now = Utc::now();
+        let inventory_payload = DeviceGpuInventoryPayload {
+            schema_version: DEVICE_GPU_INVENTORY_SCHEMA_VERSION.to_string(),
+            provider_id: "provider_1".to_string(),
+            device_id: "device_1".to_string(),
+            session_id: "session_reconnected".to_string(),
+            hardware_fingerprint: "a".repeat(64),
+            observed_at: recovery_now.to_rfc3339(),
+            gpus: vec![DeviceGpuInventoryGpu {
+                gpu_uuid: "GPU-A".to_string(),
+                gpu_index: 0,
+                backend: "cuda".to_string(),
+                pci_vendor_id: "10de".to_string(),
+                pci_device_id: "2684".to_string(),
+                vram_total_mib: Some(24_576),
+                status: "active".to_string(),
+            }],
+        };
+        let inventory_hash = device_gpu_inventory_hash(&inventory_payload).unwrap();
+        let inventory_message =
+            device_gpu_inventory_signature_message(&inventory_payload, &inventory_hash, "key_2")
+                .unwrap();
+        let rotated_inventory = SignedDeviceGpuInventory {
+            payload: inventory_payload,
+            inventory_hash,
+            public_key_id: "key_2".to_string(),
+            signature: sign_message(&rotated.secret_key_base64, inventory_message.as_bytes())
+                .unwrap(),
+            canonicalization_version: DEVICE_GPU_INVENTORY_CANONICALIZATION_VERSION.to_string(),
+        };
+
+        let rotated_observation_payload = observation(recovery_now);
+        let rotated_observation_hash =
+            provider_runtime_observation_hash(&rotated_observation_payload).unwrap();
+        let rotated_observation_message = provider_runtime_observation_signature_message(
+            &rotated_observation_payload,
+            &rotated_observation_hash,
+            "key_2",
+        )
+        .unwrap();
+        let rotated_observation = SignedProviderRuntimeObservation {
+            payload: rotated_observation_payload.clone(),
+            observation_hash: rotated_observation_hash,
+            public_key_id: "key_2".to_string(),
+            signature: sign_message(
+                &rotated.secret_key_base64,
+                rotated_observation_message.as_bytes(),
+            )
+            .unwrap(),
+            canonicalization_version: RUNTIME_VERIFICATION_CANONICALIZATION_VERSION.to_string(),
+        };
+        let rejected_before_inventory = db
+            .submit_provider_runtime_observation(
+                "req_observation_rotated_before_inventory",
+                &authorized,
+                "session_reconnected",
+                &rotated_observation,
+                &policy(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            rejected_before_inventory,
+            SessionError::Conflict(message)
+                if message == "runtime observation does not match the current signed GPU inventory"
+        ));
+
+        let refreshed_inventory = db
+            .submit_device_gpu_inventory("req_inventory_rotated", &authorized, &rotated_inventory)
+            .await
+            .unwrap();
+        assert!(!refreshed_inventory.duplicate);
+        let refreshed_observation = db
+            .submit_provider_runtime_observation(
+                "req_observation_rotated",
+                &authorized,
+                "session_reconnected",
+                &rotated_observation,
+                &policy(),
+            )
+            .await
+            .unwrap();
+        assert!(!refreshed_observation.duplicate);
+
+        let decisions = db
+            .list_provider_runtime_admissions("req_admission_3", "provider_1", &policy())
+            .await
+            .unwrap();
+        assert_eq!(decisions.admissions[0].status, "denied");
+        assert!(
+            decisions.admissions[0]
+                .reason_codes
+                .contains(&"runtime_verification_key_changed".to_string())
+        );
+
+        let mut rotated_record = verification(&rotated_observation_payload, recovery_now);
+        rotated_record.verification_id = "runtime_verification_2".to_string();
+        rotated_record.challenge_id = "runtime_challenge_2".to_string();
+        rotated_record.session_id = "session_reconnected".to_string();
+        rotated_record.runtime_verification_fingerprint = "c".repeat(64);
+        rotated_record.public_key_id = Some("key_2".to_string());
+        let rotated_record_json = serde_json::to_string(&rotated_record).unwrap();
+        let rotated_claims_json =
+            serde_json::to_string(rotated_record.runtime_admission_claims.as_ref().unwrap())
+                .unwrap();
+        let rotated_challenge_json = serde_json::json!({
+            "challenge_id": rotated_record.challenge_id,
+            "session_id": rotated_record.session_id,
+        })
+        .to_string();
+        let client = db.connect().await.unwrap();
+        client
+            .execute(
+                "UPDATE provider_runtime_verifications SET status = 'superseded' WHERE provider_id = 'provider_1' AND device_id = 'device_1' AND gpu_uuid = 'GPU-A' AND status = 'verified'",
+                &[],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO runtime_verification_challenges (challenge_id, provider_id, device_id, session_id, gpu_uuid, runtime_backend, hardware_fingerprint, status, nonce, challenge_json, verification_ttl_seconds, issued_at, expires_at, verified_at, public_key_id) VALUES ('runtime_challenge_2', 'provider_1', 'device_1', 'session_reconnected', 'GPU-A', 'docker_linux_native', $1, 'verified', 'runtime_nonce_2', $2, 3600, $3, $4, $3, 'key_2')",
+                &[&rotated_record.hardware_fingerprint, &rotated_challenge_json, &rotated_record.verified_at, &rotated_record.expires_at],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO provider_runtime_verifications (verification_id, challenge_id, provider_id, device_id, session_id, gpu_uuid, runtime_backend, hardware_fingerprint, runtime_verification_fingerprint, status, verified_at, expires_at, record_json, public_key_id, runtime_admission_fingerprint, runtime_admission_claims_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'verified', $10, $11, $12, $13, $14, $15)",
+                &[
+                    &rotated_record.verification_id,
+                    &rotated_record.challenge_id,
+                    &rotated_record.provider_id,
+                    &rotated_record.device_id,
+                    &rotated_record.session_id,
+                    &rotated_record.gpu_uuid,
+                    &rotated_record.runtime_backend,
+                    &rotated_record.hardware_fingerprint,
+                    &rotated_record.runtime_verification_fingerprint,
+                    &rotated_record.verified_at,
+                    &rotated_record.expires_at,
+                    &rotated_record_json,
+                    &rotated_record.public_key_id.as_ref().unwrap(),
+                    &rotated_record.runtime_admission_fingerprint.as_ref().unwrap(),
+                    &rotated_claims_json,
+                ],
+            )
+            .await
+            .unwrap();
+        drop(client);
+
+        let decisions = db
+            .list_provider_runtime_admissions("req_admission_4", "provider_1", &policy())
+            .await
+            .unwrap();
+        assert_eq!(decisions.admissions.len(), 1);
+        assert_eq!(decisions.admissions[0].status, "admitted");
+        assert!(decisions.admissions[0].reason_codes.is_empty());
         db.drop_schema_for_test().await.unwrap();
     }
 }
