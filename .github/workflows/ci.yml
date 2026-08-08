@@ -50,6 +50,13 @@ jobs:
       - name: Run test suite
         run: cargo test --workspace
 
+      - name: Verify real Docker artifact bridge without NVIDIA
+        run: |
+          cargo build --locked -p burd-artifact-helper
+          docker build --file containers/artifact-helper/Dockerfile.test --tag burd/artifact-helper:test .
+          helper_image="$(docker image inspect --format '{{.Id}}' burd/artifact-helper:test)"
+          BURD_ARTIFACT_HELPER_TEST_IMAGE="$helper_image" cargo test -p burd-agent docker_runtime_backend::tests::physical_docker_artifact_volume_bridge_roundtrip_without_nvidia -- --ignored --exact --nocapture
+
       - name: Verify PostgreSQL migrations and provider persistence
         run: cargo test -p burd-control-plane -- --ignored
 

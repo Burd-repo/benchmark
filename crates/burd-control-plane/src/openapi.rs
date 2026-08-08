@@ -2465,7 +2465,7 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
             "type": "object",
             "required": ["artifact_id", "role", "object_key"],
             "properties": {
-                "artifact_id": { "type": "string" },
+                "artifact_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_:-][A-Za-z0-9_.:-]*$" },
                 "role": { "type": "string", "enum": ["input", "output", "model", "config", "log", "artifact"] },
                 "object_key": { "type": "string" },
                 "sha256": { "type": ["string", "null"] },
@@ -2577,7 +2577,7 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
             "type": "object",
             "required": ["artifact_id", "method", "url", "expires_at"],
             "properties": {
-                "artifact_id": { "type": "string" },
+                "artifact_id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_:-][A-Za-z0-9_.:-]*$" },
                 "method": { "type": "string", "enum": ["GET", "PUT"] },
                 "url": { "type": "string" },
                 "expires_at": { "type": "string", "format": "date-time" }

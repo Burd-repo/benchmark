@@ -22,8 +22,10 @@ const SESSION_LABEL: &str = "com.burd.session_id";
 const GPU_LABEL: &str = "com.burd.gpu_uuid";
 const BACKEND_LABEL: &str = "com.burd.runtime_backend";
 const RUNTIME_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const ARTIFACT_BRIDGE_TIMEOUT: Duration = Duration::from_secs(120);
 const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_OUTPUT_WORKSPACE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+const MAX_ARTIFACT_WORKSPACE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+const MAX_ARTIFACTS: usize = 32;
 
 pub trait ProviderJobImagePolicy: Send + Sync + 'static {
     fn image_is_allowed(&self, template_id: &str, image_ref: &str) -> bool;
@@ -132,6 +134,16 @@ where
             self.backend.verify_environment(&plan, control)
         })?;
         self.remove_stale_container(&plan, &cancellation, deadlines)?;
+        if plan.artifact_workspace
+            && let Err(error) = self.run_active_command(&cancellation, deadlines, |control| {
+                self.backend.prepare_artifacts(&plan, control)
+            })
+        {
+            let _ = self
+                .backend
+                .cleanup_artifacts(&plan, &self.cleanup_command_control());
+            return Err(error);
+        }
 
         let container_id = match self.run_active_command(&cancellation, deadlines, |control| {
             self.backend.create(&plan, control)
@@ -143,37 +155,36 @@ where
             }
         };
         if let Some(workspace) = assignment.workspace.as_ref()
-            && let Err(error) = self.run_active_command(&cancellation, deadlines, |control| {
+            && let Err(error) = self.run_artifact_bridge(&cancellation, deadlines, |control| {
                 self.backend
-                    .copy_inputs(&container_id, &workspace.inputs_dir, control)
+                    .stage_inputs(&plan, &workspace.inputs_dir, control)
             })
         {
-            self.remove_created_container(&container_id)?;
+            self.remove_created_container(&container_id, &plan)?;
             return Err(error);
         }
         if let Err(error) = self.run_active_command(&cancellation, deadlines, |control| {
             self.backend.start(&container_id, control)
         }) {
-            self.remove_created_container(&container_id)?;
+            self.remove_created_container(&container_id, &plan)?;
             return Err(error);
         }
 
         let monitor_result =
             self.monitor_container(&container_id, &assignment, &cancellation, deadlines);
         match monitor_result {
-            Ok(state) => self.finish_exited_container(
-                &container_id,
-                &assignment,
-                &cancellation,
+            Ok(state) => self.finish_exited_container(ExitedContainer {
+                container_id: &container_id,
+                plan: &plan,
+                assignment: &assignment,
+                cancellation: &cancellation,
                 deadlines,
                 state,
                 started_at,
-            ),
+            }),
             Err(error) => {
                 let termination = self.terminate_running_container(&container_id, &assignment);
-                let removal = self
-                    .backend
-                    .remove(&container_id, &self.cleanup_command_control());
+                let removal = self.remove_created_container(&container_id, &plan);
                 if termination.is_err() || removal.is_err() {
                     Err(execution_error("container_cleanup_failed"))
                 } else {
@@ -207,28 +218,42 @@ where
         &self,
         plan: &DockerContainerPlan,
     ) -> Result<(), ProviderJobExecutionError> {
-        let existing = self
-            .backend
-            .existing_container(&plan.name, &self.cleanup_command_control())
-            .map_err(map_runtime_error)?;
-        if let Some(existing) = existing {
-            if !labels_match(&existing.labels, &plan.labels) {
-                return Err(execution_error("container_name_conflict"));
-            }
-            self.backend
-                .remove(&plan.name, &self.cleanup_command_control())
+        let container_cleanup = (|| {
+            let existing = self
+                .backend
+                .existing_container(&plan.name, &self.cleanup_command_control())
                 .map_err(map_runtime_error)?;
-        }
-        Ok(())
+            if let Some(existing) = existing {
+                if !labels_match(&existing.labels, &plan.labels) {
+                    return Err(execution_error("container_name_conflict"));
+                }
+                self.backend
+                    .remove(&plan.name, &self.cleanup_command_control())
+                    .map_err(map_runtime_error)?;
+            }
+            Ok(())
+        })();
+        let artifact_cleanup = self
+            .backend
+            .cleanup_artifacts(plan, &self.cleanup_command_control())
+            .map_err(map_runtime_error);
+        container_cleanup.and(artifact_cleanup)
     }
 
     fn remove_created_container(
         &self,
         container_id: &str,
+        plan: &DockerContainerPlan,
     ) -> Result<(), ProviderJobExecutionError> {
-        self.backend
+        let container_cleanup = self
+            .backend
             .remove(container_id, &self.cleanup_command_control())
-            .map_err(|_| execution_error("container_cleanup_failed"))
+            .map_err(|_| execution_error("container_cleanup_failed"));
+        let artifact_cleanup = self
+            .backend
+            .cleanup_artifacts(plan, &self.cleanup_command_control())
+            .map_err(|_| execution_error("container_cleanup_failed"));
+        container_cleanup.and(artifact_cleanup)
     }
 
     fn monitor_container(
@@ -310,37 +335,34 @@ where
 
     fn finish_exited_container(
         &self,
-        container_id: &str,
-        assignment: &ProviderJobAssignment,
-        cancellation: &JobCancellation,
-        deadlines: ExecutionDeadlines,
-        state: DockerContainerState,
-        started_at: DateTime<Utc>,
+        exited: ExitedContainer<'_>,
     ) -> Result<ProviderJobExecutionOutcome, ProviderJobExecutionError> {
-        let logs = match self.run_active_command(cancellation, deadlines, |control| {
-            self.backend.logs(container_id, control)
+        let logs = match self.run_active_command(exited.cancellation, exited.deadlines, |control| {
+            self.backend.logs(exited.container_id, control)
         }) {
             Ok(logs) => logs,
             Err(error) => {
-                self.remove_created_container(container_id)?;
+                self.remove_created_container(exited.container_id, exited.plan)?;
                 return Err(error);
             }
         };
-        if let Some(workspace) = assignment.workspace.as_ref()
-            && let Err(error) = self.run_active_command(cancellation, deadlines, |control| {
-                self.backend
-                    .copy_outputs(container_id, &workspace.outputs_dir, control)
-            })
+        if let Some(workspace) = exited.assignment.workspace.as_ref()
+            && let Err(error) =
+                self.run_artifact_bridge(exited.cancellation, exited.deadlines, |control| {
+                    self.backend
+                        .collect_outputs(exited.plan, &workspace.outputs_dir, control)
+                })
         {
-            self.remove_created_container(container_id)?;
+            self.remove_created_container(exited.container_id, exited.plan)?;
             return Err(error);
         }
-        self.remove_created_container(container_id)?;
+        self.remove_created_container(exited.container_id, exited.plan)?;
 
-        if state.oom_killed {
+        if exited.state.oom_killed {
             return Err(execution_error("container_oom_killed"));
         }
-        let exit_code = state
+        let exit_code = exited
+            .state
             .exit_code
             .ok_or_else(|| execution_error("container_exit_code_missing"))?;
         if exit_code != 0 {
@@ -348,13 +370,13 @@ where
         }
 
         let finished_at = self.clock.now();
-        let runtime_duration_ms = (finished_at - started_at).num_milliseconds().max(0);
+        let runtime_duration_ms = (finished_at - exited.started_at).num_milliseconds().max(0);
         Ok(ProviderJobExecutionOutcome::new(
             Vec::new(),
             execution_metrics(
                 self.backend.runtime_backend(),
-                assignment,
-                &state,
+                exited.assignment,
+                &exited.state,
                 &logs,
                 runtime_duration_ms,
             ),
@@ -367,7 +389,20 @@ where
         deadlines: ExecutionDeadlines,
         operation: impl FnOnce(&DockerCommandControl) -> Result<T, DockerRuntimeError>,
     ) -> Result<T, ProviderJobExecutionError> {
-        let active = self.active_command_control(cancellation, deadlines)?;
+        let active =
+            self.active_command_control(cancellation, deadlines, RUNTIME_COMMAND_TIMEOUT)?;
+        operation(&active.control)
+            .map_err(|error| map_active_runtime_error(error, active.timeout_code))
+    }
+
+    fn run_artifact_bridge<T>(
+        &self,
+        cancellation: &JobCancellation,
+        deadlines: ExecutionDeadlines,
+        operation: impl FnOnce(&DockerCommandControl) -> Result<T, DockerRuntimeError>,
+    ) -> Result<T, ProviderJobExecutionError> {
+        let active =
+            self.active_command_control(cancellation, deadlines, ARTIFACT_BRIDGE_TIMEOUT)?;
         operation(&active.control)
             .map_err(|error| map_active_runtime_error(error, active.timeout_code))
     }
@@ -376,6 +411,7 @@ where
         &self,
         cancellation: &JobCancellation,
         deadlines: ExecutionDeadlines,
+        command_timeout: Duration,
     ) -> Result<ActiveDockerCommandControl, ProviderJobExecutionError> {
         cancellation.ensure_not_cancelled()?;
         let now = self.clock.now();
@@ -391,10 +427,10 @@ where
             (deadlines.timeout, "execution_timeout")
         };
         let remaining = (deadline - now).to_std().unwrap_or(Duration::ZERO);
-        let (timeout, timeout_code) = if remaining <= RUNTIME_COMMAND_TIMEOUT {
+        let (timeout, timeout_code) = if remaining <= command_timeout {
             (remaining, deadline_code)
         } else {
-            (RUNTIME_COMMAND_TIMEOUT, "runtime_command_timed_out")
+            (command_timeout, "runtime_command_timed_out")
         };
         Ok(ActiveDockerCommandControl {
             control: DockerCommandControl::cancellable(timeout, cancellation.clone()),
@@ -432,6 +468,16 @@ where
 struct ExecutionDeadlines {
     lease: DateTime<Utc>,
     timeout: DateTime<Utc>,
+}
+
+struct ExitedContainer<'a> {
+    container_id: &'a str,
+    plan: &'a DockerContainerPlan,
+    assignment: &'a ProviderJobAssignment,
+    cancellation: &'a JobCancellation,
+    deadlines: ExecutionDeadlines,
+    state: DockerContainerState,
+    started_at: DateTime<Utc>,
 }
 
 struct ActiveDockerCommandControl {
@@ -500,14 +546,28 @@ fn validate_workspace_binding(
     if artifacts_declared != assignment.workspace.is_some() {
         return Err(execution_error("artifact_workspace_mismatch"));
     }
-    assignment
-        .job
-        .expected_outputs
-        .iter()
-        .map(|artifact| artifact.size_bytes)
-        .try_fold(0_u64, |total, size| total.checked_add(size?))
-        .filter(|total| *total <= MAX_OUTPUT_WORKSPACE_BYTES)
-        .ok_or_else(|| execution_error("artifact_output_limit_invalid"))?;
+    if assignment.job.input_artifacts.len() > MAX_ARTIFACTS
+        || assignment.job.expected_outputs.len() > MAX_ARTIFACTS
+    {
+        return Err(execution_error("artifact_count_invalid"));
+    }
+    for (artifacts, code) in [
+        (
+            assignment.job.input_artifacts.as_slice(),
+            "artifact_input_limit_invalid",
+        ),
+        (
+            assignment.job.expected_outputs.as_slice(),
+            "artifact_output_limit_invalid",
+        ),
+    ] {
+        artifacts
+            .iter()
+            .map(|artifact| artifact.size_bytes)
+            .try_fold(0_u64, |total, size| total.checked_add(size?))
+            .filter(|total| *total <= MAX_ARTIFACT_WORKSPACE_BYTES)
+            .ok_or_else(|| execution_error(code))?;
+    }
     Ok(())
 }
 
@@ -527,17 +587,18 @@ fn build_container_plan(
     labels.insert(SESSION_LABEL.to_string(), assignment.job.session_id.clone());
     labels.insert(GPU_LABEL.to_string(), assignment.job.gpu_uuid.clone());
     labels.insert(BACKEND_LABEL.to_string(), runtime_backend.to_string());
-    let output_bytes = assignment
+    let input_artifact_bytes = assignment
+        .job
+        .input_artifacts
+        .iter()
+        .filter_map(|artifact| artifact.size_bytes)
+        .fold(0_u64, u64::saturating_add);
+    let output_artifact_bytes = assignment
         .job
         .expected_outputs
         .iter()
         .filter_map(|artifact| artifact.size_bytes)
         .fold(0_u64, u64::saturating_add);
-    let output_tmpfs_mib = output_bytes
-        .saturating_add(1024 * 1024 - 1)
-        .checked_div(1024 * 1024)
-        .unwrap_or(1)
-        .max(1);
     DockerContainerPlan {
         name: container_name(&assignment.job.job_id, &assignment.lease.lease_id),
         image_ref: assignment.execution.image_ref.clone(),
@@ -549,7 +610,10 @@ fn build_container_plan(
         shm_size_mib: assignment.execution.runtime.shm_size_mib,
         labels,
         artifact_workspace: assignment.workspace.is_some(),
-        output_tmpfs_mib,
+        input_artifact_count: assignment.job.input_artifacts.len() as u32,
+        output_artifact_count: assignment.job.expected_outputs.len() as u32,
+        input_artifact_bytes,
+        output_artifact_bytes,
     }
 }
 
@@ -758,9 +822,24 @@ mod tests {
             }
         }
 
-        fn copy_inputs(
+        fn prepare_artifacts(
             &self,
-            _container_id: &str,
+            plan: &DockerContainerPlan,
+            _control: &DockerCommandControl,
+        ) -> Result<(), DockerRuntimeError> {
+            if plan.artifact_workspace {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .operations
+                    .push("prepare_artifacts".to_string());
+            }
+            Ok(())
+        }
+
+        fn stage_inputs(
+            &self,
+            _plan: &DockerContainerPlan,
             _inputs_dir: &std::path::Path,
             _control: &DockerCommandControl,
         ) -> Result<(), DockerRuntimeError> {
@@ -768,13 +847,13 @@ mod tests {
                 .lock()
                 .unwrap()
                 .operations
-                .push("copy_inputs".to_string());
+                .push("stage_inputs".to_string());
             Ok(())
         }
 
-        fn copy_outputs(
+        fn collect_outputs(
             &self,
-            _container_id: &str,
+            _plan: &DockerContainerPlan,
             _outputs_dir: &std::path::Path,
             _control: &DockerCommandControl,
         ) -> Result<(), DockerRuntimeError> {
@@ -782,7 +861,22 @@ mod tests {
                 .lock()
                 .unwrap()
                 .operations
-                .push("copy_outputs".to_string());
+                .push("collect_outputs".to_string());
+            Ok(())
+        }
+
+        fn cleanup_artifacts(
+            &self,
+            plan: &DockerContainerPlan,
+            _control: &DockerCommandControl,
+        ) -> Result<(), DockerRuntimeError> {
+            if plan.artifact_workspace {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .operations
+                    .push("cleanup_artifacts".to_string());
+            }
             Ok(())
         }
 
@@ -1028,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_workspace_is_copied_through_docker_without_entering_the_plan() {
+    fn artifact_workspace_uses_runtime_bridge_without_entering_the_plan() {
         let now = Utc::now();
         let root = std::env::temp_dir().join("burd-executor-workspace-test");
         let mut assignment = assignment_at(now);
@@ -1084,18 +1178,21 @@ mod tests {
             [
                 "verify",
                 "existing",
+                "prepare_artifacts",
                 "create",
-                "copy_inputs",
+                "stage_inputs",
                 "start",
                 "inspect",
                 "logs",
-                "copy_outputs",
+                "collect_outputs",
                 "remove",
+                "cleanup_artifacts",
             ]
         );
         let plan = backend.plan();
         assert!(plan.artifact_workspace);
-        assert_eq!(plan.output_tmpfs_mib, 1);
+        assert_eq!(plan.input_artifact_bytes, 1);
+        assert_eq!(plan.output_artifact_bytes, 1024);
         assert!(!format!("{plan:?}").contains("burd-executor-workspace-test"));
         assert_eq!(outcome.metrics["stdout_tail"], "");
         assert_eq!(outcome.metrics["workload_logs_redacted"], true);
@@ -1344,6 +1441,7 @@ mod tests {
     fn log_contract_has_explicit_limits() {
         assert_eq!(MAX_DOCKER_LOG_BYTES, 65_536);
         assert_eq!(crate::docker_runtime_backend::MAX_DOCKER_LOG_LINES, 200);
+        assert_eq!(ARTIFACT_BRIDGE_TIMEOUT, Duration::from_secs(120));
     }
 
     #[test]

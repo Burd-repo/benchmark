@@ -110,9 +110,9 @@ Implemented:
 - a separate `JobDataPlaneClient` boundary that downloads declared inputs into
   a private per-job workspace, verifies size and SHA-256 while streaming,
   uploads only declared outputs, and always attempts bounded cleanup;
-- Docker-managed input volume and output tmpfs transfer through structured
-  `docker cp`, without host bind mounts, container network, or job credentials
-  inside the workload;
+- separate bounded tmpfs volumes for read-only workload inputs and UID-1000
+  outputs, bridged through a digest-pinned, fixed-operation Burd helper without
+  host bind mounts, workload network, shell, or job credentials;
 - Control Plane artifact GET/PUT endpoints with job-scoped bearer
   authorization, bounded streaming, no redirects, atomic private-file writes,
   verified upload persistence, and terminal-result/upload consistency checks.

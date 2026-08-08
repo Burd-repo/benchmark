@@ -2,6 +2,7 @@
 members = [
     "crates/burd-agent",
     "crates/burd-api-local",
+    "crates/burd-artifact-helper",
     "crates/burd-bench",
     "crates/burd-control-plane",
     "crates/burd-hardware",

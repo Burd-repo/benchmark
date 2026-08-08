@@ -47,12 +47,19 @@ another shell:
 
 ```text
 docker image inspect
+docker volume create --driver local --opt type=tmpfs ...
+docker create <trusted artifact helper> import
+docker cp <private-input-directory>/. <helper>:/burd/staging
+docker start <helper>
+docker rm --force <helper>
 docker create --pull never ...
-docker cp <private-input-directory>/. <container>:/burd/input
 docker start
 docker container inspect
 docker logs --tail 200
-docker cp <container>:/burd/output/. <private-output-directory>
+docker create <trusted artifact helper> export
+docker start <helper>
+docker cp <helper>:/burd/staging/. <private-output-directory>
+docker rm --force <helper>
 docker kill --signal TERM
 docker container inspect    # poll through the graceful window
 docker kill --signal KILL   # at force_kill_after_seconds if still running
@@ -88,10 +95,13 @@ The fixed security boundary includes:
 - no privileged mode, host namespaces, host bind mounts, Docker socket,
   arbitrary command, or entrypoint override.
 
-Artifact jobs receive inputs through an anonymous Docker-managed volume at
-`/burd/input` and write outputs to a bounded tmpfs at `/burd/output`. The Agent
-copies files with structured `docker cp`; no private host path is included in
-the container plan or mounted into the workload.
+Artifact jobs receive inputs and write outputs through separate, named,
+size-limited tmpfs volumes. The input volume is mounted read-only at
+`/burd/input`; its files are root-owned `0444`, so workload UID `1000` can read
+but not modify them. The output volume is owned by UID/GID `1000` and mounted at
+`/burd/output`. A digest-pinned Burd helper imports/exports bytes through its own
+container layer. `docker cp` never targets a workload mount, and no private host
+path is included in the workload container plan or mounted into any container.
 
 The raw data-plane credential is never copied into `DockerContainerPlan`,
 labels, Docker arguments, logs, or metrics.

@@ -86,6 +86,15 @@ pub struct HttpProviderJobDataPlane {
     timeout: Duration,
 }
 
+struct OutputUpload<'a> {
+    credential: &'a str,
+    job_id: &'a str,
+    expected: &'a JobArtifact,
+    grant_url: &'a JobDataPlaneUrl,
+    size: u64,
+    sha256: &'a str,
+}
+
 impl HttpProviderJobDataPlane {
     pub fn for_control_plane(
         control_plane_url: impl Into<String>,
@@ -261,7 +270,25 @@ impl HttpProviderJobDataPlane {
         }
         let sha256 = format!("sha256:{}", digest.finish_hex());
         file = File::open(&path).map_err(|_| data_plane_error("output_artifact_open_failed"))?;
-        let url = self.scoped_url(grant_url)?;
+        self.send_output(
+            OutputUpload {
+                credential: &assignment.data_plane.credential,
+                job_id: &assignment.job.job_id,
+                expected,
+                grant_url,
+                size,
+                sha256: &sha256,
+            },
+            file,
+        )
+    }
+
+    fn send_output(
+        &self,
+        upload: OutputUpload<'_>,
+        file: File,
+    ) -> Result<JobArtifact, ProviderJobExecutionError> {
+        let url = self.scoped_url(upload.grant_url)?;
         let request = ureq::put(&url)
             .config()
             .timeout_global(Some(self.timeout))
@@ -269,14 +296,13 @@ impl HttpProviderJobDataPlane {
             .http_status_as_error(false)
             .build();
         let mut response = request
-            .header(
-                "Authorization",
-                &format!("Bearer {}", assignment.data_plane.credential),
-            )
-            .header("X-Burd-Content-Sha256", &sha256)
+            .header("Authorization", &format!("Bearer {}", upload.credential))
+            .header("Content-Length", &upload.size.to_string())
+            .header("X-Burd-Content-Sha256", upload.sha256)
             .header(
                 "Content-Type",
-                expected
+                upload
+                    .expected
                     .content_type
                     .as_deref()
                     .unwrap_or("application/octet-stream"),
@@ -290,11 +316,11 @@ impl HttpProviderJobDataPlane {
             .body_mut()
             .read_json::<JobArtifactUploadResponse>()
             .map_err(|_| data_plane_error("artifact_upload_receipt_invalid"))?;
-        if receipt.job_id != assignment.job.job_id
-            || receipt.artifact.artifact_id != expected.artifact_id
-            || receipt.artifact.object_key != expected.object_key
-            || receipt.artifact.sha256.as_deref() != Some(sha256.as_str())
-            || receipt.artifact.size_bytes != Some(size)
+        if receipt.job_id != upload.job_id
+            || receipt.artifact.artifact_id != upload.expected.artifact_id
+            || receipt.artifact.object_key != upload.expected.object_key
+            || receipt.artifact.sha256.as_deref() != Some(upload.sha256)
+            || receipt.artifact.size_bytes != Some(upload.size)
         {
             return Err(data_plane_error("artifact_upload_receipt_mismatch"));
         }
@@ -495,6 +521,8 @@ fn data_plane_error(code: &'static str) -> ProviderJobExecutionError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn origins_require_https_except_for_loopback_tests() {
@@ -535,5 +563,95 @@ mod tests {
             "undeclared_output_artifact"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn output_upload_sends_exact_content_length_instead_of_chunked() {
+        let bytes = b"hello burd";
+        let mut digest = Sha256Accumulator::new();
+        digest.update(bytes);
+        let sha256 = format!("sha256:{}", digest.finish_hex());
+        let expected = JobArtifact {
+            artifact_id: "output.bin".to_string(),
+            role: "output".to_string(),
+            object_key: "jobs/job_1/output.bin".to_string(),
+            sha256: None,
+            size_bytes: Some(bytes.len() as u64),
+            content_type: Some("application/octet-stream".to_string()),
+        };
+        let receipt_artifact = JobArtifact {
+            sha256: Some(sha256.clone()),
+            ..expected.clone()
+        };
+        let response_body = serde_json::to_vec(&JobArtifactUploadResponse {
+            schema_version: burd_protocol::JOB_ARTIFACT_UPLOAD_VERSION.to_string(),
+            request_id: "request_1".to_string(),
+            job_id: "job_1".to_string(),
+            artifact: receipt_artifact,
+        })
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            let header_end = loop {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(index) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break index + 4;
+                }
+            };
+            let headers = String::from_utf8(request[..header_end].to_vec())
+                .unwrap()
+                .to_ascii_lowercase();
+            assert!(headers.contains(&format!("content-length: {}\r\n", bytes.len())));
+            assert!(!headers.contains("transfer-encoding: chunked"));
+            while request.len() - header_end < bytes.len() {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            assert_eq!(&request[header_end..header_end + bytes.len()], bytes);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            )
+            .unwrap();
+            stream.write_all(&response_body).unwrap();
+        });
+
+        let path = std::env::temp_dir().join(format!(
+            "burd-upload-content-length-{}-{}",
+            std::process::id(),
+            random_token("test").unwrap()
+        ));
+        fs::write(&path, bytes).unwrap();
+        let client = HttpProviderJobDataPlane::new(format!("http://{address}"), "work").unwrap();
+        let grant_url = JobDataPlaneUrl {
+            artifact_id: expected.artifact_id.clone(),
+            method: "PUT".to_string(),
+            url: "/upload".to_string(),
+            expires_at: "2026-08-08T00:00:00Z".to_string(),
+        };
+        let receipt = client
+            .send_output(
+                OutputUpload {
+                    credential: "jobcred_test_only",
+                    job_id: "job_1",
+                    expected: &expected,
+                    grant_url: &grant_url,
+                    size: bytes.len() as u64,
+                    sha256: &sha256,
+                },
+                File::open(&path).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(receipt.sha256.as_deref(), Some(sha256.as_str()));
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
     }
 }

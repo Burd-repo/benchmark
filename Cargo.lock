@@ -240,6 +240,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "burd-artifact-helper"
+version = "0.1.0"
+
+[[package]]
 name = "burd-bench"
 version = "0.1.0"
 dependencies = [

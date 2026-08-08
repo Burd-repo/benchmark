@@ -1,0 +1,16 @@
+**
+!crates/
+!crates/burd-artifact-helper/
+!crates/burd-artifact-helper/src/
+!crates/burd-artifact-helper/src/main.rs
+!containers/
+!containers/artifact-helper/
+!containers/artifact-helper/Dockerfile
+!containers/artifact-helper/Dockerfile.test
+!containers/artifact-helper/rootfs/
+!containers/artifact-helper/rootfs/burd/
+!containers/artifact-helper/rootfs/burd/staging/
+!containers/artifact-helper/rootfs/burd/staging/.burd-placeholder
+!target/
+!target/debug/
+!target/debug/burd-artifact-helper

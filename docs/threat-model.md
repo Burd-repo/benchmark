@@ -122,7 +122,8 @@ evidence, and backend observations.
 | Lease replay after expiry | `jobs/next` requires `status = offered` and `expires_at` later than server time before assignment. |
 | Data-plane credential leakage through URLs | BN-13 returns scoped artifact paths separately from the opaque job credential; raw credentials are not embedded in URLs. |
 | Data-plane credential exposed to customer code | The Agent performs HTTP transfer and never copies the credential into the container plan, filesystem, environment, logs, or metrics. |
-| Artifact path traversal or host mount escape | Manifests reject unsafe paths; object storage canonicalizes containment and rejects symlinks; workloads receive an anonymous Docker volume and bounded tmpfs through `docker cp`, never a host bind mount. |
+| Artifact path traversal or host mount escape | Manifests reject unsafe paths; object storage canonicalizes containment and rejects symlinks; workloads receive separate bounded tmpfs volumes through a trusted helper, never a host bind mount. |
+| Artifact helper substitution or command injection | The backend accepts only an immutable helper image reference, verifies it locally before side effects, invokes fixed `import`/`export` operations without a shell or customer path, and applies no-network, cap-drop, no-new-privileges, seccomp, PID, CPU, and memory limits. |
 | Oversized or tampered artifact | Transfer enforces declared counts and sizes while streaming, verifies SHA-256, finalizes atomically, and rejects mismatched terminal results. |
 | Duplicate or reordered job progress | Job events require a unique monotonically provided sequence per job; duplicate sequences are rejected. |
 | Terminal result rewrite | BN-13 rejects result changes after a job reaches a terminal state. |

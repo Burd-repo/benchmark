@@ -929,6 +929,11 @@ fn validate_artifacts(artifacts: &[JobArtifact], label: &str) -> Result<(), Sess
     }
     for artifact in artifacts {
         validate_id("artifact_id", &artifact.artifact_id, 128)?;
+        if artifact.artifact_id.starts_with('.') {
+            return Err(SessionError::Invalid(
+                "artifact_id must not use a reserved hidden name".to_string(),
+            ));
+        }
         validate_id("artifact_role", &artifact.role, 64)?;
         if !is_bounded_ascii(&artifact.object_key, 256)
             || artifact.object_key.contains("..")
@@ -1219,6 +1224,10 @@ mod tests {
         let mut secret = create_job_request();
         secret.parameters = serde_json::json!({"api_token": "leak"});
         assert!(validate_create_job_request(&secret).is_err());
+
+        let mut reserved_artifact = create_job_request();
+        reserved_artifact.input_artifacts[0].artifact_id = ".burd-placeholder".to_string();
+        assert!(validate_create_job_request(&reserved_artifact).is_err());
     }
 
     #[test]

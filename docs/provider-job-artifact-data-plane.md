@@ -15,9 +15,11 @@ Provider JobDataPlaneClient
         |
         | private per-job workspace
         v
-Docker-managed input volume -> offline container -> bounded output tmpfs
+trusted Burd helper -> bounded input tmpfs volume (read-only to workload)
         |
-        | structured docker cp
+        v
+offline workload -> bounded output tmpfs volume -> trusted Burd helper
+        |
         v
 Provider JobDataPlaneClient -> verified upload -> terminal result
 ```
@@ -30,13 +32,18 @@ After accepting an assignment, the worker:
 2. downloads every declared input to a private temporary file;
 3. enforces the declared size during streaming and verifies SHA-256;
 4. atomically finalizes verified inputs;
-5. asks the Docker backend to copy inputs into an anonymous volume;
+5. asks a digest-pinned Burd helper to import inputs into a bounded named tmpfs
+   volume and mounts it read-only in the workload;
 6. runs the Linux container with `--network none`;
-7. copies `/burd/output` from bounded tmpfs into the private workspace;
-8. rejects symlinks, nested/undeclared output files, excessive size, or missing
+7. writes `/burd/output` to a separate bounded named tmpfs volume;
+8. asks the helper to export that volume into its own staging layer, then uses
+   structured `docker cp` only between the helper layer and private workspace;
+9. rejects symlinks, nested/undeclared output files, excessive size, or missing
    outputs;
-9. hashes and uploads each output, then cross-checks the server receipt;
-10. submits only those verified receipts and always attempts workspace cleanup.
+10. hashes and uploads each output with explicit `Content-Length`, then
+    cross-checks the server receipt;
+11. submits only those verified receipts and always attempts helper, volume,
+    container, and workspace cleanup.
 
 The raw job credential is held only by the Agent HTTP client. It is not added to
 the container environment, arguments, labels, workspace, logs, or result
@@ -67,7 +74,15 @@ cancellation clears the job credential hash and expiry.
   lease, credential, and shutdown deadline;
 - relative grant URLs only, without query strings, fragments, or embedded
   credentials;
+- helper and workload images must be immutable/digest-pinned and already local;
+- helper containers have fixed operations, no shell, no network, no
+  capabilities, no customer paths, and bounded resources;
 - no archive extraction, arbitrary host path, bind mount, or container network.
+
+CI builds the minimal helper from the reviewed Rust source and runs a real
+Docker roundtrip without NVIDIA. The gate proves that a private `0600` host
+input is readable by workload UID `1000`, the input mount rejects writes, the
+output is exported byte-for-byte, and containers/volumes are removed.
 
 ## Deferred
 
