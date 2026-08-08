@@ -389,6 +389,7 @@ impl DockerCliRuntime {
     fn prepare_artifact_storage(
         &self,
         plan: &DockerContainerPlan,
+        helper_image_ref: &str,
         control: &DockerCommandControl,
     ) -> Result<(), DockerRuntimeError> {
         if !plan.artifact_workspace {
@@ -396,6 +397,7 @@ impl DockerCliRuntime {
         }
         self.remove_owned_helper(plan, "import", control)?;
         self.remove_owned_helper(plan, "export", control)?;
+        self.remove_owned_helper(plan, "anchor", control)?;
         self.remove_owned_volume(plan, "input", control)?;
         self.remove_owned_volume(plan, "output", control)?;
         self.create_artifact_volume(plan, "input", control)?;
@@ -407,7 +409,7 @@ impl DockerCliRuntime {
             );
             return Err(error);
         }
-        Ok(())
+        self.create_artifact_anchor(plan, helper_image_ref, control)
     }
 
     fn stage_inputs(
@@ -420,6 +422,7 @@ impl DockerCliRuntime {
         if plan.input_artifact_count == 0 {
             return Ok(());
         }
+        self.ensure_artifact_anchor_running(plan, control)?;
         let helper_id = self.create_artifact_helper(plan, helper_image_ref, "import", control)?;
         let source = inputs_dir.join(".").display().to_string();
         let copy = self.successful_docker(
@@ -445,6 +448,7 @@ impl DockerCliRuntime {
         if plan.output_artifact_count == 0 {
             return Ok(());
         }
+        self.ensure_artifact_anchor_running(plan, control)?;
         let helper_id = self.create_artifact_helper(plan, helper_image_ref, "export", control)?;
         let result = self.run_artifact_helper(&helper_id, control).and_then(|_| {
             self.successful_docker(
@@ -470,7 +474,7 @@ impl DockerCliRuntime {
             return Ok(());
         }
         let mut first_error = None;
-        for role in ["import", "export"] {
+        for role in ["import", "export", "anchor"] {
             if let Err(error) = self.remove_owned_helper(plan, role, control) {
                 first_error.get_or_insert(error);
             }
@@ -556,6 +560,41 @@ impl DockerCliRuntime {
             control,
         )?;
         parse_container_id(&output)
+    }
+
+    fn create_artifact_anchor(
+        &self,
+        plan: &DockerContainerPlan,
+        helper_image_ref: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        let output = self.successful_docker(
+            &artifact_anchor_create_args(plan, helper_image_ref),
+            "artifact_anchor_create_failed",
+            control,
+        )?;
+        let anchor_id = parse_container_id(&output)?;
+        self.start(&anchor_id, control)?;
+        self.ensure_artifact_anchor_running(plan, control)
+    }
+
+    fn ensure_artifact_anchor_running(
+        &self,
+        plan: &DockerContainerPlan,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        let name = artifact_helper_name(plan, "anchor");
+        let existing = self
+            .existing_container(&name, control)?
+            .ok_or_else(|| DockerRuntimeError::new("artifact_anchor_missing"))?;
+        if !labels_contain(&existing.labels, &artifact_labels(plan, "anchor")) {
+            return Err(DockerRuntimeError::new("artifact_anchor_name_conflict"));
+        }
+        let state = self.inspect(&name, control)?;
+        if !state.running {
+            return Err(DockerRuntimeError::new("artifact_anchor_not_running"));
+        }
+        Ok(())
     }
 
     fn run_artifact_helper(
@@ -1094,6 +1133,59 @@ fn artifact_helper_create_args(
     args
 }
 
+fn artifact_anchor_create_args(plan: &DockerContainerPlan, helper_image_ref: &str) -> Vec<String> {
+    let mut args = vec![
+        "create".into(),
+        "--pull".into(),
+        "never".into(),
+        "--name".into(),
+        artifact_helper_name(plan, "anchor"),
+        "--restart".into(),
+        "no".into(),
+        "--no-healthcheck".into(),
+    ];
+    for (key, value) in artifact_labels(plan, "anchor") {
+        args.push("--label".into());
+        args.push(format!("{key}={value}"));
+    }
+    args.extend([
+        "--user".into(),
+        "1000:1000".into(),
+        "--read-only".into(),
+        "--cap-drop".into(),
+        "ALL".into(),
+        "--security-opt".into(),
+        "no-new-privileges".into(),
+        "--security-opt".into(),
+        "seccomp=builtin".into(),
+        "--network".into(),
+        "none".into(),
+        "--ipc".into(),
+        "none".into(),
+        "--pids-limit".into(),
+        ARTIFACT_HELPER_PIDS.to_string(),
+        "--memory".into(),
+        format!("{ARTIFACT_HELPER_MEMORY_MIB}m"),
+        "--memory-swap".into(),
+        format!("{ARTIFACT_HELPER_MEMORY_MIB}m"),
+        "--cpus".into(),
+        ARTIFACT_HELPER_CPUS.into(),
+        "--mount".into(),
+        format!(
+            "type=volume,source={},destination={ARTIFACT_INPUT_PATH},readonly,volume-nocopy",
+            artifact_volume_name(plan, "input")
+        ),
+        "--mount".into(),
+        format!(
+            "type=volume,source={},destination={ARTIFACT_OUTPUT_PATH},readonly,volume-nocopy",
+            artifact_volume_name(plan, "output")
+        ),
+        helper_image_ref.to_string(),
+        "hold".into(),
+    ]);
+    args
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct LinuxNativeDockerBackend {
     cli: DockerCliRuntime,
@@ -1175,7 +1267,8 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
         plan: &DockerContainerPlan,
         control: &DockerCommandControl,
     ) -> Result<(), DockerRuntimeError> {
-        self.cli.prepare_artifact_storage(plan, control)
+        self.cli
+            .prepare_artifact_storage(plan, self.artifact_helper_image()?, control)
     }
 
     fn stage_inputs(
@@ -1353,7 +1446,8 @@ impl DockerRuntimeBackend for WindowsWsl2DockerBackend {
         plan: &DockerContainerPlan,
         control: &DockerCommandControl,
     ) -> Result<(), DockerRuntimeError> {
-        self.cli.prepare_artifact_storage(plan, control)
+        self.cli
+            .prepare_artifact_storage(plan, self.artifact_helper_image()?, control)
     }
 
     fn stage_inputs(
@@ -1836,10 +1930,12 @@ mod tests {
         let image = format!("burd/artifact-helper@sha256:{}", "b".repeat(64));
         let import = artifact_helper_create_args(&plan, &image, "import");
         let export = artifact_helper_create_args(&plan, &image, "export");
+        let anchor = artifact_anchor_create_args(&plan, &image);
         let import_joined = import.join(" ");
         let export_joined = export.join(" ");
+        let anchor_joined = anchor.join(" ");
 
-        for args in [&import, &export] {
+        for args in [&import, &export, &anchor] {
             let joined = args.join(" ");
             for required in [
                 "--pull",
@@ -1859,8 +1955,9 @@ mod tests {
             assert!(!joined.contains("docker.sock"));
             assert!(!joined.contains("sh -c"));
             assert!(!joined.contains("--privileged"));
-            assert!(!args.iter().any(|argument| argument == "--read-only"));
         }
+        assert!(!import.iter().any(|argument| argument == "--read-only"));
+        assert!(!export.iter().any(|argument| argument == "--read-only"));
         assert!(import_joined.contains("--user 0:0"));
         assert!(import_joined.contains("--cap-add DAC_READ_SEARCH"));
         assert!(import_joined.contains("-artifact-input"));
@@ -1869,6 +1966,10 @@ mod tests {
         assert!(!export_joined.contains("--cap-add"));
         assert!(export_joined.contains("-artifact-output"));
         assert!(export_joined.contains("destination=/burd/volume,readonly"));
+        assert!(anchor_joined.contains("--read-only"));
+        assert!(anchor_joined.contains("destination=/burd/input,readonly"));
+        assert!(anchor_joined.contains("destination=/burd/output,readonly"));
+        assert!(anchor_joined.ends_with(&format!("{image} hold")));
         assert!(is_immutable_image_ref(&image));
         assert!(is_immutable_image_ref(&format!(
             "sha256:{}",
@@ -1979,7 +2080,8 @@ mod tests {
         let control = DockerCommandControl::cleanup(Duration::from_secs(120));
         cli.verify_artifact_helper_image(&helper_image, &control)
             .unwrap();
-        cli.prepare_artifact_storage(&plan, &control).unwrap();
+        cli.prepare_artifact_storage(&plan, &helper_image, &control)
+            .unwrap();
 
         let workload_name = format!("{}-roundtrip", plan.name);
         let workload_args = vec![

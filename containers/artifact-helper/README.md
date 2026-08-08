@@ -12,8 +12,9 @@ is intentionally supplied by the operator, must support
 docker build --build-arg BURD_RUST_BUILDER_IMAGE=rust:<version>@sha256:<digest> --tag burd/artifact-helper:test --file containers/artifact-helper/Dockerfile .
 ```
 
-The helper accepts only the fixed `import`, `export`, and local gate
-`roundtrip-test` operations. It has no HTTP client, shell, package manager, CA
+The helper accepts only the fixed `import`, `export`, `hold`, and local gate
+`roundtrip-test` operations. `hold` is the offline anchor that keeps local-driver
+tmpfs mounts active between phases. It has no HTTP client, shell, package manager, CA
 bundle, or customer-controlled path argument. The runtime launches it with no
 network, no-new-privileges, bounded resources, and Docker-managed volumes only.
 All default capabilities are dropped; only the import operation receives

@@ -51,6 +51,14 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), &'static str> {
             }
             roundtrip_test()
         }
+        "hold" => {
+            if args.next().is_some() {
+                return Err("invalid helper arguments");
+            }
+            loop {
+                std::thread::park();
+            }
+        }
         _ => Err("unsupported operation"),
     }
 }

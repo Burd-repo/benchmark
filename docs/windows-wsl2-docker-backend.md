@@ -46,8 +46,9 @@ the Windows Docker CLI connected to the Linux engine.
 The Windows and Linux backends share the same no-bind-mount container contract.
 Artifact inputs and outputs use separate named tmpfs volumes created by the
 Docker local driver, which supports mount-style options on Docker Desktop. A
-digest-pinned Burd helper imports and exports files through its own container
-layer; the workload sees input read-only and output writable. `docker cp` never
+digest-pinned Burd anchor keeps the tmpfs mounts active while fixed helpers
+import and export files through their own container layers; the workload sees
+input read-only and output writable. `docker cp` never
 targets a workload mount. The plan does not expose Windows drives, user
 profiles, `/mnt/c`, `/mnt/d`, `\\wsl$`, the Docker socket, or any persistent
 host path.

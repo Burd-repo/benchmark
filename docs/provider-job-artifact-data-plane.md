@@ -17,6 +17,8 @@ Provider JobDataPlaneClient
         v
 trusted Burd helper -> bounded input tmpfs volume (read-only to workload)
         |
+trusted offline anchor keeps both tmpfs mounts active for the job
+        |
         v
 offline workload -> bounded output tmpfs volume -> trusted Burd helper
         |
@@ -32,8 +34,9 @@ After accepting an assignment, the worker:
 2. downloads every declared input to a private temporary file;
 3. enforces the declared size during streaming and verifies SHA-256;
 4. atomically finalizes verified inputs;
-5. asks a digest-pinned Burd helper to import inputs into a bounded named tmpfs
-   volume and mounts it read-only in the workload;
+5. starts a fixed, offline Burd anchor that keeps both named tmpfs mounts active
+   until cleanup, then asks a digest-pinned helper to import inputs and mounts
+   the input volume read-only in the workload;
 6. runs the Linux container with `--network none`;
 7. writes `/burd/output` to a separate bounded named tmpfs volume;
 8. asks the helper to export that volume into its own staging layer, then uses
@@ -75,14 +78,16 @@ cancellation clears the job credential hash and expiry.
 - relative grant URLs only, without query strings, fragments, or embedded
   credentials;
 - helper and workload images must be immutable/digest-pinned and already local;
-- helper containers have fixed operations, no shell, no network, no
-  capabilities, no customer paths, and bounded resources;
+- helper containers have fixed operations, no shell, no network, no customer
+  paths, and bounded resources; all defaults are dropped and only import gets
+  `DAC_READ_SEARCH` for private staged files inside its isolated namespace;
 - no archive extraction, arbitrary host path, bind mount, or container network.
 
 CI builds the minimal helper from the reviewed Rust source and runs a real
 Docker roundtrip without NVIDIA. The gate proves that a private `0600` host
-input is readable by workload UID `1000`, the input mount rejects writes, the
-output is exported byte-for-byte, and containers/volumes are removed.
+input is readable by workload UID `1000`, the input mount rejects writes, both
+tmpfs mounts survive the import/workload/export transitions, the output is
+exported byte-for-byte, and containers/volumes are removed.
 
 ## Deferred
 
