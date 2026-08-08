@@ -211,12 +211,12 @@ pub trait DockerRuntimeBackend: Send + Sync + 'static {
 }
 
 #[derive(Clone, Debug)]
-pub struct LinuxNativeDockerBackend {
+struct DockerCliRuntime {
     docker_program: String,
     nvidia_smi_program: String,
 }
 
-impl Default for LinuxNativeDockerBackend {
+impl Default for DockerCliRuntime {
     fn default() -> Self {
         Self {
             docker_program: "docker".to_string(),
@@ -225,7 +225,7 @@ impl Default for LinuxNativeDockerBackend {
     }
 }
 
-impl LinuxNativeDockerBackend {
+impl DockerCliRuntime {
     fn docker(
         &self,
         args: &[String],
@@ -301,20 +301,20 @@ impl LinuxNativeDockerBackend {
     }
 }
 
-impl DockerRuntimeBackend for LinuxNativeDockerBackend {
-    fn runtime_backend(&self) -> &'static str {
-        "docker_linux_native"
-    }
-
-    fn verify_environment(
+impl DockerCliRuntime {
+    fn verify_linux_container_environment(
         &self,
         plan: &DockerContainerPlan,
         control: &DockerCommandControl,
     ) -> Result<(), DockerRuntimeError> {
-        if std::env::consts::OS != "linux" {
-            return Err(DockerRuntimeError::new("linux_native_host_required"));
-        }
+        self.verify_linux_docker_server(control)?;
+        self.verify_nvidia_gpu_and_image(plan, control)
+    }
 
+    fn verify_linux_docker_server(
+        &self,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
         let server_os = self.successful_docker(
             &["version".into(), "--format".into(), "{{.Server.Os}}".into()],
             "docker_unavailable",
@@ -323,7 +323,33 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
         if server_os.stdout.trim() != "linux" {
             return Err(DockerRuntimeError::new("linux_container_engine_required"));
         }
+        Ok(())
+    }
 
+    fn verify_wsl2_docker_kernel(
+        &self,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        let kernel = self.successful_docker(
+            &[
+                "info".into(),
+                "--format".into(),
+                "{{.KernelVersion}}".into(),
+            ],
+            "docker_runtime_probe_failed",
+            control,
+        )?;
+        if kernel.stdout_truncated || !is_wsl2_kernel_version(&kernel.stdout) {
+            return Err(DockerRuntimeError::new("wsl2_runtime_unavailable"));
+        }
+        Ok(())
+    }
+
+    fn verify_nvidia_gpu_and_image(
+        &self,
+        plan: &DockerContainerPlan,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
         let runtimes = self.successful_docker(
             &[
                 "info".into(),
@@ -542,6 +568,213 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct LinuxNativeDockerBackend {
+    cli: DockerCliRuntime,
+}
+
+impl LinuxNativeDockerBackend {
+    pub fn create_args(plan: &DockerContainerPlan) -> Vec<String> {
+        DockerCliRuntime::create_args(plan)
+    }
+}
+
+impl DockerRuntimeBackend for LinuxNativeDockerBackend {
+    fn runtime_backend(&self) -> &'static str {
+        "docker_linux_native"
+    }
+
+    fn verify_environment(
+        &self,
+        plan: &DockerContainerPlan,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        if std::env::consts::OS != "linux" {
+            return Err(DockerRuntimeError::new("linux_native_host_required"));
+        }
+        self.cli.verify_linux_container_environment(plan, control)
+    }
+
+    fn existing_container(
+        &self,
+        name: &str,
+        control: &DockerCommandControl,
+    ) -> Result<Option<ExistingDockerContainer>, DockerRuntimeError> {
+        self.cli.existing_container(name, control)
+    }
+
+    fn create(
+        &self,
+        plan: &DockerContainerPlan,
+        control: &DockerCommandControl,
+    ) -> Result<String, DockerRuntimeError> {
+        self.cli.create(plan, control)
+    }
+
+    fn start(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.start(container_id, control)
+    }
+
+    fn inspect(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<DockerContainerState, DockerRuntimeError> {
+        self.cli.inspect(container_id, control)
+    }
+
+    fn logs(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<DockerContainerLogs, DockerRuntimeError> {
+        self.cli.logs(container_id, control)
+    }
+
+    fn terminate(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.terminate(container_id, control)
+    }
+
+    fn kill(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.kill(container_id, control)
+    }
+
+    fn remove(
+        &self,
+        container_id_or_name: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.remove(container_id_or_name, control)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WindowsWsl2DockerBackend {
+    cli: DockerCliRuntime,
+    wsl_program: String,
+}
+
+impl Default for WindowsWsl2DockerBackend {
+    fn default() -> Self {
+        Self {
+            cli: DockerCliRuntime::default(),
+            wsl_program: "wsl.exe".to_string(),
+        }
+    }
+}
+
+impl WindowsWsl2DockerBackend {
+    pub fn create_args(plan: &DockerContainerPlan) -> Vec<String> {
+        DockerCliRuntime::create_args(plan)
+    }
+
+    fn wsl_kernel_args() -> [String; 3] {
+        ["--system".into(), "uname".into(), "-r".into()]
+    }
+}
+
+impl DockerRuntimeBackend for WindowsWsl2DockerBackend {
+    fn runtime_backend(&self) -> &'static str {
+        "docker_wsl2"
+    }
+
+    fn verify_environment(
+        &self,
+        plan: &DockerContainerPlan,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        if std::env::consts::OS != "windows" {
+            return Err(DockerRuntimeError::new("windows_wsl2_host_required"));
+        }
+        let kernel = run_bounded_command(&self.wsl_program, &Self::wsl_kernel_args(), control)?;
+        if !kernel.status.success() {
+            return Err(DockerRuntimeError::new("wsl2_unavailable"));
+        }
+        if kernel.stdout_truncated || !is_wsl2_kernel_version(&kernel.stdout) {
+            return Err(DockerRuntimeError::new("wsl2_runtime_unavailable"));
+        }
+        self.cli.verify_linux_docker_server(control)?;
+        self.cli.verify_wsl2_docker_kernel(control)?;
+        self.cli.verify_nvidia_gpu_and_image(plan, control)
+    }
+
+    fn existing_container(
+        &self,
+        name: &str,
+        control: &DockerCommandControl,
+    ) -> Result<Option<ExistingDockerContainer>, DockerRuntimeError> {
+        self.cli.existing_container(name, control)
+    }
+
+    fn create(
+        &self,
+        plan: &DockerContainerPlan,
+        control: &DockerCommandControl,
+    ) -> Result<String, DockerRuntimeError> {
+        self.cli.create(plan, control)
+    }
+
+    fn start(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.start(container_id, control)
+    }
+
+    fn inspect(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<DockerContainerState, DockerRuntimeError> {
+        self.cli.inspect(container_id, control)
+    }
+
+    fn logs(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<DockerContainerLogs, DockerRuntimeError> {
+        self.cli.logs(container_id, control)
+    }
+
+    fn terminate(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.terminate(container_id, control)
+    }
+
+    fn kill(
+        &self,
+        container_id: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.kill(container_id, control)
+    }
+
+    fn remove(
+        &self,
+        container_id_or_name: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        self.cli.remove(container_id_or_name, control)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct DockerStateOutput {
@@ -551,6 +784,11 @@ struct DockerStateOutput {
     oom_killed: bool,
     started_at: String,
     finished_at: String,
+}
+
+fn is_wsl2_kernel_version(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    !value.is_empty() && (value.contains("microsoft-standard-wsl2") || value.contains("wsl2"))
 }
 
 fn normalized_docker_timestamp(value: String) -> Option<String> {
@@ -911,6 +1149,68 @@ mod tests {
         }
         assert!(!joined.contains(" run "));
         assert!(!joined.contains("--rm"));
+    }
+
+    #[test]
+    fn linux_and_windows_backends_share_the_exact_container_contract() {
+        let linux = LinuxNativeDockerBackend::create_args(&plan());
+        let windows = WindowsWsl2DockerBackend::create_args(&plan());
+
+        assert_eq!(windows, linux);
+        assert_eq!(
+            LinuxNativeDockerBackend::default().runtime_backend(),
+            "docker_linux_native"
+        );
+        assert_eq!(
+            WindowsWsl2DockerBackend::default().runtime_backend(),
+            "docker_wsl2"
+        );
+    }
+
+    #[test]
+    fn windows_backend_has_no_windows_or_wsl_filesystem_mounts() {
+        let joined = WindowsWsl2DockerBackend::create_args(&plan()).join(" ");
+        for forbidden in [
+            "C:\\", "c:\\", "/mnt/", "\\\\wsl$", "--mount", "--volume", "-v ",
+        ] {
+            assert!(!joined.contains(forbidden), "found {forbidden}");
+        }
+    }
+
+    #[test]
+    fn windows_wsl_probe_is_structured_and_requires_a_wsl2_kernel() {
+        assert_eq!(
+            WindowsWsl2DockerBackend::wsl_kernel_args(),
+            ["--system", "uname", "-r"]
+        );
+        assert!(is_wsl2_kernel_version(
+            "6.6.87.2-microsoft-standard-WSL2\r\n"
+        ));
+        assert!(is_wsl2_kernel_version("5.15.90-wsl2-custom"));
+        assert!(!is_wsl2_kernel_version("6.8.0-linuxkit"));
+        assert!(!is_wsl2_kernel_version(""));
+
+        let command = WindowsWsl2DockerBackend::wsl_kernel_args().join(" ");
+        assert!(!command.contains("sh"));
+        assert!(!command.contains("-c"));
+    }
+
+    #[test]
+    fn platform_backends_reject_the_wrong_host_before_runtime_probes() {
+        let control = DockerCommandControl::cleanup(Duration::from_secs(1));
+        if std::env::consts::OS == "windows" {
+            let error = LinuxNativeDockerBackend::default()
+                .verify_environment(&plan(), &control)
+                .err()
+                .unwrap();
+            assert_eq!(error.code(), "linux_native_host_required");
+        } else {
+            let error = WindowsWsl2DockerBackend::default()
+                .verify_environment(&plan(), &control)
+                .err()
+                .unwrap();
+            assert_eq!(error.code(), "windows_wsl2_host_required");
+        }
     }
 
     #[test]

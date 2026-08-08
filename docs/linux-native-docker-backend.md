@@ -108,6 +108,8 @@ production GPU-isolation verification.
 
 ## Explicit non-goals
 
-This slice does not implement Windows WSL2, artifact download/upload, secret
-injection, Control Plane runtime proof, scheduler admission, active-job remote
-cancellation discovery, production worker wiring, or paid execution.
+This Linux-specific slice does not describe the separate Windows WSL2 backend;
+see `windows-wsl2-docker-backend.md`. Neither backend implements artifact
+download/upload, secret injection, Control Plane runtime proof, scheduler
+admission, active-job remote cancellation discovery, production worker wiring,
+or paid execution.
