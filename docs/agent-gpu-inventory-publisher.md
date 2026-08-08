@@ -47,9 +47,9 @@ remains: a transition from one GPU to zero cannot publish an empty replacement s
 
 The publisher fails closed instead of reusing or fabricating hardware. Runtime observations stop
 renewing and runtime admission becomes stale or denied, but inventory history can still show the
-last non-empty snapshot. Before scheduler activation, this must be addressed with an authoritative
-signed empty snapshot/tombstone, likely backed by a snapshot entity separate from per-GPU rows.
-Inventory alone must not be treated as runtime readiness.
+last non-empty snapshot. Before controlled production activation, this must be addressed with an
+authoritative signed empty snapshot/tombstone, likely backed by a snapshot entity separate from
+per-GPU rows. Inventory alone must not be treated as runtime readiness.
 
 ## Signing and deduplication
 
@@ -75,7 +75,6 @@ the non-secret inventory hash.
 
 ## Deferred work
 
-- scheduler consumption of runtime admission;
 - assignment-time admission revalidation;
 - production Provider Job Worker activation;
 - non-NVIDIA inventory backends;

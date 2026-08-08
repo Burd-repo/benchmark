@@ -796,20 +796,22 @@ Admin endpoint. Runs one bounded scheduler pass.
 
 Request fields:
 
-- `limit`, optional and capped by backend policy;
+- `limit`, optional maximum number of offered leases, capped by backend policy;
 - `lease_ttl_seconds`, optional and capped by backend policy;
 - `reason`, optional short printable ASCII reason.
 
 Backend behavior:
 
 - expires stale `offered` leases using server time;
-- scans queued jobs in creation order;
-- requires provider not blocked/quarantined;
-- requires active device and `online` or `degraded` session;
+- scans queued jobs in bounded batches with persisted fairness rotation;
+- evaluates Runtime Admission for the exact provider/device/GPU inside the lease transaction;
+- returns denied admission as `skipped` with no `lease_id`;
+- requires provider not blocked/quarantined and active device through Runtime Admission;
+- requires an `online` or `degraded` job session;
 - requires workload eligibility of `eligible` or `limited`;
 - prevents active duplicate lease for the same job;
-- prevents active duplicate lease for the same provider/device/GPU;
-- inserts `job_leases` with status `offered` and audit history.
+- prevents active duplicate lease for the same provider/device/GPU with transaction-scoped locking;
+- inserts `job_leases` with status `offered` and admission identifiers in audit history.
 
 Returns `request_id`, `evaluated`, `offered`, `expired`, `skipped`, and per-job decisions.
 
@@ -1059,7 +1061,7 @@ The v1 payload cannot represent an authoritative empty inventory because it requ
 GPU and persistence stores per-GPU rows. A transition from one GPU to zero therefore cannot replace
 the last non-empty snapshot. Runtime admission fails closed as observations become stale, but an
 authoritative signed empty snapshot/tombstone and separate snapshot metadata remain required before
-scheduler activation. GPU inventory by itself is not runtime readiness.
+controlled production activation. GPU inventory by itself is not runtime readiness.
 
 ### `GET /v1/providers/{provider_id}/gpu-inventory`
 

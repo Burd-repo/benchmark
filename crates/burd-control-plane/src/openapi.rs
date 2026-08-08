@@ -947,7 +947,7 @@ pub fn document() -> serde_json::Value {
             },
             "/v1/scheduler/run": {
                 "post": {
-                    "summary": "Run one bounded scheduler pass and offer leases for eligible queued jobs",
+                    "summary": "Run one bounded scheduler pass and offer leases only for runtime-admitted queued jobs",
                     "security": [{ "adminBearer": [] }],
                     "responses": {
                         "202": { "description": "scheduler pass completed and lease decisions returned" },

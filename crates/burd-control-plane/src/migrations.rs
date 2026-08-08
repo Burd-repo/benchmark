@@ -141,6 +141,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "runtime_verified_admission",
         sql: include_str!("../migrations/0027_runtime_verified_admission.sql"),
     },
+    Migration {
+        version: "0028",
+        name: "scheduler_runtime_admission",
+        sql: include_str!("../migrations/0028_scheduler_runtime_admission.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -427,6 +432,13 @@ mod tests {
         assert!(sql.contains("signature TEXT NOT NULL"));
         assert!(sql.contains("provider_runtime_observations_no_update"));
         assert!(sql.contains("status = 'superseded'"));
+    }
+
+    #[test]
+    fn scheduler_runtime_admission_migration_adds_fairness_cursor() {
+        let sql = MIGRATIONS[27].sql;
+        assert!(sql.contains("scheduler_last_evaluated_at TEXT"));
+        assert!(sql.contains("idx_compute_jobs_scheduler_fairness"));
     }
 
     #[test]

@@ -1320,8 +1320,9 @@ mod tests {
         let db = Database::new(url, Some(schema)).unwrap();
         db.migrate().await.unwrap();
 
-        let now = Utc::now().to_rfc3339();
-        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
+        let now_instant = Utc::now();
+        let now = now_instant.to_rfc3339();
+        let expires_at = (now_instant + Duration::hours(1)).to_rfc3339();
         let client = db.connect().await.unwrap();
         client
             .execute(
@@ -1339,25 +1340,21 @@ mod tests {
             .unwrap();
         client
             .execute(
-                "INSERT INTO provider_public_keys (public_key_id, provider_id, device_id, public_key, key_algorithm, status, created_at) VALUES ('key_1', 'provider_1', 'device_1', 'pub_1', 'ed25519', 'active', $1)",
-                &[&now],
+                "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint) VALUES ('session_1', 'provider_1', 'device_1', 'online', 0, $1, $2, $3)",
+                &[&now, &expires_at, &"a".repeat(64)],
             )
             .await
             .unwrap();
-        client
-            .execute(
-                "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint) VALUES ('session_1', 'provider_1', 'device_1', 'online', 0, $1, $2, 'fp_1')",
-                &[&now, &expires_at],
-            )
-            .await
-            .unwrap();
-        client
-            .execute(
-                "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ('inventory_1', 'provider_1', 'device_1', 'session_1', 'burd-device-gpu-inventory-v1', 'inventory_hash_1', 'key_1', 'signature_1', 'burd-json-c14n-v1', 'GPU-test', 0, 'cuda', '10de', '2684', 24576, 'active', $1, $1, '{}', '{}')",
-                &[&now],
-            )
-            .await
-            .unwrap();
+        crate::scheduler::tests::seed_admitted_runtime(
+            &client,
+            "provider_1",
+            "device_1",
+            "session_1",
+            &["GPU-test".to_string()],
+            "GPU-test",
+            now_instant,
+        )
+        .await;
         client
             .execute(
                 "INSERT INTO workload_policies (policy_id, policy_version, schema_version, workload_type, display_name, requirements_json, status, created_at, updated_at) VALUES ('llm_realtime_api_cuda', '2026.07.0', 'burd-workload-policy-v1', 'llm_realtime_api', 'LLM realtime CUDA', '{}', 'active', $1, $1)",
@@ -1399,6 +1396,14 @@ mod tests {
                     limit: Some(10),
                     lease_ttl_seconds: Some(120),
                     reason: Some("integration_test".to_string()),
+                },
+                &crate::runtime_admission::RuntimeAdmissionPolicy {
+                    clock_skew_seconds: 300,
+                    observation_max_age_seconds: 180,
+                    approved_proof_image_ref: Some(format!(
+                        "ghcr.io/burd/runtime-proof@sha256:{}",
+                        "a".repeat(64)
+                    )),
                 },
             )
             .await

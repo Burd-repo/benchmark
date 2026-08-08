@@ -27,7 +27,25 @@ A queued job can receive a lease only when:
 - backend workload eligibility for the job workload is `eligible` or `limited`;
 - requested policy ID/version, when present, match the eligibility record;
 - no active lease exists for the same job;
-- no active lease exists for the same provider/device/GPU.
+- no active lease exists for the same provider/device/GPU;
+- a transaction-local `RuntimeAdmissionDecision` for the exact provider/device/GPU is `admitted`.
+
+Denied Runtime Admission never creates a lease. It returns a scheduler decision with
+`decision=skipped`, no `lease_id`, and stable admission reason codes. Offered-lease audit metadata
+records the verification ID, runtime verification fingerprint, runtime observation hash and the
+single authoritative evaluation time used by that scheduler pass.
+
+## Batching And Fairness
+
+The request `limit` caps offered leases. The scheduler scans candidates in batches of 50 and uses a
+separate bounded evaluation budget of 50-800 candidates per pass. It records
+`scheduler_last_evaluated_at` for every evaluated job and orders later passes by the oldest
+evaluation, then creation time and job ID. A prefix of denied jobs therefore rotates behind
+untouched work instead of consuming the same SQL `LIMIT` forever.
+
+Candidate rows remain protected by `FOR UPDATE OF j SKIP LOCKED`. A transaction-scoped advisory
+lock for the normalized provider/device/GPU tuple is acquired before lease creation, followed by a
+fresh active-lease check. The existing partial unique indexes remain the final database invariant.
 
 ## Lease State Machine
 
