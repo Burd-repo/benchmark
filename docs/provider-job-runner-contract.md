@@ -95,7 +95,12 @@ Implemented:
 - exact template/image-digest authorization with no permissive default;
 - read-only Docker/NVIDIA/GPU/image probes before side effects;
 - structured `docker create`, `start`, `inspect`, bounded/redacted `logs`,
-  `stop`, `kill`, and `rm --force` operations without a shell;
+  explicit `TERM`/policy-deadline/`KILL` escalation, and `rm --force`
+  operations without a shell;
+- wall-clock and cancellation bounds for every Docker/NVIDIA CLI child, with
+  termination/reaping before independent bounded cleanup;
+- exact-name stale-container lookup that distinguishes absence from Docker
+  list/inspect failure;
 - deterministic container names, Burd ownership labels, controlled stale
   cleanup, resource limits, GPU UUID binding, timeout/cancellation, distinct
   exit/OOM failures, and mandatory removal;
