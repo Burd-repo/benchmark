@@ -15,8 +15,10 @@ docker build --build-arg BURD_RUST_BUILDER_IMAGE=rust:<version>@sha256:<digest> 
 The helper accepts only the fixed `import`, `export`, and local gate
 `roundtrip-test` operations. It has no HTTP client, shell, package manager, CA
 bundle, or customer-controlled path argument. The runtime launches it with no
-network, no capabilities, no-new-privileges, bounded resources, and
-Docker-managed volumes only.
+network, no-new-privileges, bounded resources, and Docker-managed volumes only.
+All default capabilities are dropped; only the import operation receives
+`DAC_READ_SEARCH` so it can read private files staged by `docker cp`. The helper
+sees no host bind path. Export receives no added capability.
 
 The normal CI gate builds the already-compiled Linux helper without a base
 image and runs a real offline roundtrip:

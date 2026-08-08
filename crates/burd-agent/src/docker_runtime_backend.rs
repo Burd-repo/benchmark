@@ -1070,6 +1070,12 @@ fn artifact_helper_create_args(
         "--cpus".into(),
         ARTIFACT_HELPER_CPUS.into(),
     ]);
+    if role == "import" {
+        // docker cp can retain a restrictive source owner/mode. This narrow
+        // capability lets the trusted helper read only paths already visible
+        // in its isolated container namespace; no host path is mounted.
+        args.extend(["--cap-add".into(), "DAC_READ_SEARCH".into()]);
+    }
     // Docker copies staging bytes through the helper's ephemeral container layer.
     // That layer must remain writable until the helper is removed; the workload
     // rootfs is still read-only and never receives a host path.
@@ -1856,9 +1862,11 @@ mod tests {
             assert!(!args.iter().any(|argument| argument == "--read-only"));
         }
         assert!(import_joined.contains("--user 0:0"));
+        assert!(import_joined.contains("--cap-add DAC_READ_SEARCH"));
         assert!(import_joined.contains("-artifact-input"));
         assert!(!import_joined.contains("destination=/burd/volume,readonly"));
         assert!(export_joined.contains("--user 1000:1000"));
+        assert!(!export_joined.contains("--cap-add"));
         assert!(export_joined.contains("-artifact-output"));
         assert!(export_joined.contains("destination=/burd/volume,readonly"));
         assert!(is_immutable_image_ref(&image));
