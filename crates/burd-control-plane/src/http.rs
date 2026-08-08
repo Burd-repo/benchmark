@@ -19,6 +19,7 @@ use crate::remote_session::{
     AuthorizedSession, ControlChannelLease, ControlChannelRegistry, RemoteSessionPolicy,
     SessionError,
 };
+use crate::runtime_verification::RuntimeVerificationPolicy;
 use crate::security_hardening::SecurityPolicy;
 use crate::telemetry::TelemetryPolicy;
 use crate::verification_policy::{RecurringProofProfile, VerificationPolicy};
@@ -36,14 +37,15 @@ use burd_protocol::{
     CreateJobRequest, CreateOrganizationRequest, CreatePixPaymentIntentRequest,
     CreateProjectRequest, CreateProviderPayoutRequest, CreateReservationRequest,
     EnrollmentProofRequest, GrantCustomerCreditsRequest, IssueProofChallengeRequest,
-    JOB_ARTIFACT_UPLOAD_VERSION, JobArtifactUploadResponse, JobEventRequest,
-    KeyRotationProofRequest, RevokeEvidenceRequest, RunMarketplaceListingSweepRequest,
-    RunSchedulerRequest, RunTrustSweepRequest, RunVerificationSweepRequest,
-    RunWorkloadEligibilityRequest, ServerControlMessage, SettleReservationBillingRequest,
-    Sha256Accumulator, SignedBenchmarkResult, SignedDeviceGpuInventory,
-    SignedProofCapabilityResponse, SignedSecurityPosture, StartEnrollmentRequest,
-    StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
-    SubmitJobResultRequest, SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
+    IssueRuntimeVerificationChallengeRequest, JOB_ARTIFACT_UPLOAD_VERSION,
+    JobArtifactUploadResponse, JobEventRequest, KeyRotationProofRequest, RevokeEvidenceRequest,
+    RunMarketplaceListingSweepRequest, RunSchedulerRequest, RunTrustSweepRequest,
+    RunVerificationSweepRequest, RunWorkloadEligibilityRequest, ServerControlMessage,
+    SettleReservationBillingRequest, Sha256Accumulator, SignedBenchmarkResult,
+    SignedDeviceGpuInventory, SignedProofCapabilityResponse, SignedRuntimeVerificationResponse,
+    SignedSecurityPosture, StartEnrollmentRequest, StartKeyRotationRequest,
+    StartRemoteSessionRequest, SubmitEvidenceRequest, SubmitJobResultRequest,
+    SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
     UpsertMarketplacePriceRequest, UpsertProjectQuotaRequest, UpsertProviderPayoutAccountRequest,
     UpsertWorkloadPolicyRequest, create_private_file_new, hash_canonical, sha256_hex,
 };
@@ -462,6 +464,26 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/sessions/{session_id}/challenges/{challenge_id}/response",
             post(submit_proof_challenge_response),
+        )
+        .route(
+            "/v1/runtime-verifications/challenges",
+            post(issue_runtime_verification_challenge),
+        )
+        .route(
+            "/v1/runtime-verifications/challenges/{challenge_id}",
+            get(get_runtime_verification_challenge),
+        )
+        .route(
+            "/v1/providers/{provider_id}/runtime-verifications",
+            get(list_provider_runtime_verifications),
+        )
+        .route(
+            "/v1/sessions/{session_id}/runtime-verifications/next",
+            get(next_runtime_verification_challenge),
+        )
+        .route(
+            "/v1/sessions/{session_id}/runtime-verifications/{challenge_id}/response",
+            post(submit_runtime_verification_response),
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -2500,6 +2522,103 @@ async fn submit_proof_challenge_response(
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))
 }
+
+async fn issue_runtime_verification_challenge(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<IssueRuntimeVerificationChallengeRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let response = state
+        .db
+        .issue_runtime_verification_challenge(
+            &request_id,
+            &payload,
+            runtime_verification_policy(&state.config),
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(response)).into_response())
+}
+
+async fn get_runtime_verification_challenge(
+    State(state): State<Arc<AppState>>,
+    Path(challenge_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::RuntimeVerificationChallengeRecord>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    let record = state
+        .db
+        .get_runtime_verification_challenge(&challenge_id)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                ErrorCode::NotFound,
+                "runtime verification challenge not found",
+                request_id,
+            )
+        })?;
+    Ok(Json(record))
+}
+
+async fn list_provider_runtime_verifications(
+    State(state): State<Arc<AppState>>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListProviderRuntimeVerificationsResponse>, ApiError> {
+    let request_id = new_request_id();
+    authorize_admin(&headers, &state.config, &request_id)?;
+    state
+        .db
+        .list_provider_runtime_verifications(&request_id, &provider_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn next_runtime_verification_challenge(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::NextRuntimeVerificationChallengeResponse>, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    state
+        .db
+        .next_runtime_verification_challenge(&request_id, &authorized)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn submit_runtime_verification_response(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, challenge_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<SignedRuntimeVerificationResponse>,
+) -> Result<Json<burd_protocol::SubmitRuntimeVerificationResponse>, ApiError> {
+    let request_id = new_request_id();
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    state
+        .db
+        .submit_runtime_verification_response(
+            &request_id,
+            &authorized,
+            &session_id,
+            &challenge_id,
+            &payload,
+            runtime_verification_policy(&state.config),
+        )
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
 fn telemetry_policy(config: &ControlPlaneConfig) -> TelemetryPolicy {
     TelemetryPolicy {
         max_samples_per_batch: config.telemetry_max_samples_per_batch,
@@ -2511,6 +2630,13 @@ fn proof_challenge_policy(config: &ControlPlaneConfig) -> ProofChallengePolicy {
     ProofChallengePolicy {
         ttl_seconds: config.proof_challenge_ttl_seconds,
         clock_skew_seconds: config.proof_challenge_clock_skew_seconds,
+    }
+}
+fn runtime_verification_policy(config: &ControlPlaneConfig) -> RuntimeVerificationPolicy {
+    RuntimeVerificationPolicy {
+        challenge_ttl_seconds: config.proof_challenge_ttl_seconds,
+        clock_skew_seconds: config.proof_challenge_clock_skew_seconds,
+        verification_ttl_seconds: config.verification_period_seconds.min(604_800),
     }
 }
 fn verification_policy(config: &ControlPlaneConfig) -> VerificationPolicy {

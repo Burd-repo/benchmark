@@ -21,6 +21,7 @@ pub mod openapi;
 pub mod proof_challenge;
 pub mod rate_limit;
 pub mod remote_session;
+pub mod runtime_verification;
 pub mod scheduler;
 pub mod security_hardening;
 pub mod telemetry;

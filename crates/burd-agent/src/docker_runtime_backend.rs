@@ -77,11 +77,20 @@ pub struct DockerContainerPlan {
     pub pids_limit: u32,
     pub shm_size_mib: u64,
     pub labels: BTreeMap<String, String>,
+    /// Trusted Agent-generated environment only. Customer workloads never populate this map.
+    pub environment: BTreeMap<String, String>,
     pub artifact_workspace: bool,
     pub input_artifact_count: u32,
     pub output_artifact_count: u32,
     pub input_artifact_bytes: u64,
     pub output_artifact_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DockerRuntimeEnvironment {
+    pub docker_server_version: String,
+    pub nvidia_driver_version: String,
+    pub nvidia_runtime: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,6 +197,11 @@ pub trait DockerRuntimeBackend: Send + Sync + 'static {
         plan: &DockerContainerPlan,
         control: &DockerCommandControl,
     ) -> Result<(), DockerRuntimeError>;
+
+    fn runtime_environment(
+        &self,
+        control: &DockerCommandControl,
+    ) -> Result<DockerRuntimeEnvironment, DockerRuntimeError>;
 
     fn existing_container(
         &self,
@@ -307,6 +321,10 @@ impl DockerCliRuntime {
         ];
         for (key, value) in &plan.labels {
             args.push("--label".to_string());
+            args.push(format!("{key}={value}"));
+        }
+        for (key, value) in &plan.environment {
+            args.push("--env".to_string());
             args.push(format!("{key}={value}"));
         }
         args.extend([
@@ -742,6 +760,66 @@ impl DockerCliRuntime {
 }
 
 impl DockerCliRuntime {
+    fn runtime_environment(
+        &self,
+        control: &DockerCommandControl,
+    ) -> Result<DockerRuntimeEnvironment, DockerRuntimeError> {
+        let docker_version = self.successful_docker(
+            &[
+                "version".into(),
+                "--format".into(),
+                "{{.Server.Version}}".into(),
+            ],
+            "docker_runtime_probe_failed",
+            control,
+        )?;
+        let runtimes = self.successful_docker(
+            &[
+                "info".into(),
+                "--format".into(),
+                "{{json .Runtimes}}".into(),
+            ],
+            "docker_runtime_probe_failed",
+            control,
+        )?;
+        let runtime_map: serde_json::Value = serde_json::from_str(runtimes.stdout.trim())
+            .map_err(|_| DockerRuntimeError::new("docker_runtime_probe_invalid"))?;
+        if runtime_map.get("nvidia").is_none() {
+            return Err(DockerRuntimeError::new("nvidia_runtime_unavailable"));
+        }
+        let driver = run_bounded_command(
+            &self.nvidia_smi_program,
+            &[
+                "--query-gpu=driver_version".into(),
+                "--format=csv,noheader".into(),
+            ],
+            control,
+        )?;
+        if !driver.status.success() || docker_version.stdout_truncated || driver.stdout_truncated {
+            return Err(DockerRuntimeError::new("runtime_version_probe_failed"));
+        }
+        let mut driver_versions = driver
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(driver_version) = driver_versions.next() else {
+            return Err(DockerRuntimeError::new("runtime_version_probe_invalid"));
+        };
+        if driver_versions.any(|value| value != driver_version) {
+            return Err(DockerRuntimeError::new("runtime_version_probe_ambiguous"));
+        }
+        let docker_server_version = docker_version.stdout.trim();
+        if docker_server_version.is_empty() || docker_server_version.len() > 128 {
+            return Err(DockerRuntimeError::new("runtime_version_probe_invalid"));
+        }
+        Ok(DockerRuntimeEnvironment {
+            docker_server_version: docker_server_version.to_string(),
+            nvidia_driver_version: driver_version.to_string(),
+            nvidia_runtime: "nvidia".to_string(),
+        })
+    }
+
     fn verify_linux_container_environment(
         &self,
         plan: &DockerContainerPlan,
@@ -1238,6 +1316,13 @@ impl DockerRuntimeBackend for LinuxNativeDockerBackend {
         Ok(())
     }
 
+    fn runtime_environment(
+        &self,
+        control: &DockerCommandControl,
+    ) -> Result<DockerRuntimeEnvironment, DockerRuntimeError> {
+        self.cli.runtime_environment(control)
+    }
+
     fn existing_container(
         &self,
         name: &str,
@@ -1415,6 +1500,13 @@ impl DockerRuntimeBackend for WindowsWsl2DockerBackend {
                 .verify_artifact_helper_image(self.artifact_helper_image()?, control)?;
         }
         Ok(())
+    }
+
+    fn runtime_environment(
+        &self,
+        control: &DockerCommandControl,
+    ) -> Result<DockerRuntimeEnvironment, DockerRuntimeError> {
+        self.cli.runtime_environment(control)
     }
 
     fn existing_container(
@@ -1840,6 +1932,7 @@ mod tests {
                 ("com.burd.managed".to_string(), "true".to_string()),
                 ("com.burd.job_id".to_string(), "job_1".to_string()),
             ]),
+            environment: BTreeMap::new(),
             artifact_workspace: false,
             input_artifact_count: 0,
             output_artifact_count: 0,

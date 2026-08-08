@@ -14,6 +14,7 @@ pub mod marketplace;
 pub mod network_probe;
 pub mod remote_session;
 pub mod report;
+pub mod runtime_verification;
 pub mod secure_runtime;
 pub mod security;
 pub mod session;
@@ -152,6 +153,23 @@ pub use remote_session::{
     show_remote_session, update_remote_session_sequence, update_remote_telemetry_sequence,
 };
 pub use report::{FullReport, ReportSignature, SignedReport, VerifyReportResult};
+pub use runtime_verification::{
+    AGENT_RUNTIME_CONTRACT_VERSION, IssueRuntimeVerificationChallengeRequest,
+    IssueRuntimeVerificationChallengeResponse, ListProviderRuntimeVerificationsResponse,
+    NextRuntimeVerificationChallengeResponse, ProviderRuntimeVerificationRecord,
+    RUNTIME_PROOF_OUTPUT_SCHEMA_VERSION, RUNTIME_PROOF_POLICY_VERSION,
+    RUNTIME_VERIFICATION_CANONICALIZATION_VERSION, RUNTIME_VERIFICATION_CHALLENGE_SCHEMA_VERSION,
+    RUNTIME_VERIFICATION_FINGERPRINT_VERSION, RUNTIME_VERIFICATION_RECORD_SCHEMA_VERSION,
+    RUNTIME_VERIFICATION_RESPONSE_SCHEMA_VERSION, RUNTIME_VERIFICATION_SIGNATURE_DOMAIN,
+    RuntimeProofOutput, RuntimeVerificationChallenge, RuntimeVerificationChallengeRecord,
+    RuntimeVerificationEvidence, RuntimeVerificationFingerprintClaims,
+    RuntimeVerificationResponsePayload, SignedRuntimeVerificationResponse,
+    SubmitRuntimeVerificationResponse, fingerprint_claims, immutable_image_ref,
+    runtime_verification_fingerprint, runtime_verification_response_hash,
+    runtime_verification_signature_message, validate_provider_runtime_verification_record,
+    validate_runtime_verification_challenge, validate_runtime_verification_evidence,
+    validate_signed_runtime_verification_response,
+};
 pub use secure_runtime::{
     PROVIDER_RUNTIME_CAPABILITY_SCHEMA_VERSION, PROVIDER_RUNTIME_VERIFICATION_SCHEMA_VERSION,
     ProviderRuntimeCapability, ProviderRuntimeVerification, SECURE_RUNTIME_POLICY_VERSION,
