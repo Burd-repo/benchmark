@@ -433,16 +433,17 @@ async fn expire_stale_offers(
 ) -> Result<u32, SessionError> {
     let rows = transaction
         .query(
-            "UPDATE job_leases SET status = 'expired', failure_reason = 'lease_ack_timeout', updated_at = $1 WHERE status = 'offered' AND expires_at <= $1 RETURNING job_id",
+            "UPDATE job_leases SET status = 'expired', failure_reason = 'lease_ack_timeout', updated_at = $1 WHERE status = 'offered' AND expires_at <= $1 RETURNING job_id, lease_id",
             &[&now],
         )
         .await?;
     for row in &rows {
         let job_id: String = row.get("job_id");
+        let lease_id: String = row.get("lease_id");
         transaction
             .execute(
-                "UPDATE compute_jobs SET status = 'queued', assigned_at = NULL, job_credential_hash = NULL, job_credential_expires_at = NULL, updated_at = $1 WHERE job_id = $2 AND status = 'assigned'",
-                &[&now, &job_id],
+                "UPDATE compute_jobs SET status = 'queued', assigned_at = NULL, assignment_lease_id = NULL, job_credential_hash = NULL, job_credential_expires_at = NULL, updated_at = $1 WHERE job_id = $2 AND status = 'assigned' AND assignment_lease_id = $3",
+                &[&now, &job_id, &lease_id],
             )
             .await?;
     }

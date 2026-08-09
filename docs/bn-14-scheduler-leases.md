@@ -80,15 +80,17 @@ This prevents a provider from pulling work that the scheduler did not reserve fo
 ## Acceptance Rules
 
 `POST /v1/sessions/{session_id}/jobs/{job_id}/accept` is the final authority gate before provider
-execution side effects. It locks the assigned job and latest lease in one transaction, requires the
-lease to remain `offered` and unexpired, rechecks exact provider/device/session/GPU bindings, and
-re-evaluates Runtime Admission with server time. Only then may the job and exactly one lease move
-to `accepted` together.
+execution side effects. The request carries the exact assignment `lease_id`; the backend locks that
+job/lease pair, compares it to `compute_jobs.assignment_lease_id`, requires the lease to remain
+`offered` and unexpired, rechecks exact provider/device/session/GPU bindings, and re-evaluates
+Runtime Admission with server time. Only then may the job and exactly one lease move to `accepted`
+together.
 
-Missing, stale, terminal, mismatched, or newly denied authority cannot start execution. The job is
-returned to `queued`, job credentials are invalidated, any active lease is expired, and the reason
-plus non-secret Runtime Admission evidence is audited. A lease update affecting zero rows is a
-conflict, never a successful acknowledgement.
+An acknowledgement for an old, nonexistent, or mismatched lease returns `409` without mutating the
+current assignment. If the exact current assignment loses authority, the job is returned to
+`queued`, its credential is invalidated, its lease is expired, and the reason plus non-secret
+Runtime Admission evidence is audited. Missing `lease_id` is rejected; the backend never infers the
+latest lease.
 
 ## Deferred
 

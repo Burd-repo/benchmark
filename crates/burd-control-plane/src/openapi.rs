@@ -3171,7 +3171,11 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
         "AcceptJobRequest".to_string(),
         serde_json::json!({
             "type": "object",
-            "properties": { "status_message": { "type": ["string", "null"] } }
+            "required": ["lease_id"],
+            "properties": {
+                "lease_id": { "type": "string" },
+                "status_message": { "type": ["string", "null"] }
+            }
         }),
     );
     schemas.insert(
@@ -4678,6 +4682,7 @@ mod tests {
             "ProviderJobCleanupPolicy",
             "ProviderJobExecutionSpec",
             "NextJobResponse",
+            "AcceptJobRequest",
             "JobEventRequest",
             "JobEventResponse",
             "SubmitJobResultRequest",
@@ -4730,6 +4735,10 @@ mod tests {
             schemas["ProviderRuntimeCapability"]["properties"]["runtime_backend"]["enum"],
             serde_json::json!(["docker_linux_native", "docker_wsl2"])
         );
+        assert_eq!(
+            schemas["AcceptJobRequest"]["required"],
+            serde_json::json!(["lease_id"])
+        );
 
         let paths = document["paths"].as_object().unwrap();
         assert_eq!(
@@ -4755,6 +4764,14 @@ mod tests {
         assert_eq!(
             response_schema_ref(paths, "/v1/jobs/{job_id}/leases", "get", "200"),
             "#/components/schemas/ListJobLeasesResponse"
+        );
+        assert_eq!(
+            request_schema_ref(
+                paths,
+                "/v1/sessions/{session_id}/jobs/{job_id}/accept",
+                "post"
+            ),
+            "#/components/schemas/AcceptJobRequest"
         );
         assert_eq!(
             request_schema_ref(

@@ -312,8 +312,14 @@ impl Database {
                 (now + Duration::seconds(i64::from(queued.timeout_seconds) + 600)).to_rfc3339();
             let updated = transaction
                 .execute(
-                    "UPDATE compute_jobs SET status = 'assigned', assigned_at = $1, job_credential_hash = $2, job_credential_expires_at = $3, updated_at = $1 WHERE job_id = $4 AND status = 'queued'",
-                    &[&now_text, &credential_hash, &credential_expires_at, &queued.job_id],
+                    "UPDATE compute_jobs SET status = 'assigned', assigned_at = $1, assignment_lease_id = $2, job_credential_hash = $3, job_credential_expires_at = $4, updated_at = $1 WHERE job_id = $5 AND status = 'queued' AND assignment_lease_id IS NULL",
+                    &[
+                        &now_text,
+                        &lease_id,
+                        &credential_hash,
+                        &credential_expires_at,
+                        &queued.job_id,
+                    ],
                 )
                 .await?;
             if updated != 1 {
@@ -326,6 +332,7 @@ impl Database {
             let data_plane = data_plane_grant(&job, credential, credential_expires_at);
             let execution = provider_job_execution_spec(&job, &lease, &data_plane)?;
             let audit_metadata = serde_json::json!({
+                "lease_id": lease_id,
                 "runtime_admission": runtime_admission_audit_metadata(&admission),
             })
             .to_string();
@@ -364,10 +371,13 @@ impl Database {
         request: &AcceptJobRequest,
         runtime_admission_policy: &RuntimeAdmissionPolicy,
     ) -> Result<JobResponse, SessionError> {
+        validate_id("lease_id", &request.lease_id, 128)?;
         validate_job_message(request.status_message.as_deref())?;
         let mut client = self.connect().await?;
         let transaction = client.transaction().await?;
-        let (job, lease) = locked_authorized_assignment(&transaction, authorized, job_id).await?;
+        let (job, lease) =
+            locked_authorized_assignment(&transaction, authorized, job_id, &request.lease_id)
+                .await?;
         if job.status != "assigned" {
             return Err(SessionError::Conflict(
                 "job must be assigned before it can be accepted".to_string(),
@@ -375,9 +385,7 @@ impl Database {
         }
         let now = Utc::now();
         let now_text = now.to_rfc3339();
-        if let Some(failure_reason) =
-            acceptance_authority_failure(&job, lease.as_ref(), authorized, &now)
-        {
+        if let Some(failure_reason) = acceptance_authority_failure(&job, &lease, authorized, &now) {
             let reason_codes = vec![failure_reason.to_string()];
             withhold_acceptance(
                 &transaction,
@@ -385,7 +393,7 @@ impl Database {
                     request_id,
                     authorized,
                     job: &job,
-                    lease: lease.as_ref(),
+                    lease: &lease,
                     failure_reason,
                     reason_codes: &reason_codes,
                     admission: None,
@@ -398,11 +406,6 @@ impl Database {
                 "job acceptance authority is no longer valid".to_string(),
             ));
         }
-        let Some(lease) = lease else {
-            return Err(SessionError::Conflict(
-                "job acceptance requires a corresponding lease".to_string(),
-            ));
-        };
         let admission = evaluate_runtime_admission_for_gpu_in_transaction(
             &transaction,
             &authorized.provider_id,
@@ -419,7 +422,7 @@ impl Database {
                     request_id,
                     authorized,
                     job: &job,
-                    lease: Some(&lease),
+                    lease: &lease,
                     failure_reason: "runtime_admission_lost_before_acceptance",
                     reason_codes: &admission.reason_codes,
                     admission: Some(&admission),
@@ -757,13 +760,16 @@ async fn locked_authorized_assignment(
     transaction: &Transaction<'_>,
     authorized: &AuthorizedSession,
     job_id: &str,
-) -> Result<(JobRecord, Option<JobLeaseRecord>), SessionError> {
+    lease_id: &str,
+) -> Result<(JobRecord, JobLeaseRecord), SessionError> {
     validate_id("job_id", job_id, 128)?;
+    validate_id("lease_id", lease_id, 128)?;
     let lease_row = transaction
         .query_opt(
-            "SELECT l.lease_id FROM job_leases l JOIN compute_jobs j ON j.job_id = l.job_id WHERE j.job_id = $1 AND j.provider_id = $2 AND j.device_id = $3 AND j.session_id = $4 ORDER BY l.offered_at DESC, l.lease_id DESC LIMIT 1 FOR UPDATE OF l, j",
+            "SELECT l.lease_id, j.assignment_lease_id FROM compute_jobs j JOIN job_leases l ON l.job_id = j.job_id WHERE j.job_id = $1 AND l.lease_id = $2 AND j.provider_id = $3 AND j.device_id = $4 AND j.session_id = $5 AND l.provider_id = $3 AND l.device_id = $4 AND l.session_id = $5 FOR UPDATE OF j, l",
             &[
                 &job_id,
+                &lease_id,
                 &authorized.provider_id,
                 &authorized.device_id,
                 &authorized.session_id,
@@ -771,25 +777,28 @@ async fn locked_authorized_assignment(
         )
         .await?;
     let Some(lease_row) = lease_row else {
-        return locked_authorized_job(transaction, authorized, job_id)
-            .await
-            .map(|job| (job, None));
+        locked_authorized_job(transaction, authorized, job_id).await?;
+        return Err(SessionError::Conflict(
+            "stale or mismatched assignment acknowledgement".to_string(),
+        ));
     };
-    let lease_id: String = lease_row.get("lease_id");
+    let assignment_lease_id: Option<String> = lease_row.get("assignment_lease_id");
+    if assignment_lease_id.as_deref() != Some(lease_id) {
+        return Err(SessionError::Conflict(
+            "stale assignment acknowledgement".to_string(),
+        ));
+    }
     let job = load_job_in_transaction(transaction, job_id).await?;
-    let lease = load_job_lease_in_transaction(transaction, &lease_id).await?;
-    Ok((job, Some(lease)))
+    let lease = load_job_lease_in_transaction(transaction, lease_id).await?;
+    Ok((job, lease))
 }
 
 fn acceptance_authority_failure(
     job: &JobRecord,
-    lease: Option<&JobLeaseRecord>,
+    lease: &JobLeaseRecord,
     authorized: &AuthorizedSession,
     now: &chrono::DateTime<Utc>,
 ) -> Option<&'static str> {
-    let Some(lease) = lease else {
-        return Some("lease_missing_before_acceptance");
-    };
     if lease.status != "offered" {
         return Some(if lease.status == "expired" {
             "lease_expired_before_acceptance"
@@ -944,7 +953,7 @@ async fn withhold_assignment(
     }
     let updated_job = transaction
         .execute(
-            "UPDATE compute_jobs SET status = 'queued', assigned_at = NULL, job_credential_hash = NULL, job_credential_expires_at = NULL, updated_at = $1 WHERE job_id = $2 AND status = 'queued'",
+            "UPDATE compute_jobs SET status = 'queued', assigned_at = NULL, assignment_lease_id = NULL, job_credential_hash = NULL, job_credential_expires_at = NULL, updated_at = $1 WHERE job_id = $2 AND status = 'queued' AND assignment_lease_id IS NULL",
             &[&now, &job_id],
         )
         .await?;
@@ -981,7 +990,7 @@ struct AcceptanceWithholding<'a> {
     request_id: &'a str,
     authorized: &'a AuthorizedSession,
     job: &'a JobRecord,
-    lease: Option<&'a JobLeaseRecord>,
+    lease: &'a JobLeaseRecord,
     failure_reason: &'a str,
     reason_codes: &'a [String],
     admission: Option<&'a RuntimeAdmissionDecision>,
@@ -994,12 +1003,10 @@ async fn withhold_acceptance(
 ) -> Result<(), SessionError> {
     let reason_codes_json = serde_json::to_string(withholding.reason_codes)
         .map_err(|error| SessionError::Database(DbError::new(error.to_string())))?;
-    if let Some(lease) = withholding.lease
-        && matches!(
-            lease.status.as_str(),
-            "offered" | "accepted" | "provisioning" | "active"
-        )
-    {
+    if matches!(
+        withholding.lease.status.as_str(),
+        "offered" | "accepted" | "provisioning" | "active"
+    ) {
         let updated_lease = transaction
             .execute(
                 "UPDATE job_leases SET status = 'expired', reason_codes_json = $1, failure_reason = $2, updated_at = $3 WHERE lease_id = $4 AND status IN ('offered', 'accepted', 'provisioning', 'active')",
@@ -1007,7 +1014,7 @@ async fn withhold_acceptance(
                     &reason_codes_json,
                     &withholding.failure_reason,
                     &withholding.now,
-                    &lease.lease_id,
+                    &withholding.lease.lease_id,
                 ],
             )
             .await?;
@@ -1019,8 +1026,12 @@ async fn withhold_acceptance(
     }
     let updated_job = transaction
         .execute(
-            "UPDATE compute_jobs SET status = 'queued', assigned_at = NULL, accepted_at = NULL, job_credential_hash = NULL, job_credential_expires_at = NULL, updated_at = $1 WHERE job_id = $2 AND status = 'assigned'",
-            &[&withholding.now, &withholding.job.job_id],
+            "UPDATE compute_jobs SET status = 'queued', assigned_at = NULL, accepted_at = NULL, assignment_lease_id = NULL, job_credential_hash = NULL, job_credential_expires_at = NULL, updated_at = $1 WHERE job_id = $2 AND status = 'assigned' AND assignment_lease_id = $3",
+            &[
+                &withholding.now,
+                &withholding.job.job_id,
+                &withholding.lease.lease_id,
+            ],
         )
         .await?;
     if updated_job != 1 {
@@ -1028,31 +1039,22 @@ async fn withhold_acceptance(
             "assigned job changed before acceptance could be withheld".to_string(),
         ));
     }
-    let lease_id = withholding.lease.map(|lease| lease.lease_id.as_str());
     let audit_metadata = serde_json::json!({
         "failure_reason": withholding.failure_reason,
         "reason_codes": withholding.reason_codes,
-        "lease_id": lease_id,
+        "lease_id": withholding.lease.lease_id,
         "runtime_admission": withholding.admission.map(runtime_admission_audit_metadata),
     })
     .to_string();
-    let (entity_type, entity_id, event_type) = match lease_id {
-        Some(lease_id) => ("job_lease", lease_id, "lease.acceptance_withheld"),
-        None => (
-            "compute_job",
-            withholding.job.job_id.as_str(),
-            "job.acceptance_withheld",
-        ),
-    };
     insert_audit_event(
         transaction,
         NewAuditEvent {
             request_id: withholding.request_id,
             actor_type: "device",
             actor_id: Some(withholding.authorized.device_id.clone()),
-            entity_type,
-            entity_id,
-            event_type,
+            entity_type: "job_lease",
+            entity_id: &withholding.lease.lease_id,
+            event_type: "lease.acceptance_withheld",
             idempotency_key: None,
             summary: "job acceptance withheld after fail-closed revalidation",
             metadata_json: &audit_metadata,
@@ -1688,12 +1690,16 @@ mod tests {
         let client = db.connect().await.unwrap();
         let job = client
             .query_one(
-                "SELECT status, job_credential_hash, job_credential_expires_at FROM compute_jobs WHERE job_id = $1",
+                "SELECT status, assignment_lease_id, job_credential_hash, job_credential_expires_at FROM compute_jobs WHERE job_id = $1",
                 &[&job_id],
             )
             .await
             .unwrap();
         assert_eq!(job.get::<_, String>("status"), "queued");
+        assert!(
+            job.get::<_, Option<String>>("assignment_lease_id")
+                .is_none()
+        );
         assert!(
             job.get::<_, Option<String>>("job_credential_hash")
                 .is_none()
@@ -2142,6 +2148,7 @@ mod tests {
                     .credential
                     .starts_with("jobcred_")
             );
+            let lease_id = next.lease.as_ref().unwrap().lease_id.clone();
 
             if scenario == "gpu_inventory_empty" {
                 insert_latest_inventory_snapshot(&db, &[]).await;
@@ -2193,7 +2200,10 @@ mod tests {
                     "req_acceptance_denied",
                     &authorized,
                     &job_id,
-                    &AcceptJobRequest::default(),
+                    &AcceptJobRequest {
+                        lease_id,
+                        status_message: None,
+                    },
                     &policy,
                 )
                 .await
@@ -2207,6 +2217,182 @@ mod tests {
             )
             .await;
         }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_stale_acknowledgement_cannot_mutate_a_new_assignment() {
+        let (db, authorized, policy, now) =
+            assignment_fixture("burd_acceptance_stale_ack", &["GPU-A"]).await;
+        let job_id = "job_stale_ack";
+        seed_and_offer_jobs(&db, &policy, now, &[(job_id, "GPU-A", -10)]).await;
+        let assignment_a = db
+            .next_job_for_session("req_assignment_a", &authorized, &policy)
+            .await
+            .unwrap();
+        let lease_a = assignment_a.lease.unwrap().lease_id;
+
+        let client = db.connect().await.unwrap();
+        let requeued_at = Utc::now().to_rfc3339();
+        client
+            .execute(
+                "UPDATE job_leases SET status = 'expired', failure_reason = 'assignment_invalidated_for_test', updated_at = $1 WHERE lease_id = $2 AND status = 'offered'",
+                &[&requeued_at, &lease_a],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "UPDATE compute_jobs SET status = 'queued', assigned_at = NULL, assignment_lease_id = NULL, job_credential_hash = NULL, job_credential_expires_at = NULL, updated_at = $1 WHERE job_id = $2 AND status = 'assigned' AND assignment_lease_id = $3",
+                &[&requeued_at, &job_id, &lease_a],
+            )
+            .await
+            .unwrap();
+        drop(client);
+
+        let scheduled_b = db
+            .run_scheduler(
+                "req_scheduler_b",
+                &burd_protocol::RunSchedulerRequest {
+                    limit: Some(1),
+                    lease_ttl_seconds: Some(120),
+                    reason: Some("stale_ack_reassignment_test".to_string()),
+                },
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(scheduled_b.offered, 1);
+        let assignment_b = db
+            .next_job_for_session("req_assignment_b", &authorized, &policy)
+            .await
+            .unwrap();
+        let lease_b = assignment_b.lease.as_ref().unwrap().lease_id.clone();
+        let credential_b = assignment_b.data_plane.as_ref().unwrap().credential.clone();
+        let credential_b_hash = sha256_hex(credential_b.as_bytes());
+        assert_ne!(lease_a, lease_b);
+
+        for (request_id, rejected_lease_id, expected_message) in [
+            (
+                "req_stale_ack_a",
+                lease_a.as_str(),
+                "stale assignment acknowledgement",
+            ),
+            (
+                "req_missing_ack",
+                "lease_missing",
+                "stale or mismatched assignment acknowledgement",
+            ),
+        ] {
+            let error = db
+                .accept_job(
+                    request_id,
+                    &authorized,
+                    job_id,
+                    &AcceptJobRequest {
+                        lease_id: rejected_lease_id.to_string(),
+                        status_message: None,
+                    },
+                    &policy,
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, SessionError::Conflict(message) if message == expected_message)
+            );
+        }
+
+        let client = db.connect().await.unwrap();
+        let current = client
+            .query_one(
+                "SELECT status, assignment_lease_id, job_credential_hash FROM compute_jobs WHERE job_id = $1",
+                &[&job_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(current.get::<_, String>("status"), "assigned");
+        assert_eq!(
+            current
+                .get::<_, Option<String>>("assignment_lease_id")
+                .as_deref(),
+            Some(lease_b.as_str())
+        );
+        assert_eq!(
+            current
+                .get::<_, Option<String>>("job_credential_hash")
+                .as_deref(),
+            Some(credential_b_hash.as_str())
+        );
+        let lease_b_status: String = client
+            .query_one(
+                "SELECT status FROM job_leases WHERE lease_id = $1",
+                &[&lease_b],
+            )
+            .await
+            .unwrap()
+            .get("status");
+        assert_eq!(lease_b_status, "offered");
+        let audit_metadata = client
+            .query(
+                "SELECT metadata_json FROM audit_events WHERE entity_id = $1",
+                &[&job_id],
+            )
+            .await
+            .unwrap();
+        assert!(audit_metadata.into_iter().all(|row| {
+            let metadata: String = row.get("metadata_json");
+            !metadata.contains(&credential_b)
+        }));
+        drop(client);
+
+        let request_b = AcceptJobRequest {
+            lease_id: lease_b.clone(),
+            status_message: Some("provider worker accepted assignment".to_string()),
+        };
+        let db_right = db.clone();
+        let authorized_right = authorized.clone();
+        let policy_right = policy.clone();
+        let request_b_right = request_b.clone();
+        let (left, right) = tokio::join!(
+            db.accept_job(
+                "req_accept_b_left",
+                &authorized,
+                job_id,
+                &request_b,
+                &policy,
+            ),
+            db_right.accept_job(
+                "req_accept_b_right",
+                &authorized_right,
+                job_id,
+                &request_b_right,
+                &policy_right,
+            )
+        );
+        assert_eq!(
+            [left.is_ok(), right.is_ok()]
+                .into_iter()
+                .filter(|ok| *ok)
+                .count(),
+            1
+        );
+        let client = db.connect().await.unwrap();
+        let final_state = client
+            .query_one(
+                "SELECT status, assignment_lease_id FROM compute_jobs WHERE job_id = $1",
+                &[&job_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(final_state.get::<_, String>("status"), "accepted");
+        assert_eq!(
+            final_state
+                .get::<_, Option<String>>("assignment_lease_id")
+                .as_deref(),
+            Some(lease_b.as_str())
+        );
+        drop(client);
+        db.drop_schema_for_test().await.unwrap();
     }
 
     #[tokio::test]
@@ -2396,6 +2582,7 @@ mod tests {
         );
 
         assert_eq!(next.lease.as_ref().unwrap().status, "offered");
+        let lease_id = next.lease.as_ref().unwrap().lease_id.clone();
 
         let duplicate_next = db
             .next_job_for_session(
@@ -2413,7 +2600,10 @@ mod tests {
                 "req_accept",
                 &authorized,
                 &created.job.job_id,
-                &AcceptJobRequest::default(),
+                &AcceptJobRequest {
+                    lease_id,
+                    status_message: None,
+                },
                 &crate::scheduler::tests::runtime_policy(),
             )
             .await

@@ -714,14 +714,14 @@ Documento: [`docs/bn-12-secure-provider-runtime.md`](docs/bn-12-secure-provider-
 
 ## Job API e data plane
 
-O BN-13 adiciona no control plane a primeira API de jobs: criacao admin com idempotencia, pull pelo provider via sessao remota autenticada, accept, eventos sequenciados, resultado final, cancelamento e grants de data plane com credencial separada. Desde o BN-14, o pull depende de um lease oferecido pelo scheduler. O Control Plane agora tambem retorna uma especificacao versionada que vincula job, lease, identidade, GPU, imagem digest-pinned, timeout e politica de runtime; ainda nao existe provider worker que transfira artefatos ou execute containers de cliente.
+O BN-13 adiciona no control plane a primeira API de jobs: criacao admin com idempotencia, pull pelo provider via sessao remota autenticada, accept, eventos sequenciados, resultado final, cancelamento e grants de data plane com credencial separada. Desde o BN-14, o pull depende de um lease oferecido pelo scheduler. O Control Plane agora tambem retorna uma especificacao versionada que vincula job, lease, identidade, GPU, imagem digest-pinned, timeout e politica de runtime. O provider worker e os executores existem de forma desconectada para validacao; a conexao remota de producao ainda nao os ativa.
 
 Documento: [`docs/bn-13-job-api-data-plane.md`](docs/bn-13-job-api-data-plane.md).
 Contrato adicional: [`docs/provider-job-runner-contract.md`](docs/provider-job-runner-contract.md).
 
 ## Scheduler e leases
 
-O BN-14 adiciona `POST /v1/scheduler/run`, `job_leases`, listagem de leases por job/provider e prevencao de dupla reserva por job ou por GPU ativa. O scheduler consome sessao remota, provider/device state e workload eligibility backend-owned para oferecer leases curtos a jobs ja criados e ja vinculados a provider/device/session/GPU.
+O BN-14 adiciona `POST /v1/scheduler/run`, `job_leases`, listagem de leases por job/provider e prevencao de dupla reserva por job ou por GPU ativa. O scheduler consome sessao remota, provider/device state e workload eligibility backend-owned para oferecer leases curtos a jobs ja criados e ja vinculados a provider/device/session/GPU. A assignment persiste seu `assignment_lease_id`, e o accept exige esse ID exato; acknowledgements antigos retornam `409` sem alterar uma assignment mais nova.
 
 Documento: [`docs/bn-14-scheduler-leases.md`](docs/bn-14-scheduler-leases.md).
 

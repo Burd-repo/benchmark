@@ -145,8 +145,9 @@ pub struct NextJobResponse {
     pub execution: Option<ProviderJobExecutionSpec>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcceptJobRequest {
+    pub lease_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_message: Option<String>,
 }
@@ -229,4 +230,18 @@ pub struct JobResponse {
 pub struct ListJobsResponse {
     pub request_id: String,
     pub jobs: Vec<JobRecord>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AcceptJobRequest;
+
+    #[test]
+    fn accept_job_requires_an_explicit_lease_id() {
+        assert!(serde_json::from_str::<AcceptJobRequest>(r#"{"status_message":null}"#).is_err());
+        let request: AcceptJobRequest =
+            serde_json::from_str(r#"{"lease_id":"lease_1","status_message":"provider accepted"}"#)
+                .unwrap();
+        assert_eq!(request.lease_id, "lease_1");
+    }
 }

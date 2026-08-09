@@ -111,15 +111,19 @@ to `assigned` in the same commit.
 ## Acceptance revalidation
 
 `POST /v1/sessions/{session_id}/jobs/{job_id}/accept` evaluates Runtime Admission again after
-locking the assigned job and latest lease. The lease must still be an unexpired `offered` lease and
-must preserve the exact provider/device/session/GPU binding. This closes the authority window
-between credential issuance and the Agent's acknowledgement immediately before execution.
+locking the assigned job and the exact request `lease_id`. That lease must equal the persisted
+`assignment_lease_id`, remain an unexpired `offered` lease, and preserve the exact
+provider/device/session/GPU binding. This closes the authority window between credential issuance
+and the Agent's acknowledgement immediately before execution.
 
 Denied acceptance is persisted fail-closed before returning `409`: the job returns to `queued`, its
 credential hash and expiry are cleared, an active lease becomes `expired`, and a
 `lease.acceptance_withheld` audit event records reason codes and current non-secret admission
 evidence. Successful acceptance moves both job and exactly one lease to `accepted` in the same
 transaction.
+
+An acknowledgement for a stale or mismatched lease is different from current authority loss: it
+returns `409` without clearing the credential, requeueing the job, or mutating the current lease.
 
 ## Versioning and migration
 
