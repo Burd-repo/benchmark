@@ -764,9 +764,9 @@ Documento: [`docs/bn-20-security-hardening-attestation.md`](docs/bn-20-security-
 ## BN-21 - Multi-GPU Inventory Foundation
 
 - `burd-protocol` define signed device GPU inventory payloads, per-GPU inventory rows, canonical inventory hashing, and signature-message binding.
-- PostgreSQL migration `0019_multi_gpu_inventory` adds immutable `device_gpu_inventory` records with append-only enforcement.
+- PostgreSQL migrations `0019_multi_gpu_inventory` and `0029_gpu_inventory_authoritative_snapshots` persist immutable signed snapshot envelopes with zero to 32 per-GPU rows, append-only enforcement, and backend ingestion ordering.
 - The control plane exposes `POST /v1/sessions/{session_id}/gpu-inventory` and `GET /v1/providers/{provider_id}/gpu-inventory`.
-- Job creation and scheduler selection require an active inventory row for the requested GPU UUID.
+- Job creation, scheduler selection, assignment and acceptance require the requested GPU UUID in the latest snapshot by backend `ingest_seq`; signed `gpus=[]` removes all historical GPUs from current supply.
 - BN-21 does not implement distributed placement, cluster orchestration, or GPU reservation across multiple providers.
 
 Documento: [`docs/bn-21-multi-gpu-foundation.md`](docs/bn-21-multi-gpu-foundation.md).

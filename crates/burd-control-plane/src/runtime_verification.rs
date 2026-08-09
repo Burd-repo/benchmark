@@ -66,7 +66,7 @@ impl Database {
         })?;
         let gpu_exists = transaction
             .query_opt(
-                "SELECT 1 FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 AND gpu_uuid = $3 ORDER BY observed_at DESC LIMIT 1",
+                "SELECT 1 FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 AND lower(gpu_uuid) = lower($3) AND status = 'active' AND snapshot_id = (SELECT snapshot_id FROM device_gpu_inventory_snapshots WHERE provider_id = $1 AND device_id = $2 ORDER BY ingest_seq DESC LIMIT 1) LIMIT 1",
                 &[&request.provider_id, &request.device_id, &request.gpu_uuid],
             )
             .await?

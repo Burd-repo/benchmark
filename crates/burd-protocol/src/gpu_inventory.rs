@@ -143,8 +143,8 @@ pub fn validate_device_gpu_inventory_payload(
     if DateTime::parse_from_rfc3339(&payload.observed_at).is_err() {
         return Err("device GPU inventory observed_at is invalid".to_string());
     }
-    if payload.gpus.is_empty() || payload.gpus.len() > 32 {
-        return Err("device GPU inventory must contain between 1 and 32 GPUs".to_string());
+    if payload.gpus.len() > 32 {
+        return Err("device GPU inventory must contain at most 32 GPUs".to_string());
     }
     let mut seen_gpu_uuids = HashSet::new();
     let mut seen_gpu_indices = HashSet::new();
@@ -276,5 +276,18 @@ mod tests {
             validate_device_gpu_inventory_payload(&payload).unwrap_err(),
             "device GPU inventory gpu_uuid is invalid"
         );
+    }
+
+    #[test]
+    fn empty_inventory_is_a_valid_signed_complete_snapshot() {
+        let mut payload = payload();
+        payload.gpus.clear();
+        validate_device_gpu_inventory_payload(&payload).unwrap();
+
+        let hash = device_gpu_inventory_hash(&payload).unwrap();
+        let message = device_gpu_inventory_signature_message(&payload, &hash, "key_1").unwrap();
+        let keys = generate_keypair().unwrap();
+        let signature = sign_message(&keys.secret_key_base64, message.as_bytes()).unwrap();
+        assert!(verify_message(&keys.public_key_base64, message.as_bytes(), &signature).unwrap());
     }
 }

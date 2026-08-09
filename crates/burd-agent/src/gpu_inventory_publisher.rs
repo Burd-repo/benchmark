@@ -24,6 +24,13 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 
 pub(crate) type GpuInventoryCollector = fn(u64) -> Result<NvidiaTelemetryCollection, String>;
 
+#[derive(Debug)]
+enum GpuInventoryDiscovery {
+    Present(NvidiaTelemetryCollection),
+    Empty(NvidiaTelemetryCollection),
+    Unavailable(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PublicationBinding {
     control_plane_url: String,
@@ -236,8 +243,26 @@ fn build_signed_gpu_inventory(
     collector: GpuInventoryCollector,
 ) -> Result<PreparedInventory, String> {
     let context = load_signing_context(agent_version)?;
-    let collection = collector(0)?;
+    let collection = match discover_gpu_inventory(collector, 0) {
+        GpuInventoryDiscovery::Present(collection) | GpuInventoryDiscovery::Empty(collection) => {
+            collection
+        }
+        GpuInventoryDiscovery::Unavailable(error) => return Err(error),
+    };
     prepare_inventory(context, collection, Utc::now().to_rfc3339())
+}
+
+fn discover_gpu_inventory(
+    collector: GpuInventoryCollector,
+    first_sample_sequence: u64,
+) -> GpuInventoryDiscovery {
+    match collector(first_sample_sequence) {
+        Ok(collection) if collection.inventory.is_empty() => {
+            GpuInventoryDiscovery::Empty(collection)
+        }
+        Ok(collection) => GpuInventoryDiscovery::Present(collection),
+        Err(error) => GpuInventoryDiscovery::Unavailable(error),
+    }
 }
 
 fn load_publication_binding() -> Result<PublicationBinding, String> {
@@ -567,6 +592,34 @@ mod tests {
     }
 
     #[test]
+    fn empty_gpu_snapshot_is_complete_and_signature_verifies() {
+        let keys = generate_keypair().unwrap();
+        let prepared = prepare(
+            "session_1",
+            "key_1",
+            &keys.secret_key_base64,
+            Vec::new(),
+            "2026-08-08T00:00:00Z",
+        );
+        validate_device_gpu_inventory_payload(&prepared.signed.payload).unwrap();
+        assert!(prepared.signed.payload.gpus.is_empty());
+        let message = device_gpu_inventory_signature_message(
+            &prepared.signed.payload,
+            &prepared.signed.inventory_hash,
+            &prepared.signed.public_key_id,
+        )
+        .unwrap();
+        assert!(
+            verify_message(
+                &keys.public_key_base64,
+                message.as_bytes(),
+                &prepared.signed.signature,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
     fn multi_gpu_order_and_publication_fingerprint_are_deterministic() {
         let keys = generate_keypair().unwrap();
         let first = prepare(
@@ -648,13 +701,41 @@ mod tests {
             vec![gpu(0, "GPU-A")],
             "2026-08-08T00:00:00Z",
         );
+        let empty = prepare(
+            "session_1",
+            "key_1",
+            &first_keys.secret_key_base64,
+            Vec::new(),
+            "2026-08-08T00:00:00Z",
+        );
         assert_ne!(base.publication_fingerprint, added.publication_fingerprint);
+        assert_ne!(base.publication_fingerprint, empty.publication_fingerprint);
         assert_ne!(
             base.publication_fingerprint,
             rotated.publication_fingerprint
         );
         assert!(ensure_submission_binding(&base, &binding("session_1", "key_2")).is_err());
         assert!(ensure_submission_binding(&base, &binding("session_2", "key_1")).is_err());
+    }
+
+    fn empty_collector(_: u64) -> Result<NvidiaTelemetryCollection, String> {
+        Ok(collection(Vec::new()))
+    }
+
+    fn unavailable_collector(_: u64) -> Result<NvidiaTelemetryCollection, String> {
+        Err("nvidia-smi failed".to_string())
+    }
+
+    #[test]
+    fn completed_empty_discovery_is_not_conflated_with_unavailable_probe() {
+        assert!(matches!(
+            discover_gpu_inventory(empty_collector, 0),
+            GpuInventoryDiscovery::Empty(_)
+        ));
+        assert!(matches!(
+            discover_gpu_inventory(unavailable_collector, 0),
+            GpuInventoryDiscovery::Unavailable(error) if error == "nvidia-smi failed"
+        ));
     }
 
     #[test]

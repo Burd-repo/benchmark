@@ -54,7 +54,7 @@ Agent. It is the rulebook for avoiding self-attested marketplace truth.
 | device GPU inventory signature | agent Ed25519 key | `agent_signed_evidence` after backend verification | Must verify against an active provider device public key. |
 | gpu_uuid | device GPU report | `agent_claimed` | Backend requires a matching active inventory row before jobs or scheduler decisions can use it. |
 | gpu_index | device GPU report | `agent_claimed` | Useful for inventory ordering only; backend uses the inventory registry for truth. |
-| active GPU inventory row | backend inventory registry | `backend_attested` | Determined by the append-only inventory registry and server receipt time. |
+| current GPU supply | backend inventory registry | `backend_attested` | Determined from the latest append-only snapshot by backend `ingest_seq`; `gpus=[]` authoritatively removes all historical GPUs from current supply. |
 
 ## Evidence
 

@@ -1069,15 +1069,17 @@ suppressed locally; session, key, hardware or GPU changes require a new signed s
 reloads its current binding before submission and retries transient failures without terminating
 the remote session. Inventory signing material and transport credentials are never logged.
 
-The v1 payload cannot represent an authoritative empty inventory because it requires at least one
-GPU and persistence stores per-GPU rows. A transition from one GPU to zero therefore cannot replace
-the last non-empty snapshot. Runtime admission fails closed as observations become stale, but an
-authoritative signed empty snapshot/tombstone and separate snapshot metadata remain required before
-controlled production activation. GPU inventory by itself is not runtime readiness.
+The v1 payload permits `gpus=[]` as an ordinary complete signed snapshot. The Agent publishes it
+only after a successful NVIDIA identity query returns zero devices; command or parser failures do
+not claim absence. PostgreSQL persists the envelope even with zero child rows, and backend
+`ingest_seq` makes it replace every earlier non-empty snapshot. GPU inventory by itself is not
+runtime readiness.
 
 ### `GET /v1/providers/{provider_id}/gpu-inventory`
 
-Admin endpoint that lists immutable GPU inventory records for a provider, including GPU UUID, GPU index, backend, PCI IDs, VRAM, status, and backend verification state.
+Admin endpoint that lists immutable per-GPU inventory records for a provider, including GPU UUID,
+GPU index, backend, PCI IDs, VRAM, status, and backend verification state. Empty snapshot envelopes
+are authoritative internally but have no per-GPU row in this response.
 
 BN-21 does not add distributed placement, cluster orchestration, or multi-provider GPU reservation.
 

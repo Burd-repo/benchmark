@@ -6,7 +6,7 @@ use std::process::Command;
 pub mod telemetry;
 pub use telemetry::{
     NVIDIA_SMI_COLLECTOR_VERSION, NvidiaGpuInventoryDevice, NvidiaTelemetryCollection,
-    collect_nvidia_telemetry,
+    collect_nvidia_gpu_inventory, collect_nvidia_telemetry,
 };
 
 pub const BENCHMARK_VERSION: &str = "2026.06-mvp";

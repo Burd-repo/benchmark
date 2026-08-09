@@ -26,6 +26,23 @@ pub struct NvidiaTelemetryCollection {
 pub fn collect_nvidia_telemetry(
     first_sample_sequence: u64,
 ) -> Result<NvidiaTelemetryCollection, String> {
+    let collection = collect_nvidia_telemetry_inner(first_sample_sequence)?;
+    if collection.inventory.is_empty() {
+        Err("nvidia-smi returned no NVIDIA GPUs".to_string())
+    } else {
+        Ok(collection)
+    }
+}
+
+pub fn collect_nvidia_gpu_inventory(
+    first_sample_sequence: u64,
+) -> Result<NvidiaTelemetryCollection, String> {
+    collect_nvidia_telemetry_inner(first_sample_sequence)
+}
+
+fn collect_nvidia_telemetry_inner(
+    first_sample_sequence: u64,
+) -> Result<NvidiaTelemetryCollection, String> {
     let identity = required_query(&[
         "index",
         "uuid",
@@ -98,7 +115,12 @@ pub fn collect_nvidia_telemetry(
         }
     }
     if samples.is_empty() {
-        return Err("nvidia-smi returned no NVIDIA GPUs".to_string());
+        return Ok(NvidiaTelemetryCollection {
+            collector: NVIDIA_SMI_COLLECTOR_VERSION.to_string(),
+            samples: Vec::new(),
+            inventory,
+            warnings: Vec::new(),
+        });
     }
 
     let mut warnings = Vec::new();

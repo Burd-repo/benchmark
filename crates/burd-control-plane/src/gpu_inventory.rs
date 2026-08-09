@@ -50,7 +50,54 @@ impl Database {
             return Err(SessionError::Invalid(verification.errors.join("; ")));
         }
 
-        if let Some(records) = fetch_inventory_rows_by_hash(&transaction, &computed_hash).await? {
+        let payload_json = serde_json::to_string(&signed.payload)
+            .map_err(|error| SessionError::Invalid(error.to_string()))?;
+        let verification_json = serde_json::to_string(&verification)
+            .map_err(|error| SessionError::Invalid(error.to_string()))?;
+        let server_received_at = Utc::now().to_rfc3339();
+        let snapshot_id = format!("gpu_snapshot_{}", Uuid::new_v4());
+        let gpu_count = i32::try_from(signed.payload.gpus.len())
+            .map_err(|error| SessionError::Invalid(error.to_string()))?;
+        let inserted_snapshot = transaction
+            .query_opt(
+                "INSERT INTO device_gpu_inventory_snapshots (snapshot_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, hardware_fingerprint, gpu_count, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) ON CONFLICT (inventory_hash) DO NOTHING RETURNING snapshot_id",
+                &[
+                    &snapshot_id,
+                    &authorized.provider_id,
+                    &authorized.device_id,
+                    &authorized.session_id,
+                    &signed.payload.schema_version,
+                    &computed_hash,
+                    &signed.public_key_id,
+                    &signed.signature,
+                    &signed.canonicalization_version,
+                    &signed.payload.hardware_fingerprint,
+                    &gpu_count,
+                    &signed.payload.observed_at,
+                    &server_received_at,
+                    &payload_json,
+                    &verification_json,
+                ],
+            )
+            .await?;
+        if inserted_snapshot.is_none() {
+            let stored = fetch_inventory_snapshot_by_hash(&transaction, &computed_hash)
+                .await?
+                .ok_or_else(|| {
+                    SessionError::Conflict(
+                        "GPU inventory snapshot changed during deduplication".to_string(),
+                    )
+                })?;
+            ensure_duplicate_snapshot_matches(
+                &stored,
+                authorized,
+                signed,
+                &payload_json,
+                gpu_count,
+            )?;
+            let records =
+                fetch_inventory_rows_by_snapshot_id(&transaction, &stored.snapshot_id).await?;
+            ensure_snapshot_row_count(&stored, records.len())?;
             transaction.commit().await?;
             return Ok(SubmitDeviceGpuInventoryResponse {
                 request_id: request_id.to_string(),
@@ -60,19 +107,15 @@ impl Database {
         }
 
         let row_prefix = format!("device_gpu_inventory_{}", Uuid::new_v4());
-        let payload_json = serde_json::to_string(&signed.payload)
-            .map_err(|error| SessionError::Invalid(error.to_string()))?;
-        let verification_json = serde_json::to_string(&verification)
-            .map_err(|error| SessionError::Invalid(error.to_string()))?;
-        let server_received_at = Utc::now().to_rfc3339();
         let mut inserted_rows = 0_u64;
         for (index, gpu) in signed.payload.gpus.iter().enumerate() {
             let inventory_row_id = format!("{row_prefix}_{index}");
             inserted_rows += transaction
                 .execute(
-                    "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) ON CONFLICT (inventory_hash, gpu_index) DO NOTHING",
+                    "INSERT INTO device_gpu_inventory (inventory_row_id, snapshot_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)",
                     &[
                         &inventory_row_id,
+                        &snapshot_id,
                         &authorized.provider_id,
                         &authorized.device_id,
                         &authorized.session_id,
@@ -96,7 +139,11 @@ impl Database {
                 )
                 .await?;
         }
-        let duplicate = inserted_rows == 0;
+        if inserted_rows != signed.payload.gpus.len() as u64 {
+            return Err(SessionError::Conflict(
+                "GPU inventory snapshot child rows were not persisted completely".to_string(),
+            ));
+        }
         let audit_metadata = serde_json::json!({
             "inventory_hash": computed_hash,
             "gpu_count": signed.payload.gpus.len(),
@@ -109,7 +156,7 @@ impl Database {
                 actor_type: "device_key",
                 actor_id: Some(signed.public_key_id.clone()),
                 entity_type: "device_gpu_inventory",
-                entity_id: &row_prefix,
+                entity_id: &snapshot_id,
                 event_type: "device_gpu_inventory.accepted",
                 idempotency_key: None,
                 summary: "device GPU inventory accepted",
@@ -117,14 +164,18 @@ impl Database {
             },
         )
         .await?;
-        let records = fetch_inventory_rows_by_hash(&transaction, &computed_hash)
+        let records = fetch_inventory_rows_by_snapshot_id(&transaction, &snapshot_id).await?;
+        let stored = fetch_inventory_snapshot_by_hash(&transaction, &computed_hash)
             .await?
-            .unwrap_or_default();
+            .ok_or_else(|| {
+                SessionError::Conflict("GPU inventory snapshot was not persisted".to_string())
+            })?;
+        ensure_snapshot_row_count(&stored, records.len())?;
         transaction.commit().await?;
 
         Ok(SubmitDeviceGpuInventoryResponse {
             request_id: request_id.to_string(),
-            duplicate,
+            duplicate: false,
             records,
         })
     }
@@ -151,7 +202,7 @@ impl Database {
         let rows = client
             .query(
                 &format!(
-                    "{} WHERE provider_id = $1 ORDER BY server_received_at DESC, gpu_index ASC LIMIT $2",
+                    "{} JOIN device_gpu_inventory_snapshots snapshot ON snapshot.snapshot_id = inventory.snapshot_id WHERE inventory.provider_id = $1 ORDER BY snapshot.ingest_seq DESC, inventory.gpu_index ASC LIMIT $2",
                     device_gpu_inventory_select_columns()
                 ),
                 &[&provider_id, &limit],
@@ -174,6 +225,22 @@ struct DeviceGpuInventoryContext {
     session_status: Option<String>,
     session_fingerprint: Option<String>,
     active_public_key: Option<String>,
+}
+
+#[derive(Debug)]
+struct StoredInventorySnapshot {
+    snapshot_id: String,
+    provider_id: String,
+    device_id: String,
+    session_id: String,
+    schema_version: String,
+    public_key_id: String,
+    signature: String,
+    canonicalization_version: String,
+    hardware_fingerprint: String,
+    gpu_count: i32,
+    observed_at: String,
+    payload_json: String,
 }
 
 async fn load_gpu_inventory_context(
@@ -343,29 +410,92 @@ fn validate_id(label: &str, value: &str, maximum_len: usize) -> Result<(), Sessi
     }
 }
 fn device_gpu_inventory_select_columns() -> &'static str {
-    "SELECT inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, verification_json FROM device_gpu_inventory"
+    "SELECT inventory.inventory_row_id, inventory.provider_id, inventory.device_id, inventory.session_id, inventory.schema_version, inventory.inventory_hash, inventory.public_key_id, inventory.canonicalization_version, inventory.gpu_uuid, inventory.gpu_index, inventory.backend, inventory.pci_vendor_id, inventory.pci_device_id, inventory.vram_total_mib, inventory.status, inventory.observed_at, inventory.server_received_at, inventory.verification_json FROM device_gpu_inventory inventory"
 }
 
-async fn fetch_inventory_rows_by_hash(
+async fn fetch_inventory_snapshot_by_hash(
     transaction: &Transaction<'_>,
     inventory_hash: &str,
-) -> Result<Option<Vec<DeviceGpuInventoryRecord>>, SessionError> {
-    let rows = transaction
-        .query(
-            &format!(
-                "{} WHERE inventory_hash = $1 ORDER BY gpu_index ASC",
-                device_gpu_inventory_select_columns()
-            ),
+) -> Result<Option<StoredInventorySnapshot>, SessionError> {
+    Ok(transaction
+        .query_opt(
+            "SELECT snapshot_id, provider_id, device_id, session_id, schema_version, public_key_id, signature, canonicalization_version, hardware_fingerprint, gpu_count, observed_at, payload_json FROM device_gpu_inventory_snapshots WHERE inventory_hash = $1",
             &[&inventory_hash],
         )
-        .await?;
-    if rows.is_empty() {
-        return Ok(None);
-    }
-    rows.into_iter()
+        .await?
+        .map(|row| StoredInventorySnapshot {
+            snapshot_id: row.get("snapshot_id"),
+            provider_id: row.get("provider_id"),
+            device_id: row.get("device_id"),
+            session_id: row.get("session_id"),
+            schema_version: row.get("schema_version"),
+            public_key_id: row.get("public_key_id"),
+            signature: row.get("signature"),
+            canonicalization_version: row.get("canonicalization_version"),
+            hardware_fingerprint: row.get("hardware_fingerprint"),
+            gpu_count: row.get("gpu_count"),
+            observed_at: row.get("observed_at"),
+            payload_json: row.get("payload_json"),
+        }))
+}
+
+async fn fetch_inventory_rows_by_snapshot_id(
+    transaction: &Transaction<'_>,
+    snapshot_id: &str,
+) -> Result<Vec<DeviceGpuInventoryRecord>, SessionError> {
+    transaction
+        .query(
+            &format!(
+                "{} WHERE inventory.snapshot_id = $1 ORDER BY inventory.gpu_index ASC",
+                device_gpu_inventory_select_columns()
+            ),
+            &[&snapshot_id],
+        )
+        .await?
+        .into_iter()
         .map(device_gpu_inventory_from_row)
         .collect::<Result<Vec<_>, _>>()
-        .map(Some)
+}
+
+fn ensure_duplicate_snapshot_matches(
+    stored: &StoredInventorySnapshot,
+    authorized: &AuthorizedSession,
+    signed: &SignedDeviceGpuInventory,
+    payload_json: &str,
+    gpu_count: i32,
+) -> Result<(), SessionError> {
+    let matches = stored.provider_id == authorized.provider_id
+        && stored.device_id == authorized.device_id
+        && stored.session_id == authorized.session_id
+        && stored.schema_version == signed.payload.schema_version
+        && stored.public_key_id == signed.public_key_id
+        && stored.signature == signed.signature
+        && stored.canonicalization_version == signed.canonicalization_version
+        && stored.hardware_fingerprint == signed.payload.hardware_fingerprint
+        && stored.gpu_count == gpu_count
+        && stored.observed_at == signed.payload.observed_at
+        && stored.payload_json == payload_json;
+    if matches {
+        Ok(())
+    } else {
+        Err(SessionError::Conflict(
+            "inventory_hash is already bound to a different signed GPU inventory snapshot"
+                .to_string(),
+        ))
+    }
+}
+
+fn ensure_snapshot_row_count(
+    snapshot: &StoredInventorySnapshot,
+    record_count: usize,
+) -> Result<(), SessionError> {
+    if usize::try_from(snapshot.gpu_count).ok() == Some(record_count) {
+        Ok(())
+    } else {
+        Err(SessionError::Conflict(
+            "GPU inventory snapshot child count is inconsistent".to_string(),
+        ))
+    }
 }
 
 fn device_gpu_inventory_from_row(row: Row) -> Result<DeviceGpuInventoryRecord, SessionError> {
@@ -404,7 +534,7 @@ pub(crate) async fn assert_gpu_inventory_contains(
 ) -> Result<(), SessionError> {
     let latest_status = transaction
         .query_opt(
-            "SELECT status FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 AND lower(gpu_uuid) = lower($3) AND inventory_hash = (SELECT inventory_hash FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 ORDER BY server_received_at DESC, observed_at DESC LIMIT 1)",
+            "SELECT inventory.status FROM device_gpu_inventory inventory WHERE inventory.provider_id = $1 AND inventory.device_id = $2 AND lower(inventory.gpu_uuid) = lower($3) AND inventory.snapshot_id = (SELECT snapshot_id FROM device_gpu_inventory_snapshots WHERE provider_id = $1 AND device_id = $2 ORDER BY ingest_seq DESC LIMIT 1)",
             &[&provider_id, &device_id, &gpu_uuid],
         )
         .await?
@@ -424,7 +554,8 @@ mod tests {
     use burd_protocol::{
         DEVICE_GPU_INVENTORY_CANONICALIZATION_VERSION, DEVICE_GPU_INVENTORY_SCHEMA_VERSION,
         DeviceGpuInventoryGpu, DeviceGpuInventoryPayload, SignedDeviceGpuInventory,
-        device_gpu_inventory_hash,
+        device_gpu_inventory_hash, device_gpu_inventory_signature_message, generate_keypair,
+        sign_message,
     };
     use chrono::Duration;
 
@@ -467,6 +598,24 @@ mod tests {
         }
     }
 
+    fn sign_inventory(
+        payload: DeviceGpuInventoryPayload,
+        public_key_id: &str,
+        secret_key_base64: &str,
+    ) -> SignedDeviceGpuInventory {
+        let inventory_hash = device_gpu_inventory_hash(&payload).unwrap();
+        let message =
+            device_gpu_inventory_signature_message(&payload, &inventory_hash, public_key_id)
+                .unwrap();
+        SignedDeviceGpuInventory {
+            payload,
+            inventory_hash,
+            public_key_id: public_key_id.to_string(),
+            signature: sign_message(secret_key_base64, message.as_bytes()).unwrap(),
+            canonicalization_version: DEVICE_GPU_INVENTORY_CANONICALIZATION_VERSION.to_string(),
+        }
+    }
+
     #[test]
     fn validation_accepts_a_multi_gpu_snapshot() {
         let inventory = signed_inventory();
@@ -479,6 +628,54 @@ mod tests {
             missed_heartbeat_limit: 3,
         };
         assert!(validate_signed_inventory_shape(&inventory, &authorized).is_ok());
+    }
+
+    #[test]
+    fn duplicate_hash_must_match_the_stored_signed_envelope_binding() {
+        let signed = signed_inventory();
+        let authorized = AuthorizedSession {
+            provider_id: "provider_1".to_string(),
+            device_id: "device_1".to_string(),
+            session_id: "session_1".to_string(),
+            sequence_last: 0,
+            heartbeat_interval_seconds: 30,
+            missed_heartbeat_limit: 3,
+        };
+        let payload_json = serde_json::to_string(&signed.payload).unwrap();
+        let mut stored = StoredInventorySnapshot {
+            snapshot_id: "snapshot_1".to_string(),
+            provider_id: authorized.provider_id.clone(),
+            device_id: authorized.device_id.clone(),
+            session_id: authorized.session_id.clone(),
+            schema_version: signed.payload.schema_version.clone(),
+            public_key_id: signed.public_key_id.clone(),
+            signature: signed.signature.clone(),
+            canonicalization_version: signed.canonicalization_version.clone(),
+            hardware_fingerprint: signed.payload.hardware_fingerprint.clone(),
+            gpu_count: signed.payload.gpus.len() as i32,
+            observed_at: signed.payload.observed_at.clone(),
+            payload_json: payload_json.clone(),
+        };
+        ensure_duplicate_snapshot_matches(
+            &stored,
+            &authorized,
+            &signed,
+            &payload_json,
+            stored.gpu_count,
+        )
+        .unwrap();
+
+        stored.session_id = "session_other".to_string();
+        assert!(matches!(
+            ensure_duplicate_snapshot_matches(
+                &stored,
+                &authorized,
+                &signed,
+                &payload_json,
+                stored.gpu_count,
+            ),
+            Err(SessionError::Conflict(_))
+        ));
     }
     async fn setup_inventory_database() -> Database {
         let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
@@ -522,26 +719,44 @@ mod tests {
         db
     }
 
+    struct InventoryRowFixture<'a> {
+        inventory_hash: &'a str,
+        inventory_row_id: &'a str,
+        gpu_uuid: &'a str,
+        gpu_index: i32,
+        snapshot_gpu_count: i32,
+        status: &'a str,
+        observed_at: &'a str,
+    }
+
     async fn insert_inventory_row(
         client: &tokio_postgres::Client,
-        inventory_hash: &str,
-        inventory_row_id: &str,
-        gpu_uuid: &str,
-        gpu_index: i32,
-        status: &str,
-        observed_at: &str,
+        fixture: InventoryRowFixture<'_>,
     ) {
+        let snapshot_id = format!("snapshot_{}", fixture.inventory_hash);
         client
             .execute(
-                "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, 'provider_1', 'device_1', 'session_1', 'burd-device-gpu-inventory-v1', $2, 'key_1', 'signature_1', 'burd-json-c14n-v1', $3, $4, 'cuda', '10de', '2684', 24576, $5, $6, $7, '{}', '{}')",
+                "INSERT INTO device_gpu_inventory_snapshots (snapshot_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, hardware_fingerprint, gpu_count, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, 'provider_1', 'device_1', 'session_1', 'burd-device-gpu-inventory-v1', $2, 'key_1', 'signature_1', 'burd-json-c14n-v1', 'sha256:fingerprint', $3, $4, $4, '{}', '{}') ON CONFLICT (inventory_hash) DO NOTHING",
                 &[
-                    &inventory_row_id,
-                    &inventory_hash,
-                    &gpu_uuid,
-                    &gpu_index,
-                    &status,
-                    &observed_at,
-                    &observed_at,
+                    &snapshot_id,
+                    &fixture.inventory_hash,
+                    &fixture.snapshot_gpu_count,
+                    &fixture.observed_at,
+                ],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO device_gpu_inventory (inventory_row_id, snapshot_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, $2, 'provider_1', 'device_1', 'session_1', 'burd-device-gpu-inventory-v1', $3, 'key_1', 'signature_1', 'burd-json-c14n-v1', $4, $5, 'cuda', '10de', '2684', 24576, $6, $7, $7, '{}', '{}')",
+                &[
+                    &fixture.inventory_row_id,
+                    &snapshot_id,
+                    &fixture.inventory_hash,
+                    &fixture.gpu_uuid,
+                    &fixture.gpu_index,
+                    &fixture.status,
+                    &fixture.observed_at,
                 ],
             )
             .await
@@ -556,22 +771,28 @@ mod tests {
         let now = Utc::now().to_rfc3339();
         insert_inventory_row(
             &client,
-            "inventory_hash_shared",
-            "inventory_1",
-            "GPU-1",
-            0,
-            "active",
-            &now,
+            InventoryRowFixture {
+                inventory_hash: "inventory_hash_shared",
+                inventory_row_id: "inventory_1",
+                gpu_uuid: "GPU-1",
+                gpu_index: 0,
+                snapshot_gpu_count: 2,
+                status: "active",
+                observed_at: &now,
+            },
         )
         .await;
         insert_inventory_row(
             &client,
-            "inventory_hash_shared",
-            "inventory_2",
-            "GPU-2",
-            1,
-            "active",
-            &now,
+            InventoryRowFixture {
+                inventory_hash: "inventory_hash_shared",
+                inventory_row_id: "inventory_2",
+                gpu_uuid: "GPU-2",
+                gpu_index: 1,
+                snapshot_gpu_count: 2,
+                status: "active",
+                observed_at: &now,
+            },
         )
         .await;
         let count: i64 = client
@@ -596,22 +817,28 @@ mod tests {
         let second = (Utc::now() + Duration::seconds(1)).to_rfc3339();
         insert_inventory_row(
             &client,
-            "inventory_hash_active",
-            "inventory_active",
-            "GPU-stale",
-            0,
-            "active",
-            &first,
+            InventoryRowFixture {
+                inventory_hash: "inventory_hash_active",
+                inventory_row_id: "inventory_active",
+                gpu_uuid: "GPU-stale",
+                gpu_index: 0,
+                snapshot_gpu_count: 1,
+                status: "active",
+                observed_at: &first,
+            },
         )
         .await;
         insert_inventory_row(
             &client,
-            "inventory_hash_current",
-            "inventory_current",
-            "GPU-current",
-            0,
-            "active",
-            &second,
+            InventoryRowFixture {
+                inventory_hash: "inventory_hash_current",
+                inventory_row_id: "inventory_current",
+                gpu_uuid: "GPU-current",
+                gpu_index: 0,
+                snapshot_gpu_count: 1,
+                status: "active",
+                observed_at: &second,
+            },
         )
         .await;
 
@@ -622,6 +849,104 @@ mod tests {
         assert!(matches!(result, Err(SessionError::Conflict(_))));
         assert!(
             assert_gpu_inventory_contains(&transaction, "provider_1", "device_1", "gpu-CURRENT",)
+                .await
+                .is_ok()
+        );
+        transaction.commit().await.unwrap();
+        drop(client);
+        db.drop_schema_for_test().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_empty_snapshot_is_authoritative_deduplicated_and_recoverable() {
+        let db = setup_inventory_database().await;
+        let keys = generate_keypair().unwrap();
+        let client = db.connect().await.unwrap();
+        client
+            .execute(
+                "UPDATE provider_public_keys SET public_key = $1 WHERE public_key_id = 'key_1'",
+                &[&keys.public_key_base64],
+            )
+            .await
+            .unwrap();
+        drop(client);
+        let authorized = AuthorizedSession {
+            provider_id: "provider_1".to_string(),
+            device_id: "device_1".to_string(),
+            session_id: "session_1".to_string(),
+            sequence_last: 0,
+            heartbeat_interval_seconds: 30,
+            missed_heartbeat_limit: 3,
+        };
+        let mut present_payload = signed_inventory().payload;
+        present_payload.gpus.truncate(1);
+        present_payload.observed_at = Utc::now().to_rfc3339();
+        let present = sign_inventory(present_payload.clone(), "key_1", &keys.secret_key_base64);
+        let present_response = db
+            .submit_device_gpu_inventory("req_inventory_present", &authorized, &present)
+            .await
+            .unwrap();
+        assert!(!present_response.duplicate);
+        assert_eq!(present_response.records.len(), 1);
+
+        let mut empty_payload = present_payload.clone();
+        empty_payload.observed_at = (Utc::now() + Duration::seconds(1)).to_rfc3339();
+        empty_payload.gpus.clear();
+        let empty = sign_inventory(empty_payload, "key_1", &keys.secret_key_base64);
+        let empty_response = db
+            .submit_device_gpu_inventory("req_inventory_empty", &authorized, &empty)
+            .await
+            .unwrap();
+        assert!(!empty_response.duplicate);
+        assert!(empty_response.records.is_empty());
+        let duplicate = db
+            .submit_device_gpu_inventory("req_inventory_empty_retry", &authorized, &empty)
+            .await
+            .unwrap();
+        assert!(duplicate.duplicate);
+        assert!(duplicate.records.is_empty());
+
+        let mut client = db.connect().await.unwrap();
+        let latest = client
+            .query_one(
+                "SELECT snapshot_id, gpu_count FROM device_gpu_inventory_snapshots WHERE provider_id = 'provider_1' AND device_id = 'device_1' ORDER BY ingest_seq DESC LIMIT 1",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(latest.get::<_, i32>("gpu_count"), 0);
+        let latest_snapshot_id: String = latest.get("snapshot_id");
+        let child_count: i64 = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT FROM device_gpu_inventory WHERE snapshot_id = $1",
+                &[&latest_snapshot_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(child_count, 0);
+        let transaction = client.transaction().await.unwrap();
+        assert!(matches!(
+            assert_gpu_inventory_contains(&transaction, "provider_1", "device_1", "GPU-1").await,
+            Err(SessionError::Conflict(_))
+        ));
+        transaction.commit().await.unwrap();
+        drop(client);
+
+        let mut recovered_payload = present_payload;
+        recovered_payload.observed_at = (Utc::now() + Duration::seconds(2)).to_rfc3339();
+        recovered_payload.gpus[0].gpu_uuid = "GPU-B".to_string();
+        let recovered = sign_inventory(recovered_payload, "key_1", &keys.secret_key_base64);
+        let recovered_response = db
+            .submit_device_gpu_inventory("req_inventory_recovered", &authorized, &recovered)
+            .await
+            .unwrap();
+        assert_eq!(recovered_response.records.len(), 1);
+        let mut client = db.connect().await.unwrap();
+        let transaction = client.transaction().await.unwrap();
+        assert!(
+            assert_gpu_inventory_contains(&transaction, "provider_1", "device_1", "GPU-B")
                 .await
                 .is_ok()
         );
