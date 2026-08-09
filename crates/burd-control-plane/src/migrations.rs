@@ -146,11 +146,19 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "scheduler_runtime_admission",
         sql: include_str!("../migrations/0028_scheduler_runtime_admission.sql"),
     },
+    Migration {
+        version: "0029",
+        name: "gpu_inventory_authoritative_snapshots",
+        sql: include_str!("../migrations/0029_gpu_inventory_authoritative_snapshots.sql"),
+    },
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Database;
+    use chrono::{Duration, Utc};
+    use uuid::Uuid;
 
     #[test]
     fn initial_migration_declares_bn01_tables() {
@@ -439,6 +447,158 @@ mod tests {
         let sql = MIGRATIONS[27].sql;
         assert!(sql.contains("scheduler_last_evaluated_at TEXT"));
         assert!(sql.contains("idx_compute_jobs_scheduler_fairness"));
+    }
+
+    #[test]
+    fn authoritative_gpu_snapshot_migration_preserves_empty_complete_snapshots() {
+        let sql = MIGRATIONS[28].sql;
+        for needle in [
+            "device_gpu_inventory_snapshots",
+            "ingest_seq BIGINT GENERATED ALWAYS AS IDENTITY",
+            "gpu_count INTEGER NOT NULL CHECK (gpu_count BETWEEN 0 AND 32)",
+            "ALTER COLUMN snapshot_id SET NOT NULL",
+            "device_gpu_inventory_snapshot_binding_fk",
+            "device_gpu_inventory_snapshots_no_update",
+            "ORDER BY MIN(server_received_at) ASC, MIN(observed_at) ASC, inventory_hash ASC",
+        ] {
+            assert!(sql.contains(needle));
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_authoritative_snapshot_migration_backfills_and_restores_immutability() {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
+            .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
+        let schema = format!("burd_inventory_migration_{}", Uuid::new_v4().simple());
+        let db = Database::new(url, Some(schema)).unwrap();
+        let mut client = db.connect().await.unwrap();
+        let transaction = client.transaction().await.unwrap();
+        for migration in &MIGRATIONS[..28] {
+            transaction.batch_execute(migration.sql).await.unwrap();
+        }
+        let first = Utc::now();
+        let second = first + Duration::seconds(1);
+        let expires_at = (first + Duration::hours(1)).to_rfc3339();
+        let first_text = first.to_rfc3339();
+        let second_text = second.to_rfc3339();
+        transaction
+            .execute(
+                "INSERT INTO providers (provider_id, display_name, status, created_at, updated_at) VALUES ('provider_1', 'Migration Provider', 'available', $1, $1)",
+                &[&first_text],
+            )
+            .await
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO devices (device_id, provider_id, machine_id, status, created_at, updated_at) VALUES ('device_1', 'provider_1', 'machine_1', 'active', $1, $1)",
+                &[&first_text],
+            )
+            .await
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO provider_public_keys (public_key_id, provider_id, device_id, public_key, key_algorithm, status, created_at) VALUES ('key_1', 'provider_1', 'device_1', 'public_key', 'ed25519', 'active', $1)",
+                &[&first_text],
+            )
+            .await
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint) VALUES ('session_1', 'provider_1', 'device_1', 'online', 0, $1, $2, $3)",
+                &[&first_text, &expires_at, &"a".repeat(64)],
+            )
+            .await
+            .unwrap();
+
+        for (hash, observed_at, gpus) in [
+            (
+                "inventory_hash_first",
+                first_text.as_str(),
+                vec!["GPU-A", "GPU-B"],
+            ),
+            ("inventory_hash_second", second_text.as_str(), vec!["GPU-C"]),
+        ] {
+            let payload_json = serde_json::json!({
+                "schema_version": "burd-device-gpu-inventory-v1",
+                "provider_id": "provider_1",
+                "device_id": "device_1",
+                "session_id": "session_1",
+                "hardware_fingerprint": "a".repeat(64),
+                "observed_at": observed_at,
+                "gpus": gpus.iter().enumerate().map(|(index, gpu_uuid)| serde_json::json!({
+                    "gpu_uuid": gpu_uuid,
+                    "gpu_index": index,
+                    "backend": "cuda",
+                    "pci_vendor_id": "10de",
+                    "pci_device_id": "2684",
+                    "vram_total_mib": 24576,
+                    "status": "active",
+                })).collect::<Vec<_>>(),
+            })
+            .to_string();
+            for (index, gpu_uuid) in gpus.iter().enumerate() {
+                let row_id = format!("inventory_row_{hash}_{index}");
+                let gpu_index = index as i32;
+                transaction
+                    .execute(
+                        "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, 'provider_1', 'device_1', 'session_1', 'burd-device-gpu-inventory-v1', $2, 'key_1', 'signature', 'burd-json-c14n-v1', $3, $4, 'cuda', '10de', '2684', 24576, 'active', $5, $5, $6, '{}')",
+                        &[&row_id, &hash, &gpu_uuid, &gpu_index, &observed_at, &payload_json],
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+
+        transaction.batch_execute(MIGRATIONS[28].sql).await.unwrap();
+        transaction.commit().await.unwrap();
+        let rows = client
+            .query(
+                "SELECT inventory_hash, gpu_count FROM device_gpu_inventory_snapshots ORDER BY ingest_seq ASC",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].get::<_, String>("inventory_hash"),
+            "inventory_hash_first"
+        );
+        assert_eq!(rows[0].get::<_, i32>("gpu_count"), 2);
+        assert_eq!(
+            rows[1].get::<_, String>("inventory_hash"),
+            "inventory_hash_second"
+        );
+        assert_eq!(rows[1].get::<_, i32>("gpu_count"), 1);
+        let unbound: i64 = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT FROM device_gpu_inventory WHERE snapshot_id IS NULL",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(unbound, 0);
+        assert!(
+            client
+                .execute(
+                    "UPDATE device_gpu_inventory SET status = 'inactive' WHERE inventory_row_id = 'inventory_row_inventory_hash_first_0'",
+                    &[],
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            client
+                .execute(
+                    "UPDATE device_gpu_inventory_snapshots SET gpu_count = 0 WHERE inventory_hash = 'inventory_hash_first'",
+                    &[],
+                )
+                .await
+                .is_err()
+        );
+        drop(client);
+        db.drop_schema_for_test().await.unwrap();
     }
 
     #[test]

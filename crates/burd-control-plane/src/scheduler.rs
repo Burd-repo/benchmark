@@ -660,28 +660,16 @@ pub(crate) mod tests {
             )
             .await
             .unwrap();
-        let inventory_hash = format!("inventory_hash_{device_id}");
-        for (index, gpu_uuid) in gpu_uuids.iter().enumerate() {
-            let row_id = format!("inventory_{device_id}_{index}");
-            let gpu_index = index as i32;
-            client
-                .execute(
-                    "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, $2, $3, $4, 'burd-device-gpu-inventory-v1', $5, $6, 'signature', 'burd-json-c14n-v1', $7, $8, 'cuda', '10de', '2684', 24576, 'active', $9, $9, '{}', '{}')",
-                    &[
-                        &row_id,
-                        &provider_id,
-                        &device_id,
-                        &session_id,
-                        &inventory_hash,
-                        &public_key_id,
-                        &gpu_uuid,
-                        &gpu_index,
-                        &now_text,
-                    ],
-                )
-                .await
-                .unwrap();
-        }
+        seed_gpu_inventory_snapshot(
+            client,
+            provider_id,
+            device_id,
+            session_id,
+            &public_key_id,
+            gpu_uuids,
+            &now_text,
+        )
+        .await;
 
         let observation = ProviderRuntimeObservationPayload {
             schema_version: burd_protocol::PROVIDER_RUNTIME_OBSERVATION_SCHEMA_VERSION.to_string(),
@@ -735,6 +723,79 @@ pub(crate) mod tests {
             device_id,
         )
         .await;
+    }
+
+    pub(crate) async fn seed_gpu_inventory_snapshot(
+        client: &tokio_postgres::Client,
+        provider_id: &str,
+        device_id: &str,
+        session_id: &str,
+        public_key_id: &str,
+        gpu_uuids: &[String],
+        observed_at: &str,
+    ) {
+        let snapshot_id = format!("gpu_snapshot_{}", Uuid::new_v4().simple());
+        let inventory_hash = format!("inventory_hash_{}", Uuid::new_v4().simple());
+        let payload_json = serde_json::json!({
+            "schema_version": "burd-device-gpu-inventory-v1",
+            "provider_id": provider_id,
+            "device_id": device_id,
+            "session_id": session_id,
+            "hardware_fingerprint": "a".repeat(64),
+            "observed_at": observed_at,
+            "gpus": gpu_uuids.iter().enumerate().map(|(index, gpu_uuid)| serde_json::json!({
+                "gpu_uuid": gpu_uuid,
+                "gpu_index": index,
+                "backend": "cuda",
+                "pci_vendor_id": "10de",
+                "pci_device_id": "2684",
+                "vram_total_mib": 24576,
+                "status": "active",
+            })).collect::<Vec<_>>(),
+        })
+        .to_string();
+        let gpu_count = gpu_uuids.len() as i32;
+        client
+            .execute(
+                "INSERT INTO device_gpu_inventory_snapshots (snapshot_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, hardware_fingerprint, gpu_count, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, $2, $3, $4, 'burd-device-gpu-inventory-v1', $5, $6, 'signature', 'burd-json-c14n-v1', $7, $8, $9, $9, $10, '{}')",
+                &[
+                    &snapshot_id,
+                    &provider_id,
+                    &device_id,
+                    &session_id,
+                    &inventory_hash,
+                    &public_key_id,
+                    &"a".repeat(64),
+                    &gpu_count,
+                    &observed_at,
+                    &payload_json,
+                ],
+            )
+            .await
+            .unwrap();
+        for (index, gpu_uuid) in gpu_uuids.iter().enumerate() {
+            let row_id = format!("inventory_{}_{index}", Uuid::new_v4().simple());
+            let gpu_index = index as i32;
+            client
+                .execute(
+                    "INSERT INTO device_gpu_inventory (inventory_row_id, snapshot_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, $2, $3, $4, $5, 'burd-device-gpu-inventory-v1', $6, $7, 'signature', 'burd-json-c14n-v1', $8, $9, 'cuda', '10de', '2684', 24576, 'active', $10, $10, $11, '{}')",
+                    &[
+                        &row_id,
+                        &snapshot_id,
+                        &provider_id,
+                        &device_id,
+                        &session_id,
+                        &inventory_hash,
+                        &public_key_id,
+                        &gpu_uuid,
+                        &gpu_index,
+                        &observed_at,
+                        &payload_json,
+                    ],
+                )
+                .await
+                .unwrap();
+        }
     }
 
     pub(crate) async fn seed_additional_runtime_verification(
@@ -1014,6 +1075,86 @@ pub(crate) mod tests {
             metadata["runtime_admission"]["runtime_verification_fingerprint"],
             "b".repeat(64)
         );
+        drop(client);
+        db.drop_schema_for_test().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_scheduler_denies_historical_gpu_after_empty_snapshot() {
+        let db = postgres_test_database("burd_scheduler_empty_inventory").await;
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        let expires_at = (now + Duration::hours(2)).to_rfc3339();
+        let client = db.connect().await.unwrap();
+        seed_provider_and_policy(&client, "provider_1", &now_text).await;
+        seed_device(
+            &client,
+            "provider_1",
+            "device_1",
+            "session_1",
+            &now_text,
+            &expires_at,
+        )
+        .await;
+        seed_admitted_runtime(
+            &client,
+            "provider_1",
+            "device_1",
+            "session_1",
+            &["GPU-A".to_string()],
+            "GPU-A",
+            now,
+        )
+        .await;
+        seed_job(
+            &client,
+            "job_empty_inventory",
+            "provider_1",
+            "device_1",
+            "session_1",
+            "GPU-A",
+            &now_text,
+        )
+        .await;
+        seed_gpu_inventory_snapshot(
+            &client,
+            "provider_1",
+            "device_1",
+            "session_1",
+            "key_device_1",
+            &[],
+            &(now + Duration::seconds(1)).to_rfc3339(),
+        )
+        .await;
+        drop(client);
+
+        let response = db
+            .run_scheduler(
+                "req_scheduler_empty_inventory",
+                &RunSchedulerRequest {
+                    limit: Some(1),
+                    lease_ttl_seconds: Some(120),
+                    reason: Some("empty_inventory_test".to_string()),
+                },
+                &runtime_policy(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.offered, 0);
+        assert_eq!(response.skipped, 1);
+        assert!(
+            response.decisions[0]
+                .reason_codes
+                .contains(&"gpu_inventory_missing".to_string())
+        );
+        let client = db.connect().await.unwrap();
+        let lease_count: i64 = client
+            .query_one("SELECT COUNT(*)::BIGINT FROM job_leases", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(lease_count, 0);
         drop(client);
         db.drop_schema_for_test().await.unwrap();
     }

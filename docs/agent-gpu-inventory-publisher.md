@@ -30,26 +30,17 @@ PCI vendor/device IDs and total VRAM.
 
 One `SignedDeviceGpuInventory` contains every detected GPU. Devices are sorted by physical index
 and UUID before canonical hashing. Duplicate indices, case-insensitive duplicate UUIDs, malformed
-UUIDs, missing PCI identity, zero VRAM or an empty snapshot fail the entire publication; partial
-snapshots are never sent.
+UUIDs, missing PCI identity or zero VRAM fail the entire publication; partial snapshots are never
+sent.
 
 This version publishes `status=active` only for fully identified NVIDIA CUDA devices. An
 unidentifiable device causes discovery failure rather than being silently advertised as active.
-GPU absence is represented by omission from the next complete snapshot. Control Plane eligibility
-queries use only that latest complete snapshot, so an omitted historical GPU is no longer current
-supply.
-
-### Known limitation: zero-GPU snapshots
-
-The v1 contract requires a non-empty GPU list, and PostgreSQL persists one row per GPU rather than
-a separate snapshot envelope. Therefore, omission is authoritative only while at least one GPU
-remains: a transition from one GPU to zero cannot publish an empty replacement snapshot.
-
-The publisher fails closed instead of reusing or fabricating hardware. Runtime observations stop
-renewing and runtime admission becomes stale or denied, but inventory history can still show the
-last non-empty snapshot. Before controlled production activation, this must be addressed with an
-authoritative signed empty snapshot/tombstone, likely backed by a snapshot entity separate from
-per-GPU rows. Inventory alone must not be treated as runtime readiness.
+GPU absence is represented by omission from the next complete snapshot. A completed identity query
+that observes no NVIDIA GPUs publishes the ordinary signed payload `gpus=[]`. A command failure,
+timeout, non-zero exit or parse error is `Unavailable`: it publishes nothing and retries rather than
+fabricating an empty inventory. Control Plane decisions use only the latest snapshot by backend
+`ingest_seq`, so an omitted historical GPU is no longer current supply. Inventory alone must not be
+treated as runtime readiness.
 
 ## Signing and deduplication
 
@@ -75,7 +66,8 @@ the non-secret inventory hash.
 
 ## Deferred work
 
-- assignment-time admission revalidation;
+- exact assignment/lease acknowledgement binding;
+- authoritative remote cancellation discovery while a job is active;
 - production Provider Job Worker activation;
 - non-NVIDIA inventory backends;
 - persistent local publication state across Agent restarts.

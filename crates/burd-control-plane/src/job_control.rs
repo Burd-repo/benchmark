@@ -1666,21 +1666,22 @@ mod tests {
     }
 
     async fn insert_latest_inventory_snapshot(db: &Database, gpu_uuids: &[&str]) {
-        assert!(!gpu_uuids.is_empty());
         let client = db.connect().await.unwrap();
         let observed_at = (Utc::now() + Duration::seconds(1)).to_rfc3339();
-        let inventory_hash = format!("inventory_hash_latest_{}", Uuid::new_v4().simple());
-        for (index, gpu_uuid) in gpu_uuids.iter().enumerate() {
-            let row_id = format!("inventory_latest_{}_{index}", Uuid::new_v4().simple());
-            let gpu_index = index as i32;
-            client
-                .execute(
-                    "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, 'provider_1', 'device_1', 'session_1', 'burd-device-gpu-inventory-v1', $2, 'key_device_1', 'signature', 'burd-json-c14n-v1', $3, $4, 'cuda', '10de', '2684', 24576, 'active', $5, $5, '{}', '{}')",
-                    &[&row_id, &inventory_hash, &gpu_uuid, &gpu_index, &observed_at],
-                )
-                .await
-                .unwrap();
-        }
+        let gpu_uuids = gpu_uuids
+            .iter()
+            .map(|gpu_uuid| (*gpu_uuid).to_string())
+            .collect::<Vec<_>>();
+        crate::scheduler::tests::seed_gpu_inventory_snapshot(
+            &client,
+            "provider_1",
+            "device_1",
+            "session_1",
+            "key_device_1",
+            &gpu_uuids,
+            &observed_at,
+        )
+        .await;
     }
 
     async fn assert_assignment_withheld(db: &Database, job_id: &str, expected_reason_code: &str) {
@@ -1905,7 +1906,7 @@ mod tests {
             if scenario == "observation_stale" {
                 policy.observation_max_age_seconds = 0;
             } else if scenario == "gpu_removed" {
-                insert_latest_inventory_snapshot(&db, &["GPU-B"]).await;
+                insert_latest_inventory_snapshot(&db, &[]).await;
             } else {
                 let client = db.connect().await.unwrap();
                 match scenario {
@@ -2119,6 +2120,11 @@ mod tests {
                 "active_device_key_missing",
                 "runtime_admission_lost_before_acceptance",
             ),
+            (
+                "gpu_inventory_empty",
+                "gpu_inventory_missing",
+                "runtime_admission_lost_before_acceptance",
+            ),
         ] {
             let (db, authorized, policy, now) =
                 assignment_fixture(&format!("burd_acceptance_{scenario}"), &["GPU-A"]).await;
@@ -2137,47 +2143,50 @@ mod tests {
                     .starts_with("jobcred_")
             );
 
-            let client = db.connect().await.unwrap();
-            match scenario {
-                "lease_expired_by_sweep" => {
-                    client
-                        .execute(
-                            "UPDATE job_leases SET status = 'expired', failure_reason = 'lease_ack_timeout' WHERE job_id = $1",
-                            &[&job_id],
-                        )
-                        .await
-                        .unwrap();
+            if scenario == "gpu_inventory_empty" {
+                insert_latest_inventory_snapshot(&db, &[]).await;
+            } else {
+                let client = db.connect().await.unwrap();
+                match scenario {
+                    "lease_expired_by_sweep" => {
+                        client
+                            .execute(
+                                "UPDATE job_leases SET status = 'expired', failure_reason = 'lease_ack_timeout' WHERE job_id = $1",
+                                &[&job_id],
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    "lease_ttl_elapsed" => {
+                        client
+                            .execute(
+                                "UPDATE job_leases SET expires_at = $1 WHERE job_id = $2",
+                                &[&(Utc::now() - Duration::seconds(1)).to_rfc3339(), &job_id],
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    "gpu_binding_changed" => {
+                        client
+                            .execute(
+                                "UPDATE job_leases SET gpu_uuid = 'GPU-other' WHERE job_id = $1",
+                                &[&job_id],
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    "key_revoked" => {
+                        client
+                            .execute(
+                                "UPDATE provider_public_keys SET status = 'revoked' WHERE public_key_id = 'key_device_1'",
+                                &[],
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    _ => unreachable!(),
                 }
-                "lease_ttl_elapsed" => {
-                    client
-                        .execute(
-                            "UPDATE job_leases SET expires_at = $1 WHERE job_id = $2",
-                            &[&(Utc::now() - Duration::seconds(1)).to_rfc3339(), &job_id],
-                        )
-                        .await
-                        .unwrap();
-                }
-                "gpu_binding_changed" => {
-                    client
-                        .execute(
-                            "UPDATE job_leases SET gpu_uuid = 'GPU-other' WHERE job_id = $1",
-                            &[&job_id],
-                        )
-                        .await
-                        .unwrap();
-                }
-                "key_revoked" => {
-                    client
-                        .execute(
-                            "UPDATE provider_public_keys SET status = 'revoked' WHERE public_key_id = 'key_device_1'",
-                            &[],
-                        )
-                        .await
-                        .unwrap();
-                }
-                _ => unreachable!(),
             }
-            drop(client);
 
             let error = db
                 .accept_job(

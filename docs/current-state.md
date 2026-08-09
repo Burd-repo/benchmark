@@ -125,7 +125,7 @@ after the June 2026 reliability pass.
 - `GET /openapi.json` now attaches structural request/response schema refs for the implemented BN-01 through BN-11 control-plane endpoints. Nested and optional fields continue to follow the Rust serde contracts in `burd-protocol` and `burd-control-plane`.
 - OpenAPI now includes fixture-backed request/response examples for high-risk enrollment, remote session heartbeat, evidence submission, and proof challenge flows; those examples are parsed against `burd-protocol` in tests.
 - Live Axum/router contract tests now exercise implemented BN-01 through BN-11 control-plane paths, protected-route error envelopes, idempotency header validation, PostgreSQL-backed provider enrollment to remote session heartbeat, signed evidence registry, and signed proof challenge flows, plus the absence of remote BN-12 runtime execution endpoints.
-- Multi-GPU inventory persists one immutable row per GPU per signed snapshot, deduplicates repeated snapshot rows by `(inventory_hash, gpu_index)`, and gates jobs/scheduler decisions on the latest GPU inventory status.
+- Multi-GPU inventory persists an immutable signed snapshot envelope plus zero to 32 per-GPU rows, deduplicates by `inventory_hash`, and gates jobs/scheduler/assignment/acceptance on the latest backend ingestion sequence.
 - Network benchmark includes latency aliases, request counts, status code,
   DNS timing, duration, jitter, and warnings.
 - Raw data includes explicit redaction metadata and summaries for history,
@@ -637,11 +637,11 @@ starting the API server or depending on host state:
 
 - `burd-protocol` defines signed device GPU inventory payloads, per-GPU inventory rows, canonical inventory hashing, and signature-message binding.
 - PostgreSQL migration `0019_multi_gpu_inventory` adds immutable `device_gpu_inventory` records with append-only enforcement.
+- Migration `0029_gpu_inventory_authoritative_snapshots` adds immutable snapshot envelopes, deterministic historical backfill, `snapshot_id` child bindings, backend `ingest_seq` ordering and authoritative zero-GPU snapshots.
 - The control plane exposes `POST /v1/sessions/{session_id}/gpu-inventory` and `GET /v1/providers/{provider_id}/gpu-inventory`.
 - The Agent supervises an automatic signed inventory publisher with immediate session/key-change publication, 60-second hardware probes, stable unchanged-snapshot suppression, bounded retry and pre-submit identity revalidation.
-- NVIDIA discovery publishes one atomic, index-sorted snapshot with UUID, physical index, CUDA backend, PCI IDs, VRAM and active status; malformed or incomplete discovery fails closed instead of publishing a partial snapshot.
-- Known limitation: the v1 non-empty, row-per-GPU model cannot persist an authoritative transition from one GPU to zero. Runtime admission still fails closed when observations stop renewing, but a future signed empty snapshot/tombstone with separate snapshot metadata is required before controlled production activation.
-- Job creation and scheduler selection require an active inventory row for the requested GPU UUID.
+- NVIDIA discovery publishes one atomic, index-sorted snapshot with UUID, physical index, CUDA backend, PCI IDs, VRAM and active status. A completed zero-result query publishes signed `gpus=[]`; unavailable or malformed discovery publishes nothing and retries.
+- Job creation, scheduler selection, assignment and acceptance revalidation require the requested GPU UUID in the latest snapshot ordered by backend `ingest_seq`. An empty snapshot immediately removes every historical GPU from current supply.
 - BN-21 does not implement distributed placement, cluster orchestration, or GPU reservation across multiple providers.
 
 ## Runtime-Verified Admission
@@ -652,5 +652,5 @@ starting the API server or depending on host state:
 - `GET /v1/providers/{provider_id}/runtime-admissions` is admin-only and derives `admitted`/`denied` decisions with stable reason codes. It compares current provider/device/GPU/key/session/runtime state to the verified state rather than trusting TTL alone.
 - Session reconnects may reuse an unexpired verification when identity, key, hardware, GPU and runtime remain unchanged. Key rotation/revocation denies admission until the Agent republishes a signed GPU inventory, a signed runtime observation and a runtime verification proof under the new active key. Hardware or runtime drift, stale observations, proof-image policy changes and verification expiry also deny admission.
 - The proof image is owned by `BURD_CONTROL_RUNTIME_PROOF_IMAGE_REF`; challenge issuance cannot select another digest.
-- Windows remains denied until its physical multi-GPU WSL2/NVIDIA isolation gate passes. Runtime admission is consumed by the admin-triggered scheduler, but not yet revalidated at assignment time or consumed by marketplace or the production Provider Job Worker.
+- Windows remains denied until its physical multi-GPU WSL2/NVIDIA isolation gate passes. Runtime admission is consumed by the admin-triggered scheduler and revalidated at assignment and acceptance, but is not yet enforced by marketplace or the production Provider Job Worker.
 - `runtime_verified` is functional remote readiness evidence, not hardware attestation against a malicious host or modified Agent.

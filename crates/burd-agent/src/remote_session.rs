@@ -16,7 +16,9 @@ use crate::runtime_verification::{
 };
 use crate::{AgentStateLock, AgentStateLockOperation};
 use burd_bench::{ProviderRegistrationPayload, build_registration_payload};
-use burd_hardware::{NvidiaTelemetryCollection, collect_nvidia_telemetry};
+use burd_hardware::{
+    NvidiaTelemetryCollection, collect_nvidia_gpu_inventory, collect_nvidia_telemetry,
+};
 use burd_protocol::{
     ClientControlMessage, GpuTelemetrySample, HeartbeatPayload, RemoteEnrollmentState,
     RemoteSessionRecord, RemoteSessionResume, RemoteSessionState, RemoteSessionStateStatus,
@@ -83,6 +85,7 @@ pub fn connect(
                 telemetry_enabled,
                 telemetry_batch_samples,
                 collect_nvidia_telemetry,
+                collect_nvidia_gpu_inventory,
                 proof_agent_version,
                 execute_remote_proof,
                 None,
@@ -232,6 +235,7 @@ pub async fn connect_until_shutdown_with_telemetry_collector(
             telemetry_enabled,
             telemetry_batch_samples,
             telemetry_collector,
+            telemetry_collector,
             None,
             execute_remote_proof,
             None,
@@ -295,6 +299,7 @@ pub async fn connect_until_shutdown_with_test_runtime(
             retry_seed,
             true,
             telemetry_batch_samples,
+            telemetry_collector,
             telemetry_collector,
             Some(agent_version.to_string()),
             proof_executor,
@@ -365,6 +370,7 @@ pub async fn connect_until_shutdown_with_provider_job_runtime(
             telemetry || identity.telemetry_enabled,
             telemetry_batch_samples,
             telemetry_collector,
+            telemetry_collector,
             None,
             execute_remote_proof,
             Some(ProviderJobRuntime {
@@ -407,6 +413,7 @@ async fn run_session_supervisor(
     telemetry_enabled: bool,
     telemetry_batch_samples: usize,
     telemetry_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
+    inventory_collector: fn(u64) -> Result<NvidiaTelemetryCollection, String>,
     proof_agent_version: Option<String>,
     proof_executor: ProofExecutor,
     provider_jobs: Option<ProviderJobRuntime>,
@@ -424,7 +431,7 @@ async fn run_session_supervisor(
             "gpu_inventory_publisher",
             run_gpu_inventory_publisher(
                 inventory_agent_version,
-                telemetry_collector,
+                inventory_collector,
                 inventory_shutdown,
             )
             .await,

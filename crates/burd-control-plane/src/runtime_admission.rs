@@ -137,7 +137,7 @@ impl Database {
 
         let inventory_rows = transaction
             .query(
-                "SELECT gpu_uuid, status, public_key_id FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 AND inventory_hash = (SELECT inventory_hash FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 ORDER BY server_received_at DESC, observed_at DESC LIMIT 1)",
+                "SELECT gpu_uuid, status, public_key_id FROM device_gpu_inventory WHERE provider_id = $1 AND device_id = $2 AND snapshot_id = (SELECT snapshot_id FROM device_gpu_inventory_snapshots WHERE provider_id = $1 AND device_id = $2 ORDER BY ingest_seq DESC LIMIT 1)",
                 &[&authorized.provider_id, &authorized.device_id],
             )
             .await?;
@@ -243,7 +243,7 @@ impl Database {
             .ok_or_else(|| SessionError::NotFound("provider not found".to_string()))?;
         let rows = client
             .query(
-                "SELECT i.device_id, d.status AS device_status, i.gpu_uuid, i.status AS gpu_status, i.public_key_id FROM device_gpu_inventory i JOIN devices d ON d.device_id = i.device_id AND d.provider_id = i.provider_id WHERE i.provider_id = $1 AND i.inventory_hash = (SELECT latest.inventory_hash FROM device_gpu_inventory latest WHERE latest.provider_id = i.provider_id AND latest.device_id = i.device_id ORDER BY latest.server_received_at DESC, latest.observed_at DESC LIMIT 1) ORDER BY i.device_id, lower(i.gpu_uuid) LIMIT $2",
+                "SELECT i.device_id, d.status AS device_status, i.gpu_uuid, i.status AS gpu_status, i.public_key_id FROM device_gpu_inventory i JOIN devices d ON d.device_id = i.device_id AND d.provider_id = i.provider_id WHERE i.provider_id = $1 AND i.snapshot_id = (SELECT latest.snapshot_id FROM device_gpu_inventory_snapshots latest WHERE latest.provider_id = i.provider_id AND latest.device_id = i.device_id ORDER BY latest.ingest_seq DESC LIMIT 1) ORDER BY i.device_id, lower(i.gpu_uuid) LIMIT $2",
                 &[&provider_id, &MAX_ADMISSION_GPUS],
             )
             .await?;
@@ -307,7 +307,7 @@ pub(crate) async fn evaluate_runtime_admission_for_gpu_in_transaction(
     let device_status: String = identity.get("device_status");
     let inventory_row = transaction
         .query_opt(
-            "SELECT i.gpu_uuid, i.status AS gpu_status, i.public_key_id FROM device_gpu_inventory i WHERE i.provider_id = $1 AND i.device_id = $2 AND lower(i.gpu_uuid) = lower($3) AND i.inventory_hash = (SELECT latest.inventory_hash FROM device_gpu_inventory latest WHERE latest.provider_id = $1 AND latest.device_id = $2 ORDER BY latest.server_received_at DESC, latest.observed_at DESC LIMIT 1) ORDER BY i.server_received_at DESC, i.observed_at DESC LIMIT 1",
+            "SELECT i.gpu_uuid, i.status AS gpu_status, i.public_key_id FROM device_gpu_inventory i WHERE i.provider_id = $1 AND i.device_id = $2 AND lower(i.gpu_uuid) = lower($3) AND i.snapshot_id = (SELECT latest.snapshot_id FROM device_gpu_inventory_snapshots latest WHERE latest.provider_id = $1 AND latest.device_id = $2 ORDER BY latest.ingest_seq DESC LIMIT 1) LIMIT 1",
             &[&provider_id, &device_id, &gpu_uuid],
         )
         .await?;
@@ -917,7 +917,14 @@ mod tests {
         }
         client
             .execute(
-                "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ('inventory_1', 'provider_1', 'device_1', 'session_reconnected', 'burd-device-gpu-inventory-v1', 'inventory_hash_1', 'key_1', 'signature', 'burd-json-c14n-v1', 'GPU-A', 0, 'cuda', '10de', '2684', 24576, 'active', $1, $1, '{}', '{}')",
+                "INSERT INTO device_gpu_inventory_snapshots (snapshot_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, hardware_fingerprint, gpu_count, observed_at, server_received_at, payload_json, verification_json) VALUES ('snapshot_1', 'provider_1', 'device_1', 'session_reconnected', 'burd-device-gpu-inventory-v1', 'inventory_hash_1', 'key_1', 'signature', 'burd-json-c14n-v1', $1, 1, $2, $2, '{}', '{}')",
+                &[&"a".repeat(64), &now_text],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO device_gpu_inventory (inventory_row_id, snapshot_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ('inventory_1', 'snapshot_1', 'provider_1', 'device_1', 'session_reconnected', 'burd-device-gpu-inventory-v1', 'inventory_hash_1', 'key_1', 'signature', 'burd-json-c14n-v1', 'GPU-A', 0, 'cuda', '10de', '2684', 24576, 'active', $1, $1, '{}', '{}')",
                 &[&now_text],
             )
             .await
