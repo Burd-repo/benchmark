@@ -6,13 +6,16 @@ This document describes the backend-authoritative execution contract returned by
 
 Schema versions:
 
-- `burd-provider-job-execution-v2`;
+- `burd-provider-job-execution-v3`;
 - `burd-provider-job-runtime-policy-v2`.
 
-V2 removes the ambiguous `target_os` field. The job policy describes workload
+V2 removed the ambiguous `target_os` field. The job policy describes workload
 requirements through `container_os=linux`, `gpu_backend=cuda`, and
 `gpu_runtime=nvidia`; it does not require the provider's physical host to run
 Linux.
+
+V3 adds a separate maximum Control Plane silence bound to the cancellation policy. It does not
+change the runtime isolation policy.
 
 ## Assignment Bundle
 
@@ -40,6 +43,18 @@ assignment. If the current assignment loses authority, acceptance returns the jo
 clears its credential hash and expiry, terminalizes its lease, and records a non-secret
 acceptance-withheld audit event. A successful accept updates exactly one offered lease and audits
 the current Runtime Admission evidence in the same transaction.
+
+After acceptance, the worker starts an assignment-scoped watcher against
+`GET /v1/sessions/{session_id}/jobs/{job_id}/control?lease_id={lease_id}`. The Control Plane
+returns only `continue` or `cancel`, bound to the authenticated session and exact persisted
+assignment lease. Responses are non-cacheable. A stale lease receives `409` and cannot mutate or
+cancel a newer assignment.
+
+The watcher retries transport and server failures only until `max_control_silence_seconds`.
+Session authority loss, missing or conflicting assignment authority, an invalid response contract,
+an explicit cancel directive, or excessive Control Plane silence cancels local work fail closed.
+The watcher starts immediately after acceptance and is stopped and joined before that assignment
+returns, so it cannot survive into a later assignment.
 
 ## Execution States
 
@@ -78,6 +93,7 @@ The v2 policy requires:
 - all capabilities dropped;
 - bounded CPU, memory, PIDs, and shared memory;
 - bounded cancellation polling, graceful stop, and forced termination;
+- a separate bound for maximum Control Plane silence;
 - container, working-directory, ephemeral-secret, and credential cleanup.
 
 The shared validator rejects schema, identity, lease, workload, policy, artifact-path, expiry, credential-shape, or runtime-policy mismatches.
@@ -101,7 +117,10 @@ Implemented:
 - authenticated polling, local bundle/session/GPU/expiry validation, backend-authoritative acceptance revalidation, ordered `provisioning`, `running`, and `uploading` events, and terminal result submission;
 - one active execution at a time per worker, bounded in-memory replay rejection, authoritative deadline cancellation, and cooperative Agent shutdown;
 - deterministic fake-executor coverage for success, failure, invalid bundles, expiry, shutdown, and replay;
-- integration-only session-supervisor wiring for the provider job worker.
+- integration-only session-supervisor wiring for the provider job worker;
+- exact-assignment active-job control polling, bounded Control Plane silence, and fail-closed local
+  cancellation propagated through data-plane operations and the Docker executor;
+- remote administrative cancellation cleanup without submitting a contradictory `failed` result.
 - Runtime Platform Model v2, which separates provider host capability from the
   Linux-container job policy.
 - `DockerNvidiaProviderJobExecutor` separated from the `DockerRuntimeBackend`
@@ -138,7 +157,6 @@ Not implemented:
 - signed object-storage URLs;
 - customer input ingestion and production object-storage adapters;
 - secret injection;
-- remote cancellation discovery while an execution is active;
 - Control Plane persistence or verification of reported runtime capabilities;
 - direct scheduler trust in raw Agent-reported runtime capability remains intentionally absent;
   scheduler and assignment consume authoritative Runtime Admission instead;
@@ -146,4 +164,10 @@ Not implemented:
 - automatic WSL2, Docker, driver, or NVIDIA component installation;
 - paid workload execution.
 
-The current worker revalidates the complete bundle before acceptance and reports persisted transitions through the existing authenticated job endpoints. Its cancellation token currently represents local shutdown and authoritative assignment deadlines only. `POST /v1/jobs/{job_id}/cancel` remains administrative, and the remote control protocol has no typed `job_cancel` command or provider-authenticated job-status query; tests must not describe this boundary as remote cancellation.
+The current worker revalidates the complete bundle before acceptance and reports persisted
+transitions through the existing authenticated job endpoints. `POST /v1/jobs/{job_id}/cancel`
+remains administrative; the Agent discovers its terminal decision through authenticated polling,
+not a WebSocket push command. Cancellation is cooperative during artifact transfer: progress checks
+occur for each 64 KiB chunk, while a transport operation that makes no progress remains bounded by
+the existing 120-second HTTP timeout. A failed post-cancellation workspace cleanup stops the worker
+instead of accepting another assignment. Production worker activation remains disabled.

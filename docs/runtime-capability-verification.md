@@ -127,7 +127,7 @@ This slice intentionally does not implement:
 
 - scheduler consumption of runtime admission;
 - production provider-job activation;
-- remote cancellation of active jobs;
+- WebSocket push for active-job cancellation;
 - customer ingress, marketplace changes, billing or metering changes;
 - proof image publishing or automatic runtime installation.
 

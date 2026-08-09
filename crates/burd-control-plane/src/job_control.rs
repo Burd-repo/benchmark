@@ -12,8 +12,9 @@ use crate::scheduler::{
 };
 use burd_protocol::{
     AcceptJobRequest, CancelJobRequest, CreateJobRequest, CreateJobResponse,
-    JOB_DATA_PLANE_GRANT_VERSION, JOB_EVENT_SCHEMA_VERSION, JOB_SCHEMA_VERSION, JobArtifact,
-    JobDataPlaneGrant, JobDataPlaneUrl, JobEventRecord, JobEventRequest, JobEventResponse,
+    JOB_DATA_PLANE_GRANT_VERSION, JOB_EVENT_SCHEMA_VERSION, JOB_EXECUTION_CONTROL_SCHEMA_VERSION,
+    JOB_SCHEMA_VERSION, JobArtifact, JobDataPlaneGrant, JobDataPlaneUrl, JobEventRecord,
+    JobEventRequest, JobEventResponse, JobExecutionControlResponse, JobExecutionDirective,
     JobLeaseRecord, JobRecord, JobResponse, ListJobsResponse, NextJobResponse,
     PROVIDER_JOB_APPROVED_TEMPLATES, PROVIDER_JOB_EXECUTION_POLICY_VERSION,
     PROVIDER_JOB_EXECUTION_SCHEMA_VERSION, ProviderJobCancellationPolicy, ProviderJobCleanupPolicy,
@@ -475,6 +476,50 @@ impl Database {
         })
     }
 
+    pub async fn job_execution_control(
+        &self,
+        request_id: &str,
+        authorized: &AuthorizedSession,
+        job_id: &str,
+        lease_id: &str,
+    ) -> Result<JobExecutionControlResponse, SessionError> {
+        let mut client = self.connect().await?;
+        let transaction = client.transaction().await?;
+        let (job, lease) =
+            locked_authorized_assignment(&transaction, authorized, job_id, lease_id).await?;
+        let (directive, reason_code) = match job.status.as_str() {
+            "accepted" | "provisioning" | "running" | "uploading"
+                if execution_lease_matches_job_state(&job.status, &lease.status) =>
+            {
+                (JobExecutionDirective::Continue, None)
+            }
+            "cancelled" => (
+                JobExecutionDirective::Cancel,
+                Some("job_cancelled".to_string()),
+            ),
+            "succeeded" | "failed" => (
+                JobExecutionDirective::Cancel,
+                Some("job_terminal".to_string()),
+            ),
+            _ => {
+                return Err(SessionError::Conflict(
+                    "job execution authority is no longer active".to_string(),
+                ));
+            }
+        };
+        let response = JobExecutionControlResponse {
+            schema_version: JOB_EXECUTION_CONTROL_SCHEMA_VERSION.to_string(),
+            request_id: request_id.to_string(),
+            job_id: job.job_id,
+            lease_id: lease.lease_id,
+            directive,
+            reason_code,
+            server_time: Utc::now().to_rfc3339(),
+        };
+        transaction.commit().await?;
+        Ok(response)
+    }
+
     pub async fn record_job_event(
         &self,
         request_id: &str,
@@ -824,6 +869,15 @@ fn acceptance_authority_failure(
         return Some("lease_job_binding_mismatch_before_acceptance");
     }
     None
+}
+
+fn execution_lease_matches_job_state(job_status: &str, lease_status: &str) -> bool {
+    matches!(
+        (job_status, lease_status),
+        ("accepted", "accepted")
+            | ("provisioning", "provisioning")
+            | ("running" | "uploading", "active")
+    )
 }
 
 async fn locked_job(
@@ -2301,6 +2355,13 @@ mod tests {
                 matches!(error, SessionError::Conflict(message) if message == expected_message)
             );
         }
+        let stale_control = db
+            .job_execution_control("req_stale_control_a", &authorized, job_id, &lease_a)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(stale_control, SessionError::Conflict(message) if message == "stale assignment acknowledgement")
+        );
 
         let client = db.connect().await.unwrap();
         let current = client
@@ -2391,6 +2452,42 @@ mod tests {
                 .as_deref(),
             Some(lease_b.as_str())
         );
+        drop(client);
+
+        let continued = db
+            .job_execution_control("req_control_b", &authorized, job_id, &lease_b)
+            .await
+            .unwrap();
+        assert_eq!(continued.directive, JobExecutionDirective::Continue);
+        assert!(continued.reason_code.is_none());
+
+        db.cancel_job(
+            "req_cancel_b",
+            job_id,
+            &CancelJobRequest {
+                reason: Some("admin_cancelled_test_job".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        for request_id in ["req_cancel_control_b_1", "req_cancel_control_b_2"] {
+            let cancelled = db
+                .job_execution_control(request_id, &authorized, job_id, &lease_b)
+                .await
+                .unwrap();
+            assert_eq!(cancelled.directive, JobExecutionDirective::Cancel);
+            assert_eq!(cancelled.reason_code.as_deref(), Some("job_cancelled"));
+        }
+        let client = db.connect().await.unwrap();
+        let credential_hash: Option<String> = client
+            .query_one(
+                "SELECT job_credential_hash FROM compute_jobs WHERE job_id = $1",
+                &[&job_id],
+            )
+            .await
+            .unwrap()
+            .get("job_credential_hash");
+        assert!(credential_hash.is_none());
         drop(client);
         db.drop_schema_for_test().await.unwrap();
     }

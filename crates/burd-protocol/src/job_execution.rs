@@ -6,8 +6,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-pub const PROVIDER_JOB_EXECUTION_SCHEMA_VERSION: &str = "burd-provider-job-execution-v2";
+pub const PROVIDER_JOB_EXECUTION_SCHEMA_VERSION: &str = "burd-provider-job-execution-v3";
 pub const PROVIDER_JOB_EXECUTION_POLICY_VERSION: &str = "burd-provider-job-runtime-policy-v2";
+pub const JOB_EXECUTION_CONTROL_SCHEMA_VERSION: &str = "burd-job-execution-control-v1";
 pub const PROVIDER_JOB_APPROVED_TEMPLATES: &[&str] = &[
     "llm_inference",
     "embeddings",
@@ -99,6 +100,7 @@ impl ProviderJobRuntimePolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderJobCancellationPolicy {
     pub poll_interval_seconds: u32,
+    pub max_control_silence_seconds: u32,
     pub graceful_stop_seconds: u32,
     pub force_kill_after_seconds: u32,
 }
@@ -107,10 +109,30 @@ impl ProviderJobCancellationPolicy {
     pub fn v1() -> Self {
         Self {
             poll_interval_seconds: 2,
+            max_control_silence_seconds: 30,
             graceful_stop_seconds: 10,
             force_kill_after_seconds: 15,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobExecutionDirective {
+    Continue,
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobExecutionControlResponse {
+    pub schema_version: String,
+    pub request_id: String,
+    pub job_id: String,
+    pub lease_id: String,
+    pub directive: JobExecutionDirective,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    pub server_time: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,12 +372,50 @@ pub fn validate_provider_runtime_compatibility(
 
 fn validate_cancellation_policy(policy: &ProviderJobCancellationPolicy) -> Result<(), String> {
     if policy.poll_interval_seconds == 0
+        || policy.max_control_silence_seconds < policy.poll_interval_seconds
         || policy.graceful_stop_seconds == 0
         || policy.force_kill_after_seconds < policy.graceful_stop_seconds
     {
         return Err("provider cancellation policy is invalid".to_string());
     }
     Ok(())
+}
+
+pub fn validate_job_execution_control_response(
+    response: &JobExecutionControlResponse,
+    job_id: &str,
+    lease_id: &str,
+) -> Result<(), String> {
+    if response.schema_version != JOB_EXECUTION_CONTROL_SCHEMA_VERSION
+        || response.job_id != job_id
+        || response.lease_id != lease_id
+        || response.request_id.trim().is_empty()
+        || chrono::DateTime::parse_from_rfc3339(&response.server_time).is_err()
+    {
+        return Err("job execution control response binding is invalid".to_string());
+    }
+    match response.directive {
+        JobExecutionDirective::Continue if response.reason_code.is_some() => {
+            Err("continue directive cannot include a reason code".to_string())
+        }
+        JobExecutionDirective::Cancel
+            if response
+                .reason_code
+                .as_deref()
+                .is_none_or(|reason| !is_control_reason_code(reason)) =>
+        {
+            Err("cancel directive requires a bounded reason code".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn is_control_reason_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
 fn validate_cleanup_policy(policy: &ProviderJobCleanupPolicy) -> Result<(), String> {
@@ -623,6 +683,38 @@ mod tests {
         assert!(serialized.contains("\"container_os\":\"linux\""));
         assert!(serialized.contains("\"gpu_backend\":\"cuda\""));
         assert!(serialized.contains("\"gpu_runtime\":\"nvidia\""));
+    }
+
+    #[test]
+    fn cancellation_policy_separates_polling_from_control_silence() {
+        let policy = ProviderJobCancellationPolicy::v1();
+        assert_eq!(policy.poll_interval_seconds, 2);
+        assert_eq!(policy.max_control_silence_seconds, 30);
+
+        let mut invalid = policy;
+        invalid.max_control_silence_seconds = 1;
+        assert!(validate_cancellation_policy(&invalid).is_err());
+    }
+
+    #[test]
+    fn execution_control_response_is_exactly_bound_and_typed() {
+        let mut response = JobExecutionControlResponse {
+            schema_version: JOB_EXECUTION_CONTROL_SCHEMA_VERSION.to_string(),
+            request_id: "req_control".to_string(),
+            job_id: "job_1".to_string(),
+            lease_id: "lease_1".to_string(),
+            directive: JobExecutionDirective::Continue,
+            reason_code: None,
+            server_time: "2026-08-09T00:00:00Z".to_string(),
+        };
+        validate_job_execution_control_response(&response, "job_1", "lease_1").unwrap();
+
+        response.directive = JobExecutionDirective::Cancel;
+        response.reason_code = Some("job_cancelled".to_string());
+        validate_job_execution_control_response(&response, "job_1", "lease_1").unwrap();
+
+        response.lease_id = "lease_stale".to_string();
+        assert!(validate_job_execution_control_response(&response, "job_1", "lease_1").is_err());
     }
 
     #[test]

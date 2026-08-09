@@ -132,6 +132,8 @@ production GPU-isolation verification.
 
 This Linux-specific slice does not describe the separate Windows WSL2 backend;
 see `windows-wsl2-docker-backend.md`. Neither backend implements secret
-injection, Control Plane runtime proof, scheduler admission, active-job remote
-cancellation discovery, production worker wiring, or paid execution. Customer
+injection, Control Plane runtime proof, scheduler admission, production worker
+wiring, or paid execution. Exact-assignment active-job cancellation is coordinated
+by the disconnected provider worker and propagated through this backend's existing
+cancellation token. Customer
 input ingress and external object-storage adapters are also deferred.
