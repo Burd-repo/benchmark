@@ -131,7 +131,8 @@ Not implemented:
 - secret injection;
 - remote cancellation discovery while an execution is active;
 - Control Plane persistence or verification of reported runtime capabilities;
-- scheduler filtering by verified runtime capability;
+- direct scheduler trust in raw Agent-reported runtime capability remains intentionally absent;
+  scheduler and assignment consume authoritative Runtime Admission instead;
 - production worker/executor wiring;
 - automatic WSL2, Docker, driver, or NVIDIA component installation;
 - paid workload execution.
