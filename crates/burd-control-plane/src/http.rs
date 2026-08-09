@@ -2304,7 +2304,11 @@ async fn next_job(
         authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
     state
         .db
-        .next_job_for_session(&request_id, &authorized)
+        .next_job_for_session(
+            &request_id,
+            &authorized,
+            &runtime_admission_policy(&state.config),
+        )
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))

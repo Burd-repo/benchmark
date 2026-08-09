@@ -95,6 +95,19 @@ Offered-lease audit metadata records the non-secret Runtime Admission `verificat
 verification fingerprint, observation hash and evaluation time. The scheduler does not call the
 admin listing endpoint or cache admission as independent authority.
 
+## Assignment revalidation
+
+`GET /v1/sessions/{session_id}/jobs/next` reuses the same transaction-aware evaluator immediately
+before job credential issuance. A fresh decision may use a newer valid proof than the scheduler
+used. The endpoint locks at most 16 offered leases and queued jobs per poll and continues past
+denied offers, preventing one stale GPU from blocking another admitted GPU for the session.
+
+If current admission is denied, no credential or bundle is created. The lease becomes `expired`
+with `runtime_admission_lost_before_assignment`, the job remains `queued`, credential fields are
+cleared, and `lease.assignment_withheld` records the current non-secret decision. Only an admitted
+decision can reach the linearization point that hashes the new credential and moves the locked job
+to `assigned` in the same commit.
+
 ## Versioning and migration
 
 Migration `0027_runtime_verified_admission` adds immutable runtime observations and extends runtime
@@ -106,7 +119,6 @@ unconfigured or the administrator request differs from the configured digest.
 
 ## Deferred work
 
-- assignment-time admission revalidation before issuing a job credential;
 - production Provider Job Worker activation;
 - physical Linux and Windows gates and Windows admission enablement;
 - hardware-backed Agent integrity/remote attestation;

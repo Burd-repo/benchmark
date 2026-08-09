@@ -3,6 +3,9 @@ use crate::gpu_inventory::assert_gpu_inventory_contains;
 use crate::job_artifact::validate_uploaded_job_results;
 use crate::metering::append_usage_ledger_for_job;
 use crate::remote_session::{AuthorizedSession, SessionError};
+use crate::runtime_admission::{
+    RuntimeAdmissionPolicy, evaluate_runtime_admission_for_gpu_in_transaction,
+};
 use crate::scheduler::{
     load_job_lease_in_transaction, mark_lease_accepted_for_job, mark_lease_progress_for_job,
     mark_lease_terminal_for_job,
@@ -15,8 +18,8 @@ use burd_protocol::{
     PROVIDER_JOB_APPROVED_TEMPLATES, PROVIDER_JOB_EXECUTION_POLICY_VERSION,
     PROVIDER_JOB_EXECUTION_SCHEMA_VERSION, ProviderJobCancellationPolicy, ProviderJobCleanupPolicy,
     ProviderJobExecutionSpec, ProviderJobExecutionState, ProviderJobRuntimePolicy,
-    SubmitJobResultRequest, SubmitJobResultResponse, random_token, sha256_hex,
-    validate_provider_job_execution_bundle,
+    RuntimeAdmissionDecision, SubmitJobResultRequest, SubmitJobResultResponse, random_token,
+    sha256_hex, validate_provider_job_execution_bundle,
 };
 use chrono::{Duration, Utc};
 use tokio_postgres::{Row, Transaction};
@@ -26,6 +29,7 @@ const DEFAULT_JOB_TIMEOUT_SECONDS: u32 = 3600;
 const MAX_JOB_TIMEOUT_SECONDS: u32 = 24 * 60 * 60;
 const MAX_JOB_ARTIFACTS: usize = 32;
 const MAX_JOB_MESSAGE_LEN: usize = 512;
+const MAX_ASSIGNMENT_OFFER_SCAN: i64 = 16;
 #[derive(Debug, Clone)]
 pub struct CreateJobCommand {
     pub request_id: String,
@@ -230,77 +234,127 @@ impl Database {
         &self,
         request_id: &str,
         authorized: &AuthorizedSession,
+        runtime_admission_policy: &RuntimeAdmissionPolicy,
     ) -> Result<NextJobResponse, SessionError> {
         let mut client = self.connect().await?;
         let transaction = client.transaction().await?;
         let now = Utc::now();
         let now_text = now.to_rfc3339();
-        let lease_row = transaction
-            .query_opt(
-                "SELECT l.lease_id, l.job_id FROM job_leases l JOIN compute_jobs j ON j.job_id = l.job_id WHERE l.provider_id = $1 AND l.device_id = $2 AND l.session_id = $3 AND l.status = 'offered' AND l.expires_at > $4 AND j.status = 'queued' ORDER BY l.offered_at ASC FOR UPDATE OF l SKIP LOCKED LIMIT 1",
+        let lease_rows = transaction
+            .query(
+                "SELECT l.lease_id, l.job_id, l.gpu_uuid FROM job_leases l JOIN compute_jobs j ON j.job_id = l.job_id WHERE l.provider_id = $1 AND l.device_id = $2 AND l.session_id = $3 AND l.status = 'offered' AND l.expires_at > $4 AND j.status = 'queued' ORDER BY l.offered_at ASC, l.lease_id ASC FOR UPDATE OF l, j SKIP LOCKED LIMIT $5",
                 &[
                     &authorized.provider_id,
                     &authorized.device_id,
                     &authorized.session_id,
                     &now_text,
+                    &MAX_ASSIGNMENT_OFFER_SCAN,
                 ],
             )
             .await?;
-        let Some(lease_row) = lease_row else {
+        for lease_row in lease_rows {
+            let lease_id: String = lease_row.get("lease_id");
+            let job_id: String = lease_row.get("job_id");
+            let lease_gpu_uuid: String = lease_row.get("gpu_uuid");
+            let queued = locked_job(&transaction, &job_id).await?;
+            if queued.status != "queued" {
+                return Err(SessionError::Conflict(
+                    "leased job is no longer queued".to_string(),
+                ));
+            }
+            if queued.provider_id != authorized.provider_id
+                || queued.device_id != authorized.device_id
+                || queued.session_id != authorized.session_id
+                || !queued.gpu_uuid.eq_ignore_ascii_case(&lease_gpu_uuid)
+            {
+                withhold_assignment(
+                    &transaction,
+                    request_id,
+                    authorized,
+                    &lease_id,
+                    &queued.job_id,
+                    "lease_job_binding_mismatch",
+                    &["lease_job_binding_mismatch".to_string()],
+                    None,
+                    &now_text,
+                )
+                .await?;
+                continue;
+            }
+            let admission = evaluate_runtime_admission_for_gpu_in_transaction(
+                &transaction,
+                &authorized.provider_id,
+                &authorized.device_id,
+                &lease_gpu_uuid,
+                runtime_admission_policy,
+                now,
+            )
+            .await?;
+            if admission.status != "admitted" {
+                withhold_assignment(
+                    &transaction,
+                    request_id,
+                    authorized,
+                    &lease_id,
+                    &queued.job_id,
+                    "runtime_admission_lost_before_assignment",
+                    &admission.reason_codes,
+                    Some(&admission),
+                    &now_text,
+                )
+                .await?;
+                continue;
+            }
+
+            let credential = random_token("jobcred").map_err(SessionError::Invalid)?;
+            let credential_hash = sha256_hex(credential.as_bytes());
+            let credential_expires_at =
+                (now + Duration::seconds(i64::from(queued.timeout_seconds) + 600)).to_rfc3339();
+            let updated = transaction
+                .execute(
+                    "UPDATE compute_jobs SET status = 'assigned', assigned_at = $1, job_credential_hash = $2, job_credential_expires_at = $3, updated_at = $1 WHERE job_id = $4 AND status = 'queued'",
+                    &[&now_text, &credential_hash, &credential_expires_at, &queued.job_id],
+                )
+                .await?;
+            if updated != 1 {
+                return Err(SessionError::Conflict(
+                    "leased job is no longer queued".to_string(),
+                ));
+            }
+            let job = load_job_in_transaction(&transaction, &queued.job_id).await?;
+            let lease = load_job_lease_in_transaction(&transaction, &lease_id).await?;
+            let data_plane = data_plane_grant(&job, credential, credential_expires_at);
+            let execution = provider_job_execution_spec(&job, &lease, &data_plane)?;
+            let audit_metadata = serde_json::json!({
+                "runtime_admission": runtime_admission_audit_metadata(&admission),
+            })
+            .to_string();
+            insert_audit_event(
+                &transaction,
+                NewAuditEvent {
+                    request_id,
+                    actor_type: "device",
+                    actor_id: Some(authorized.device_id.clone()),
+                    entity_type: "compute_job",
+                    entity_id: &job.job_id,
+                    event_type: "job.assigned",
+                    idempotency_key: None,
+                    summary: "compute job assigned to provider session",
+                    metadata_json: &audit_metadata,
+                },
+            )
+            .await?;
             transaction.commit().await?;
             return Ok(NextJobResponse {
                 request_id: request_id.to_string(),
-                job: None,
-                data_plane: None,
-                lease: None,
-                execution: None,
+                job: Some(job),
+                data_plane: Some(data_plane),
+                lease: Some(lease),
+                execution: Some(execution),
             });
-        };
-        let lease_id: String = lease_row.get("lease_id");
-        let job_id: String = lease_row.get("job_id");
-        let queued = locked_job(&transaction, &job_id).await?;
-        if queued.status != "queued" {
-            return Err(SessionError::Conflict(
-                "leased job is no longer queued".to_string(),
-            ));
         }
-        let credential = random_token("jobcred").map_err(SessionError::Invalid)?;
-        let credential_hash = sha256_hex(credential.as_bytes());
-        let credential_expires_at =
-            (now + Duration::seconds(i64::from(queued.timeout_seconds) + 600)).to_rfc3339();
-        transaction
-            .execute(
-                "UPDATE compute_jobs SET status = 'assigned', assigned_at = $1, job_credential_hash = $2, job_credential_expires_at = $3, updated_at = $1 WHERE job_id = $4",
-                &[&now_text, &credential_hash, &credential_expires_at, &queued.job_id],
-            )
-            .await?;
-        let job = load_job_in_transaction(&transaction, &queued.job_id).await?;
-        let lease = load_job_lease_in_transaction(&transaction, &lease_id).await?;
-        let data_plane = data_plane_grant(&job, credential, credential_expires_at);
-        let execution = provider_job_execution_spec(&job, &lease, &data_plane)?;
-        insert_audit_event(
-            &transaction,
-            NewAuditEvent {
-                request_id,
-                actor_type: "device",
-                actor_id: Some(authorized.device_id.clone()),
-                entity_type: "compute_job",
-                entity_id: &job.job_id,
-                event_type: "job.assigned",
-                idempotency_key: None,
-                summary: "compute job assigned to provider session",
-                metadata_json: "{}",
-            },
-        )
-        .await?;
         transaction.commit().await?;
-        Ok(NextJobResponse {
-            request_id: request_id.to_string(),
-            job: Some(job),
-            data_plane: Some(data_plane),
-            lease: Some(lease),
-            execution: Some(execution),
-        })
+        Ok(empty_next_job_response(request_id))
     }
     pub async fn accept_job(
         &self,
@@ -705,6 +759,88 @@ async fn apply_event_state_update(
             )
             .await?;
     }
+    Ok(())
+}
+
+fn empty_next_job_response(request_id: &str) -> NextJobResponse {
+    NextJobResponse {
+        request_id: request_id.to_string(),
+        job: None,
+        data_plane: None,
+        lease: None,
+        execution: None,
+    }
+}
+
+fn runtime_admission_audit_metadata(admission: &RuntimeAdmissionDecision) -> serde_json::Value {
+    serde_json::json!({
+        "status": admission.status,
+        "reason_codes": admission.reason_codes,
+        "runtime_backend": admission.runtime_backend,
+        "verification_id": admission.verification_id,
+        "runtime_verification_fingerprint": admission.runtime_verification_fingerprint,
+        "runtime_observation_hash": admission.runtime_observation_hash,
+        "evaluated_at": admission.evaluated_at,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn withhold_assignment(
+    transaction: &Transaction<'_>,
+    request_id: &str,
+    authorized: &AuthorizedSession,
+    lease_id: &str,
+    job_id: &str,
+    failure_reason: &str,
+    reason_codes: &[String],
+    admission: Option<&RuntimeAdmissionDecision>,
+    now: &str,
+) -> Result<(), SessionError> {
+    let reason_codes_json = serde_json::to_string(reason_codes)
+        .map_err(|error| SessionError::Database(DbError::new(error.to_string())))?;
+    let updated_lease = transaction
+        .execute(
+            "UPDATE job_leases SET status = 'expired', reason_codes_json = $1, failure_reason = $2, updated_at = $3 WHERE lease_id = $4 AND status = 'offered'",
+            &[&reason_codes_json, &failure_reason, &now, &lease_id],
+        )
+        .await?;
+    if updated_lease != 1 {
+        return Err(SessionError::Conflict(
+            "offered lease changed before assignment could be withheld".to_string(),
+        ));
+    }
+    let updated_job = transaction
+        .execute(
+            "UPDATE compute_jobs SET status = 'queued', assigned_at = NULL, job_credential_hash = NULL, job_credential_expires_at = NULL, updated_at = $1 WHERE job_id = $2 AND status = 'queued'",
+            &[&now, &job_id],
+        )
+        .await?;
+    if updated_job != 1 {
+        return Err(SessionError::Conflict(
+            "leased job changed before assignment could be withheld".to_string(),
+        ));
+    }
+    let audit_metadata = serde_json::json!({
+        "failure_reason": failure_reason,
+        "reason_codes": reason_codes,
+        "runtime_admission": admission.map(runtime_admission_audit_metadata),
+    })
+    .to_string();
+    insert_audit_event(
+        transaction,
+        NewAuditEvent {
+            request_id,
+            actor_type: "device",
+            actor_id: Some(authorized.device_id.clone()),
+            entity_type: "job_lease",
+            entity_id: lease_id,
+            event_type: "lease.assignment_withheld",
+            idempotency_key: None,
+            summary: "job assignment withheld after fail-closed revalidation",
+            metadata_json: &audit_metadata,
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -1209,6 +1345,175 @@ mod tests {
         }
     }
 
+    async fn assignment_fixture(
+        prefix: &str,
+        gpu_uuids: &[&str],
+    ) -> (
+        Database,
+        AuthorizedSession,
+        crate::runtime_admission::RuntimeAdmissionPolicy,
+        chrono::DateTime<Utc>,
+    ) {
+        assert!(!gpu_uuids.is_empty());
+        let db = crate::scheduler::tests::postgres_test_database(prefix).await;
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        let expires_at = (now + Duration::hours(1)).to_rfc3339();
+        let client = db.connect().await.unwrap();
+        crate::scheduler::tests::seed_provider_and_policy(&client, "provider_1", &now_text).await;
+        crate::scheduler::tests::seed_device(
+            &client,
+            "provider_1",
+            "device_1",
+            "session_1",
+            &now_text,
+            &expires_at,
+        )
+        .await;
+        let gpu_uuids = gpu_uuids
+            .iter()
+            .map(|gpu_uuid| (*gpu_uuid).to_string())
+            .collect::<Vec<_>>();
+        crate::scheduler::tests::seed_admitted_runtime(
+            &client,
+            "provider_1",
+            "device_1",
+            "session_1",
+            &gpu_uuids,
+            &gpu_uuids[0],
+            now,
+        )
+        .await;
+        for gpu_uuid in gpu_uuids.iter().skip(1) {
+            crate::scheduler::tests::seed_additional_runtime_verification(
+                &client,
+                "provider_1",
+                "device_1",
+                "session_1",
+                gpu_uuid,
+                now,
+            )
+            .await;
+        }
+        drop(client);
+        (
+            db,
+            AuthorizedSession {
+                provider_id: "provider_1".to_string(),
+                device_id: "device_1".to_string(),
+                session_id: "session_1".to_string(),
+                sequence_last: 0,
+                heartbeat_interval_seconds: 15,
+                missed_heartbeat_limit: 3,
+            },
+            crate::scheduler::tests::runtime_policy(),
+            now,
+        )
+    }
+
+    async fn seed_and_offer_jobs(
+        db: &Database,
+        policy: &crate::runtime_admission::RuntimeAdmissionPolicy,
+        base_time: chrono::DateTime<Utc>,
+        jobs: &[(&str, &str, i64)],
+    ) {
+        let client = db.connect().await.unwrap();
+        for (job_id, gpu_uuid, created_offset_seconds) in jobs {
+            let created_at = (base_time + Duration::seconds(*created_offset_seconds)).to_rfc3339();
+            crate::scheduler::tests::seed_job(
+                &client,
+                job_id,
+                "provider_1",
+                "device_1",
+                "session_1",
+                gpu_uuid,
+                &created_at,
+            )
+            .await;
+        }
+        drop(client);
+        let scheduled = db
+            .run_scheduler(
+                "req_scheduler_assignment_fixture",
+                &burd_protocol::RunSchedulerRequest {
+                    limit: Some(jobs.len() as u32),
+                    lease_ttl_seconds: Some(120),
+                    reason: Some("assignment_revalidation_test".to_string()),
+                },
+                policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(scheduled.offered, jobs.len() as u32);
+    }
+
+    async fn insert_latest_inventory_snapshot(db: &Database, gpu_uuids: &[&str]) {
+        assert!(!gpu_uuids.is_empty());
+        let client = db.connect().await.unwrap();
+        let observed_at = (Utc::now() + Duration::seconds(1)).to_rfc3339();
+        let inventory_hash = format!("inventory_hash_latest_{}", Uuid::new_v4().simple());
+        for (index, gpu_uuid) in gpu_uuids.iter().enumerate() {
+            let row_id = format!("inventory_latest_{}_{index}", Uuid::new_v4().simple());
+            let gpu_index = index as i32;
+            client
+                .execute(
+                    "INSERT INTO device_gpu_inventory (inventory_row_id, provider_id, device_id, session_id, schema_version, inventory_hash, public_key_id, signature, canonicalization_version, gpu_uuid, gpu_index, backend, pci_vendor_id, pci_device_id, vram_total_mib, status, observed_at, server_received_at, payload_json, verification_json) VALUES ($1, 'provider_1', 'device_1', 'session_1', 'burd-device-gpu-inventory-v1', $2, 'key_device_1', 'signature', 'burd-json-c14n-v1', $3, $4, 'cuda', '10de', '2684', 24576, 'active', $5, $5, '{}', '{}')",
+                    &[&row_id, &inventory_hash, &gpu_uuid, &gpu_index, &observed_at],
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn assert_assignment_withheld(db: &Database, job_id: &str, expected_reason_code: &str) {
+        let client = db.connect().await.unwrap();
+        let job = client
+            .query_one(
+                "SELECT status, job_credential_hash, job_credential_expires_at FROM compute_jobs WHERE job_id = $1",
+                &[&job_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(job.get::<_, String>("status"), "queued");
+        assert!(
+            job.get::<_, Option<String>>("job_credential_hash")
+                .is_none()
+        );
+        assert!(
+            job.get::<_, Option<String>>("job_credential_expires_at")
+                .is_none()
+        );
+        let lease = client
+            .query_one(
+                "SELECT status, failure_reason, reason_codes_json FROM job_leases WHERE job_id = $1",
+                &[&job_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(lease.get::<_, String>("status"), "expired");
+        assert_eq!(
+            lease.get::<_, Option<String>>("failure_reason").as_deref(),
+            Some("runtime_admission_lost_before_assignment")
+        );
+        let reason_codes_json: String = lease.get("reason_codes_json");
+        let reason_codes: Vec<String> = serde_json::from_str(&reason_codes_json).unwrap();
+        assert!(
+            reason_codes
+                .iter()
+                .any(|reason| reason == expected_reason_code)
+        );
+        let audit_metadata: String = client
+            .query_one(
+                "SELECT metadata_json FROM audit_events WHERE entity_type = 'job_lease' AND entity_id = (SELECT lease_id FROM job_leases WHERE job_id = $1) AND event_type = 'lease.assignment_withheld' ORDER BY occurred_at DESC LIMIT 1",
+                &[&job_id],
+            )
+            .await
+            .unwrap()
+            .get("metadata_json");
+        assert!(audit_metadata.contains(expected_reason_code));
+        assert!(!audit_metadata.contains("jobcred_"));
+    }
+
     #[test]
     fn validation_rejects_shell_like_or_unpinned_jobs() {
         assert!(validate_create_job_request(&create_job_request()).is_ok());
@@ -1311,6 +1616,261 @@ mod tests {
         wrong_lease.job_id = "job_2".to_string();
         assert!(provider_job_execution_spec(&job, &wrong_lease, &grant).is_err());
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_assignment_revalidation_withholds_after_authority_changes() {
+        for (scenario, expected_reason) in [
+            ("observation_stale", "runtime_observation_stale"),
+            ("key_revoked", "active_device_key_missing"),
+            ("gpu_removed", "gpu_inventory_missing"),
+            ("provider_blocked", "provider_not_active"),
+            ("device_blocked", "device_not_active"),
+            ("verification_expired", "runtime_verification_expired"),
+        ] {
+            let gpu_uuids = if scenario == "gpu_removed" {
+                vec!["GPU-A", "GPU-B"]
+            } else {
+                vec!["GPU-A"]
+            };
+            let (db, authorized, mut policy, now) =
+                assignment_fixture(&format!("burd_assignment_{scenario}"), &gpu_uuids).await;
+            seed_and_offer_jobs(&db, &policy, now, &[("job_denied", "GPU-A", -10)]).await;
+
+            if scenario == "observation_stale" {
+                policy.observation_max_age_seconds = 0;
+            } else if scenario == "gpu_removed" {
+                insert_latest_inventory_snapshot(&db, &["GPU-B"]).await;
+            } else {
+                let client = db.connect().await.unwrap();
+                match scenario {
+                    "key_revoked" => {
+                        client
+                            .execute(
+                                "UPDATE provider_public_keys SET status = 'revoked' WHERE public_key_id = 'key_device_1'",
+                                &[],
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    "provider_blocked" => {
+                        client
+                            .execute(
+                                "UPDATE providers SET status = 'blocked' WHERE provider_id = 'provider_1'",
+                                &[],
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    "device_blocked" => {
+                        client
+                            .execute(
+                                "UPDATE devices SET status = 'blocked' WHERE device_id = 'device_1'",
+                                &[],
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    "verification_expired" => {
+                        let row = client
+                            .query_one(
+                                "SELECT verification_id, record_json FROM provider_runtime_verifications WHERE provider_id = 'provider_1' AND device_id = 'device_1' AND gpu_uuid = 'GPU-A' ORDER BY verified_at DESC LIMIT 1",
+                                &[],
+                            )
+                            .await
+                            .unwrap();
+                        let verification_id: String = row.get("verification_id");
+                        let record_json: String = row.get("record_json");
+                        let mut record: burd_protocol::ProviderRuntimeVerificationRecord =
+                            serde_json::from_str(&record_json).unwrap();
+                        record.expires_at = (now - Duration::seconds(1)).to_rfc3339();
+                        let expired_record_json = serde_json::to_string(&record).unwrap();
+                        client
+                            .execute(
+                                "UPDATE provider_runtime_verifications SET expires_at = $1, record_json = $2 WHERE verification_id = $3",
+                                &[&record.expires_at, &expired_record_json, &verification_id],
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            let next = db
+                .next_job_for_session("req_assignment_denied", &authorized, &policy)
+                .await
+                .unwrap();
+            assert!(next.job.is_none());
+            assert!(next.data_plane.is_none());
+            assert!(next.lease.is_none());
+            assert!(next.execution.is_none());
+            assert_assignment_withheld(&db, "job_denied", expected_reason).await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_assignment_revalidation_skips_denied_offer_before_valid_offer() {
+        let (db, authorized, policy, now) =
+            assignment_fixture("burd_assignment_head_of_line", &["GPU-A", "GPU-B"]).await;
+        seed_and_offer_jobs(
+            &db,
+            &policy,
+            now,
+            &[("job_gpu_a", "GPU-A", -10), ("job_gpu_b", "GPU-B", -5)],
+        )
+        .await;
+        let client = db.connect().await.unwrap();
+        client
+            .execute(
+                "UPDATE job_leases SET offered_at = CASE job_id WHEN 'job_gpu_a' THEN $1 ELSE $2 END",
+                &[
+                    &(now - Duration::seconds(10)).to_rfc3339(),
+                    &(now - Duration::seconds(5)).to_rfc3339(),
+                ],
+            )
+            .await
+            .unwrap();
+        drop(client);
+        insert_latest_inventory_snapshot(&db, &["GPU-B"]).await;
+
+        let next = db
+            .next_job_for_session("req_assignment_head_of_line", &authorized, &policy)
+            .await
+            .unwrap();
+        assert_eq!(next.job.as_ref().unwrap().job_id, "job_gpu_b");
+        assert_eq!(next.job.as_ref().unwrap().status, "assigned");
+        assert_eq!(next.execution.as_ref().unwrap().gpu_uuid, "GPU-B");
+        let credential = next.data_plane.as_ref().unwrap().credential.clone();
+        assert!(credential.starts_with("jobcred_"));
+        assert_assignment_withheld(&db, "job_gpu_a", "gpu_inventory_missing").await;
+
+        let client = db.connect().await.unwrap();
+        let row = client
+            .query_one(
+                "SELECT job_credential_hash, job_credential_expires_at FROM compute_jobs WHERE job_id = 'job_gpu_b'",
+                &[],
+            )
+            .await
+            .unwrap();
+        let expected_hash = sha256_hex(credential.as_bytes());
+        assert_eq!(
+            row.get::<_, Option<String>>("job_credential_hash")
+                .as_deref(),
+            Some(expected_hash.as_str())
+        );
+        assert!(
+            row.get::<_, Option<String>>("job_credential_expires_at")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_assignment_uses_newer_proof_without_persisting_plaintext_credential() {
+        let (db, authorized, policy, now) =
+            assignment_fixture("burd_assignment_newer_proof", &["GPU-A"]).await;
+        seed_and_offer_jobs(&db, &policy, now, &[("job_newer_proof", "GPU-A", -10)]).await;
+        let client = db.connect().await.unwrap();
+        let scheduler_audit: String = client
+            .query_one(
+                "SELECT metadata_json FROM audit_events WHERE event_type = 'lease.offered' AND entity_id = (SELECT lease_id FROM job_leases WHERE job_id = 'job_newer_proof') ORDER BY occurred_at DESC LIMIT 1",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get("metadata_json");
+        drop(client);
+        let client = db.connect().await.unwrap();
+        let newer_verification_id = crate::scheduler::tests::seed_additional_runtime_verification(
+            &client,
+            "provider_1",
+            "device_1",
+            "session_1",
+            "GPU-A",
+            now + Duration::seconds(30),
+        )
+        .await;
+        drop(client);
+        assert!(!scheduler_audit.contains(&newer_verification_id));
+
+        let next = db
+            .next_job_for_session("req_assignment_newer_proof", &authorized, &policy)
+            .await
+            .unwrap();
+        let credential = next.data_plane.as_ref().unwrap().credential.clone();
+        let credential_hash = sha256_hex(credential.as_bytes());
+        let client = db.connect().await.unwrap();
+        let persisted_hash: Option<String> = client
+            .query_one(
+                "SELECT job_credential_hash FROM compute_jobs WHERE job_id = 'job_newer_proof'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get("job_credential_hash");
+        assert_eq!(persisted_hash.as_deref(), Some(credential_hash.as_str()));
+        assert_ne!(persisted_hash.as_deref(), Some(credential.as_str()));
+        let audit_rows = client
+            .query(
+                "SELECT metadata_json FROM audit_events WHERE entity_id IN ('job_newer_proof', (SELECT lease_id FROM job_leases WHERE job_id = 'job_newer_proof'))",
+                &[],
+            )
+            .await
+            .unwrap();
+        let mut assignment_used_newer_proof = false;
+        for row in audit_rows {
+            let metadata: String = row.get("metadata_json");
+            assert!(!metadata.contains(&credential));
+            if metadata.contains(&newer_verification_id) {
+                assignment_used_newer_proof = true;
+            }
+        }
+        assert!(assignment_used_newer_proof);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_concurrent_assignment_poll_delivers_one_job_once() {
+        let (db, authorized, policy, now) =
+            assignment_fixture("burd_assignment_concurrent", &["GPU-A"]).await;
+        seed_and_offer_jobs(&db, &policy, now, &[("job_concurrent", "GPU-A", -10)]).await;
+        let db_right = db.clone();
+        let authorized_right = authorized.clone();
+        let policy_right = policy.clone();
+        let (left, right) = tokio::join!(
+            db.next_job_for_session("req_assignment_left", &authorized, &policy),
+            db_right
+                .next_job_for_session("req_assignment_right", &authorized_right, &policy_right,)
+        );
+        let responses = [left.unwrap(), right.unwrap()];
+        assert_eq!(
+            responses
+                .iter()
+                .filter(|response| response.job.is_some())
+                .count(),
+            1
+        );
+        assert_eq!(
+            responses
+                .iter()
+                .filter(|response| response.data_plane.is_some())
+                .count(),
+            1
+        );
+        let client = db.connect().await.unwrap();
+        let assigned_count: i64 = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT AS count FROM audit_events WHERE entity_id = 'job_concurrent' AND event_type = 'job.assigned'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(assigned_count, 1);
+    }
+
     #[tokio::test]
     #[ignore]
     async fn postgres_job_lifecycle_assigns_events_and_results() {
@@ -1419,7 +1979,11 @@ mod tests {
             missed_heartbeat_limit: 3,
         };
         let next = db
-            .next_job_for_session("req_next", &authorized)
+            .next_job_for_session(
+                "req_next",
+                &authorized,
+                &crate::scheduler::tests::runtime_policy(),
+            )
             .await
             .unwrap();
         assert_eq!(next.job.as_ref().unwrap().job_id, created.job.job_id);
@@ -1436,7 +2000,11 @@ mod tests {
         assert_eq!(next.lease.as_ref().unwrap().status, "offered");
 
         let duplicate_next = db
-            .next_job_for_session("req_next_again", &authorized)
+            .next_job_for_session(
+                "req_next_again",
+                &authorized,
+                &crate::scheduler::tests::runtime_policy(),
+            )
             .await
             .unwrap();
         assert!(duplicate_next.job.is_none());
