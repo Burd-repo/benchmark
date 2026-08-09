@@ -12,7 +12,7 @@ BN-14 adds:
 - `burd-protocol` lease records, scheduler request/response contracts, and lease list responses;
 - `POST /v1/scheduler/run` for an admin-triggered bounded scheduler pass;
 - `GET /v1/jobs/{job_id}/leases` and `GET /v1/providers/{provider_id}/leases` for lease history;
-- provider `jobs/next` behavior that requires a non-expired offered lease before assignment;
+- provider `jobs/next` behavior that requires both a non-expired offered lease and current Runtime Admission before assignment;
 - lease lifecycle updates when the provider accepts, provisions, runs, completes, fails, or the backend cancels a job;
 - audit events for offered leases.
 
@@ -63,13 +63,19 @@ Job cancellation closes any active lease as failed with a cancellation reason. T
 
 ## Assignment Rules
 
-`GET /v1/sessions/{session_id}/jobs/next` no longer scans arbitrary queued jobs directly. It consumes the oldest non-expired `offered` lease for the authenticated provider/device/session, marks the job as `assigned`, and returns:
+`GET /v1/sessions/{session_id}/jobs/next` no longer scans arbitrary queued jobs directly. Each poll locks a bounded set of up to 16 non-expired `offered` leases plus their queued jobs with `FOR UPDATE ... SKIP LOCKED`, ordered oldest first. For each offer it re-evaluates Runtime Admission for the exact authenticated provider/device and leased GPU using a fresh server `now` in the same transaction.
+
+When admission was lost, the Control Plane emits no credential or execution bundle, marks the lease `expired` with `failure_reason=runtime_admission_lost_before_assignment`, keeps the job `queued`, clears credential fields defensively, records `lease.assignment_withheld` with current reason codes, and continues to the next locked offer. One stale GPU therefore cannot block another valid GPU in the same poll.
+
+Only a currently admitted offer moves the job to `assigned` and returns:
 
 - the job record;
 - the job-scoped data-plane grant;
 - the lease record.
 
-This prevents a provider from pulling work that the scheduler did not reserve for that exact session.
+The assignment audit records the current verification ID, runtime verification fingerprint, observation hash and evaluation time. A newer valid proof may replace the proof used when the lease was offered. The plaintext job credential is returned once in the data-plane grant; only its hash and expiry are persisted.
+
+This prevents a provider from pulling work that the scheduler did not reserve for that exact session or whose runtime authority changed after scheduling.
 
 ## Deferred
 

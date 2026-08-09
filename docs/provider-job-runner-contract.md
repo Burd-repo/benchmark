@@ -23,9 +23,14 @@ Linux.
 - `data_plane`;
 - `execution`.
 
+Before constructing the bundle, the Control Plane re-evaluates Runtime Admission for the exact
+provider/device/GPU inside the locked assignment transaction. Denied offers are expired and audited
+without a credential; the bounded poll continues to a later offer. Only current admission can move
+the job to `assigned`. The assignment may use a newer valid proof than the scheduler lease audit.
+
 `execution` binds the job, lease, provider, device, authenticated session, workload type, approved template, digest-pinned image, GPU UUID, CUDA backend, workload policy, timeout, lease expiry, and data-plane credential expiry. The Control Plane validates the complete bundle before returning it. Partial bundles fail closed.
 
-The execution specification never contains the raw data-plane credential, arbitrary command text, or an entrypoint override. The credential remains only in `data_plane` and must be redacted from logs.
+The execution specification never contains the raw data-plane credential, arbitrary command text, or an entrypoint override. The credential remains only in `data_plane` and must be redacted from logs; only its hash and expiry are persisted.
 
 ## Execution States
 

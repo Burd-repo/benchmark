@@ -752,14 +752,18 @@ Backend behavior:
 
 ### `GET /v1/sessions/{session_id}/jobs/next`
 
-Device-session endpoint. It atomically consumes the oldest non-expired `offered` lease for the authorized provider/device/session, moves the leased job to `assigned`, and returns:
+Device-session endpoint. It locks up to 16 oldest non-expired `offered` leases and their queued jobs for the authorized provider/device/session. Before credential issuance it re-evaluates Runtime Admission for the exact provider/device/GPU with a fresh server timestamp in the same transaction.
+
+A denied offer is expired with `runtime_admission_lost_before_assignment`, remains associated with a queued job, receives no credential, and is audited with the current reason codes. The bounded scan then continues, so a later admitted GPU can still be assigned in the same poll. A newer valid verification may authorize assignment; equality with the verification used by the scheduler is not required.
+
+Only current `admitted` status moves the leased job to `assigned` and returns:
 
 - `job`, the persisted job record;
 - `data_plane`, a job-scoped grant;
 - `lease`, the scheduler lease record;
 - `execution`, the backend-authored runtime binding and restrictive execution policy.
 
-The grant contains an opaque credential, server expiry, and scoped artifact paths. URLs do not embed the raw credential. The Agent uses the credential only in authorization headers, rejects redirects, verifies declared size and SHA-256 while streaming, and never passes the credential to the workload container.
+The grant contains an opaque credential, server expiry, and scoped artifact paths. URLs do not embed the raw credential. The database and audit history receive only the hash, expiry and non-secret Runtime Admission evidence. The Agent uses the credential only in authorization headers, rejects redirects, verifies declared size and SHA-256 while streaming, and never passes the credential to the workload container.
 
 `GET /v1/jobs/{job_id}/artifacts/{artifact_id}/download` streams a declared
 input. `PUT /v1/jobs/{job_id}/results/{artifact_id}/upload` accepts a declared

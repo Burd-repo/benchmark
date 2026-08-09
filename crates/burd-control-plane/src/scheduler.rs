@@ -546,7 +546,7 @@ pub(crate) mod tests {
         }
     }
 
-    async fn postgres_test_database(prefix: &str) -> Database {
+    pub(crate) async fn postgres_test_database(prefix: &str) -> Database {
         let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
             .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
         let schema = format!("{prefix}_{}", Uuid::new_v4().simple());
@@ -555,7 +555,7 @@ pub(crate) mod tests {
         db
     }
 
-    async fn seed_provider_and_policy(
+    pub(crate) async fn seed_provider_and_policy(
         client: &tokio_postgres::Client,
         provider_id: &str,
         now: &str,
@@ -576,7 +576,7 @@ pub(crate) mod tests {
             .unwrap();
     }
 
-    async fn seed_device(
+    pub(crate) async fn seed_device(
         client: &tokio_postgres::Client,
         provider_id: &str,
         device_id: &str,
@@ -608,7 +608,7 @@ pub(crate) mod tests {
             .unwrap();
     }
 
-    async fn seed_job(
+    pub(crate) async fn seed_job(
         client: &tokio_postgres::Client,
         job_id: &str,
         provider_id: &str,
@@ -718,11 +718,74 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let claims =
-            runtime_admission_claims_from_observation(&observation, verified_gpu_uuid).unwrap();
+        seed_runtime_verification_record(
+            client,
+            provider_id,
+            device_id,
+            session_id,
+            verified_gpu_uuid,
+            &observation,
+            now,
+            device_id,
+        )
+        .await;
+    }
+
+    pub(crate) async fn seed_additional_runtime_verification(
+        client: &tokio_postgres::Client,
+        provider_id: &str,
+        device_id: &str,
+        session_id: &str,
+        gpu_uuid: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> String {
+        let row = client
+            .query_one(
+                "SELECT payload_json FROM provider_runtime_observations WHERE provider_id = $1 AND device_id = $2 ORDER BY server_received_at DESC LIMIT 1",
+                &[&provider_id, &device_id],
+            )
+            .await
+            .unwrap();
+        let payload_json: String = row.get("payload_json");
+        let observation: ProviderRuntimeObservationPayload =
+            serde_json::from_str(&payload_json).unwrap();
+        client
+            .execute(
+                "UPDATE provider_runtime_verifications SET status = 'superseded' WHERE provider_id = $1 AND device_id = $2 AND lower(gpu_uuid) = lower($3) AND status = 'verified'",
+                &[&provider_id, &device_id, &gpu_uuid],
+            )
+            .await
+            .unwrap();
+        let id_suffix = format!("{device_id}_{}", Uuid::new_v4().simple());
+        seed_runtime_verification_record(
+            client,
+            provider_id,
+            device_id,
+            session_id,
+            gpu_uuid,
+            &observation,
+            now,
+            &id_suffix,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_runtime_verification_record(
+        client: &tokio_postgres::Client,
+        provider_id: &str,
+        device_id: &str,
+        session_id: &str,
+        gpu_uuid: &str,
+        observation: &ProviderRuntimeObservationPayload,
+        now: chrono::DateTime<Utc>,
+        id_suffix: &str,
+    ) -> String {
+        let claims = runtime_admission_claims_from_observation(observation, gpu_uuid).unwrap();
         let admission_fingerprint = runtime_admission_fingerprint(&claims).unwrap();
-        let challenge_id = format!("runtime_challenge_{device_id}");
-        let verification_id = format!("runtime_verification_{device_id}");
+        let challenge_id = format!("runtime_challenge_{id_suffix}");
+        let verification_id = format!("runtime_verification_{id_suffix}");
+        let public_key_id = format!("key_{device_id}");
         let verified_at = (now - Duration::seconds(60)).to_rfc3339();
         let verification_expires_at = (now + Duration::hours(1)).to_rfc3339();
         let record = ProviderRuntimeVerificationRecord {
@@ -733,7 +796,7 @@ pub(crate) mod tests {
             device_id: device_id.to_string(),
             session_id: session_id.to_string(),
             hardware_fingerprint: observation.hardware_fingerprint.clone(),
-            gpu_uuid: verified_gpu_uuid.to_string(),
+            gpu_uuid: gpu_uuid.to_string(),
             host_os: observation.host_os.clone(),
             runtime_backend: observation.runtime_backend.clone(),
             status: "verified".to_string(),
@@ -764,9 +827,9 @@ pub(crate) mod tests {
                     &provider_id,
                     &device_id,
                     &session_id,
-                    &verified_gpu_uuid,
+                    &gpu_uuid,
                     &record.hardware_fingerprint,
-                    &format!("nonce_{device_id}"),
+                    &format!("nonce_{id_suffix}"),
                     &challenge_json,
                     &verified_at,
                     &verification_expires_at,
@@ -784,7 +847,7 @@ pub(crate) mod tests {
                     &provider_id,
                     &device_id,
                     &session_id,
-                    &verified_gpu_uuid,
+                    &gpu_uuid,
                     &record.hardware_fingerprint,
                     &record.runtime_verification_fingerprint,
                     &verified_at,
@@ -797,6 +860,7 @@ pub(crate) mod tests {
             )
             .await
             .unwrap();
+        verification_id
     }
 
     #[test]

@@ -958,7 +958,7 @@ pub fn document() -> serde_json::Value {
             },
             "/v1/sessions/{session_id}/jobs/next": {
                 "get": {
-                    "summary": "Accept the next offered scheduler lease and fetch its compute job and data-plane grant",
+                    "summary": "Revalidate runtime admission and fetch the next safe offered job bundle",
                     "security": [{ "deviceBearer": [] }],
                     "responses": {
                         "200": { "description": "next job and scoped artifact URLs returned, or no job is available" },
