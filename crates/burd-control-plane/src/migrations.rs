@@ -151,6 +151,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "gpu_inventory_authoritative_snapshots",
         sql: include_str!("../migrations/0029_gpu_inventory_authoritative_snapshots.sql"),
     },
+    Migration {
+        version: "0030",
+        name: "compute_job_assignment_lease_binding",
+        sql: include_str!("../migrations/0030_compute_job_assignment_lease_binding.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -465,6 +470,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compute_job_assignment_lease_migration_binds_exact_acknowledgements() {
+        let sql = MIGRATIONS[29].sql;
+        for needle in [
+            "ADD COLUMN IF NOT EXISTS assignment_lease_id TEXT",
+            "compute_jobs_assignment_lease_binding_fk",
+            "compute_jobs_active_assignment_lease_check",
+            "compute_jobs_queued_assignment_lease_check",
+            "idx_compute_jobs_assignment_lease",
+        ] {
+            assert!(sql.contains(needle));
+        }
+    }
+
     #[tokio::test]
     #[ignore]
     async fn postgres_authoritative_snapshot_migration_backfills_and_restores_immutability() {
@@ -597,6 +616,91 @@ mod tests {
                 .await
                 .is_err()
         );
+        drop(client);
+        db.drop_schema_for_test().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_assignment_lease_migration_backfills_exact_binding() {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
+            .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
+        let schema = format!(
+            "burd_assignment_lease_migration_{}",
+            Uuid::new_v4().simple()
+        );
+        let db = Database::new(url, Some(schema)).unwrap();
+        let mut client = db.connect().await.unwrap();
+        let transaction = client.transaction().await.unwrap();
+        for migration in &MIGRATIONS[..29] {
+            transaction.batch_execute(migration.sql).await.unwrap();
+        }
+        let now = Utc::now().to_rfc3339();
+        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
+        transaction
+            .execute(
+                "INSERT INTO providers (provider_id, display_name, status, created_at, updated_at) VALUES ('provider_1', 'Assignment Provider', 'available', $1, $1)",
+                &[&now],
+            )
+            .await
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO devices (device_id, provider_id, machine_id, status, created_at, updated_at) VALUES ('device_1', 'provider_1', 'machine_1', 'active', $1, $1)",
+                &[&now],
+            )
+            .await
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint) VALUES ('session_1', 'provider_1', 'device_1', 'online', 0, $1, $2, $3)",
+                &[&now, &expires_at, &"a".repeat(64)],
+            )
+            .await
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO compute_jobs (job_id, provider_id, device_id, session_id, schema_version, workload_type, template_id, image_ref, gpu_uuid, backend, status, timeout_seconds, job_credential_hash, job_credential_expires_at, created_at, assigned_at, updated_at) VALUES ('job_1', 'provider_1', 'device_1', 'session_1', 'burd-job-v1', 'llm_batch_inference', 'template_1', $1, 'GPU-A', 'cuda', 'assigned', 300, 'credential_hash', $2, $3, $3, $3)",
+                &[&format!("ghcr.io/burd/test@sha256:{}", "b".repeat(64)), &expires_at, &now],
+            )
+            .await
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO job_leases (lease_id, job_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, offered_at, expires_at, failure_reason, created_at, updated_at) VALUES ('lease_1', 'job_1', 'provider_1', 'device_1', 'session_1', 'burd-job-lease-v1', 'llm_batch_inference', 'GPU-A', 'expired', $1, $2, 'lease_ack_timeout', $1, $1)",
+                &[&now, &expires_at],
+            )
+            .await
+            .unwrap();
+
+        transaction.batch_execute(MIGRATIONS[29].sql).await.unwrap();
+        transaction.commit().await.unwrap();
+
+        let assignment_lease_id: Option<String> = client
+            .query_one(
+                "SELECT assignment_lease_id FROM compute_jobs WHERE job_id = 'job_1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get("assignment_lease_id");
+        assert_eq!(assignment_lease_id.as_deref(), Some("lease_1"));
+        assert!(
+            client
+                .execute(
+                    "UPDATE compute_jobs SET status = 'queued' WHERE job_id = 'job_1'",
+                    &[],
+                )
+                .await
+                .is_err()
+        );
+        client
+            .execute(
+                "UPDATE compute_jobs SET status = 'queued', assignment_lease_id = NULL WHERE job_id = 'job_1'",
+                &[],
+            )
+            .await
+            .unwrap();
         drop(client);
         db.drop_schema_for_test().await.unwrap();
     }

@@ -529,16 +529,19 @@ async fn run_assignment(
             Err(_) => return Ok(AssignmentDisposition::Continue),
         };
     let job_id = assignment.job.job_id.clone();
+    let lease_id = assignment.lease.lease_id.clone();
     let Some(accepted) = blocking_control_call(
         {
             let control_plane = Arc::clone(&control_plane);
             let context = context.clone();
             let job_id = job_id.clone();
+            let lease_id = lease_id.clone();
             move || {
                 control_plane.accept_job(
                     &context,
                     &job_id,
                     &AcceptJobRequest {
+                        lease_id,
                         status_message: Some("provider worker accepted assignment".to_string()),
                     },
                 )
@@ -1297,6 +1300,7 @@ mod tests {
         polls: VecDeque<NextJobResponse>,
         poll_count: usize,
         accepts: usize,
+        accepted_lease_ids: Vec<String>,
         events: Vec<String>,
         results: Vec<SubmitJobResultRequest>,
     }
@@ -1321,6 +1325,10 @@ mod tests {
                 state.results.clone(),
             )
         }
+
+        fn accepted_lease_ids(&self) -> Vec<String> {
+            self.state.lock().unwrap().accepted_lease_ids.clone()
+        }
     }
 
     impl ProviderJobControlPlane for FakeControlPlane {
@@ -1344,9 +1352,12 @@ mod tests {
             &self,
             _context: &ProviderJobWorkerContext,
             job_id: &str,
-            _request: &AcceptJobRequest,
+            request: &AcceptJobRequest,
         ) -> Result<JobResponse, ProviderJobControlError> {
-            self.state.lock().unwrap().accepts += 1;
+            let mut state = self.state.lock().unwrap();
+            state.accepts += 1;
+            state.accepted_lease_ids.push(request.lease_id.clone());
+            drop(state);
             Ok(JobResponse {
                 request_id: "req_accept".to_string(),
                 job: job_with_status(job_id, "accepted"),
@@ -1620,6 +1631,7 @@ mod tests {
 
         let (_, accepts, events, results) = control.snapshot();
         assert_eq!(accepts, 1);
+        assert_eq!(control.accepted_lease_ids(), ["lease_1"]);
         assert_eq!(events, ["provisioning", "running", "uploading"]);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, "succeeded");

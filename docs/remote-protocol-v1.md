@@ -772,15 +772,18 @@ verified receipt. Successful terminal results must match every verified upload.
 
 ### `POST /v1/sessions/{session_id}/jobs/{job_id}/accept`
 
-Device-session endpoint and final pre-execution authority gate. It locks the assigned job and latest
-lease together, requires an unexpired `offered` lease with exact provider/device/session/GPU
-binding, and re-evaluates Runtime Admission using server time. Success moves the job and exactly one
-lease to `accepted` atomically and records optional provider status text plus non-secret admission
-evidence.
+Device-session endpoint and final pre-execution authority gate. The request must include the exact
+`lease_id` delivered with the assignment. The backend locks that job/lease pair, requires it to
+match the job's persisted `assignment_lease_id`, requires an unexpired `offered` lease with exact
+provider/device/session/GPU binding, and re-evaluates Runtime Admission using server time. Success
+moves the job and exactly one lease to `accepted` atomically and records optional provider status
+text plus non-secret admission evidence.
 
-Missing, expired, terminal, mismatched, or newly denied authority returns `409` after invalidating
-the job credential, returning the job to `queued`, terminalizing any active lease, and persisting an
-acceptance-withheld audit event. A zero-row lease acknowledgement is never treated as success.
+A stale or mismatched `lease_id` returns `409` without mutating the current job, lease, or credential.
+When the exact current assignment instead loses expiry, binding, or Runtime Admission authority,
+the backend returns `409` after invalidating its credential, returning the job to `queued`,
+terminalizing its active lease, and persisting an acceptance-withheld audit event. Missing
+`lease_id` is invalid JSON; there is no fallback to the latest lease.
 
 ### `POST /v1/sessions/{session_id}/jobs/{job_id}/events`
 

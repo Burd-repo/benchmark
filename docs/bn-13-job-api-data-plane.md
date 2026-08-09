@@ -41,7 +41,8 @@ Admin endpoints:
 Provider-session endpoints:
 
 - `GET /v1/sessions/{session_id}/jobs/next` atomically assigns the oldest queued job for that provider/device/session and returns a job-scoped data-plane grant.
-- `POST /v1/sessions/{session_id}/jobs/{job_id}/accept` acknowledges assignment before provisioning.
+- `POST /v1/sessions/{session_id}/jobs/{job_id}/accept` acknowledges the exact assignment
+  `lease_id` before provisioning; stale acknowledgements cannot mutate a newer assignment.
 - `POST /v1/sessions/{session_id}/jobs/{job_id}/events` appends a sequenced progress event and may move the job to `provisioning`, `running`, or `uploading`.
 - `POST /v1/sessions/{session_id}/jobs/{job_id}/result` submits final `succeeded` or `failed` result metadata and output artifact references.
 

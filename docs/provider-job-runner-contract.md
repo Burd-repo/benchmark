@@ -33,12 +33,13 @@ the job to `assigned`. The assignment may use a newer valid proof than the sched
 The execution specification never contains the raw data-plane credential, arbitrary command text, or an entrypoint override. The credential remains only in `data_plane` and must be redacted from logs; only its hash and expiry are persisted.
 
 Acceptance is a separate authority gate. `POST /v1/sessions/{session_id}/jobs/{job_id}/accept`
-locks the assigned job and its latest lease together, requires an unexpired `offered` lease with
-the exact provider/device/session/GPU binding, and re-evaluates Runtime Admission before execution
-can begin. A denied accept returns the job to `queued`, clears its credential hash and expiry,
-terminalizes an active lease, and records a non-secret acceptance-withheld audit event. A successful
-accept updates exactly one offered lease and audits the current Runtime Admission evidence in the
-same transaction.
+includes the exact `lease_id` from the bundle, locks that job/lease pair, requires it to match the
+persisted assignment binding and an unexpired `offered` lease, and re-evaluates Runtime Admission
+before execution can begin. A stale acknowledgement returns `409` without touching a newer
+assignment. If the current assignment loses authority, acceptance returns the job to `queued`,
+clears its credential hash and expiry, terminalizes its lease, and records a non-secret
+acceptance-withheld audit event. A successful accept updates exactly one offered lease and audits
+the current Runtime Admission evidence in the same transaction.
 
 ## Execution States
 
