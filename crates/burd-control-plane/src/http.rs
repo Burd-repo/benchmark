@@ -1784,7 +1784,11 @@ async fn run_scheduler(
     authorize_admin(&headers, &state.config, &request_id)?;
     let response = state
         .db
-        .run_scheduler(&request_id, &payload)
+        .run_scheduler(
+            &request_id,
+            &payload,
+            &runtime_admission_policy(&state.config),
+        )
         .await
         .map_err(|error| session_api_error(error, request_id.clone()))?;
     Ok((StatusCode::ACCEPTED, Json(response)).into_response())

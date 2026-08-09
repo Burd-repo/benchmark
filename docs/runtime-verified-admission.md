@@ -1,8 +1,8 @@
 # Runtime-Verified Provider Admission
 
-This slice derives one fail-closed `RuntimeAdmissionDecision` per provider/device/GPU. It does not
-change the scheduler, marketplace, billing or the deliberately disabled production Provider Job
-Worker.
+This slice derives one fail-closed `RuntimeAdmissionDecision` per provider/device/GPU. The
+admin-triggered scheduler now consumes that decision transactionally, while marketplace, billing
+and the deliberately disabled production Provider Job Worker remain unchanged.
 
 ## Authority model
 
@@ -77,6 +77,24 @@ Windows remains denied with `windows_physical_gate_required` even when the code 
 valid. That reason can only be removed after the physical Windows/WSL2 multi-GPU isolation gate is
 implemented and passed; this slice does not add a configuration bypass.
 
+## Scheduler consumption
+
+`POST /v1/scheduler/run` evaluates Runtime Admission for the job's exact provider, device and GPU
+inside the transaction that may create its lease. The scheduler uses one server `now` for the
+entire pass. A denied decision produces `decision=skipped`, no `lease_id` and the admission reason
+codes; only `status=admitted` can proceed to GPU locking and lease insertion.
+
+The request `limit` is the maximum number of leases offered, not a pre-admission row cutoff.
+Candidates are fetched in batches of 50 up to a bounded evaluation budget of 50-800 per pass.
+Migration `0028_scheduler_runtime_admission` adds `scheduler_last_evaluated_at`; evaluated jobs
+rotate behind untouched candidates so a denied prefix cannot starve later admitted jobs across
+runs. Transaction-scoped advisory GPU locks plus the active-lease unique indexes keep concurrent
+scheduler passes fail-closed.
+
+Offered-lease audit metadata records the non-secret Runtime Admission `verification_id`,
+verification fingerprint, observation hash and evaluation time. The scheduler does not call the
+admin listing endpoint or cache admission as independent authority.
+
 ## Versioning and migration
 
 Migration `0027_runtime_verified_admission` adds immutable runtime observations and extends runtime
@@ -88,7 +106,7 @@ unconfigured or the administrator request differs from the configured digest.
 
 ## Deferred work
 
-- scheduler consumption of `RuntimeAdmissionDecision`;
+- assignment-time admission revalidation before issuing a job credential;
 - production Provider Job Worker activation;
 - physical Linux and Windows gates and Windows admission enablement;
 - hardware-backed Agent integrity/remote attestation;

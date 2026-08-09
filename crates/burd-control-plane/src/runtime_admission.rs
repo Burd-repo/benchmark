@@ -12,6 +12,7 @@ use burd_protocol::{
 };
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashSet;
+use tokio_postgres::{GenericClient, Transaction};
 use uuid::Uuid;
 
 const MAX_ADMISSION_GPUS: i64 = 200;
@@ -273,12 +274,102 @@ impl Database {
     }
 }
 
-async fn load_admission_context(
-    client: &tokio_postgres::Client,
+pub(crate) async fn evaluate_runtime_admission_for_gpu_in_transaction(
+    transaction: &Transaction<'_>,
+    provider_id: &str,
+    device_id: &str,
+    gpu_uuid: &str,
+    policy: &RuntimeAdmissionPolicy,
+    now: DateTime<Utc>,
+) -> Result<RuntimeAdmissionDecision, SessionError> {
+    if !safe_id(provider_id) || !safe_id(device_id) || !safe_id(gpu_uuid) {
+        return Err(SessionError::Invalid(
+            "runtime admission identity is invalid".to_string(),
+        ));
+    }
+
+    let identity = transaction
+        .query_opt(
+            "SELECT p.status AS provider_status, d.status AS device_status FROM providers p JOIN devices d ON d.provider_id = p.provider_id AND d.device_id = $2 WHERE p.provider_id = $1",
+            &[&provider_id, &device_id],
+        )
+        .await?;
+    let Some(identity) = identity else {
+        return validated_denied_decision(
+            provider_id,
+            device_id,
+            gpu_uuid,
+            vec!["runtime_admission_identity_missing".to_string()],
+            now,
+        );
+    };
+    let provider_status: String = identity.get("provider_status");
+    let device_status: String = identity.get("device_status");
+    let inventory_row = transaction
+        .query_opt(
+            "SELECT i.gpu_uuid, i.status AS gpu_status, i.public_key_id FROM device_gpu_inventory i WHERE i.provider_id = $1 AND i.device_id = $2 AND lower(i.gpu_uuid) = lower($3) AND i.inventory_hash = (SELECT latest.inventory_hash FROM device_gpu_inventory latest WHERE latest.provider_id = $1 AND latest.device_id = $2 ORDER BY latest.server_received_at DESC, latest.observed_at DESC LIMIT 1) ORDER BY i.server_received_at DESC, i.observed_at DESC LIMIT 1",
+            &[&provider_id, &device_id, &gpu_uuid],
+        )
+        .await?;
+    let Some(inventory_row) = inventory_row else {
+        let mut reasons = vec!["gpu_inventory_missing".to_string()];
+        if matches!(provider_status.as_str(), "blocked" | "quarantined") {
+            reasons.push("provider_not_active".to_string());
+        }
+        if device_status != "active" {
+            reasons.push("device_not_active".to_string());
+        }
+        return validated_denied_decision(provider_id, device_id, gpu_uuid, reasons, now);
+    };
+    let inventory = InventoryCandidate {
+        device_id: device_id.to_string(),
+        device_status,
+        gpu_uuid: inventory_row.get("gpu_uuid"),
+        gpu_status: inventory_row.get("gpu_status"),
+        inventory_public_key_id: inventory_row.get("public_key_id"),
+    };
+    let context =
+        load_admission_context(transaction, provider_id, provider_status, inventory).await?;
+    let decision = evaluate_runtime_admission(context, policy, now);
+    validate_runtime_admission_decision(&decision).map_err(SessionError::Invalid)?;
+    Ok(decision)
+}
+
+fn validated_denied_decision(
+    provider_id: &str,
+    device_id: &str,
+    gpu_uuid: &str,
+    mut reason_codes: Vec<String>,
+    now: DateTime<Utc>,
+) -> Result<RuntimeAdmissionDecision, SessionError> {
+    reason_codes.sort();
+    reason_codes.dedup();
+    let decision = RuntimeAdmissionDecision {
+        schema_version: RUNTIME_ADMISSION_SCHEMA_VERSION.to_string(),
+        provider_id: provider_id.to_string(),
+        device_id: device_id.to_string(),
+        gpu_uuid: gpu_uuid.to_string(),
+        status: "denied".to_string(),
+        reason_codes,
+        runtime_backend: None,
+        verification_id: None,
+        runtime_verification_fingerprint: None,
+        runtime_observation_hash: None,
+        evaluated_at: now.to_rfc3339(),
+    };
+    validate_runtime_admission_decision(&decision).map_err(SessionError::Invalid)?;
+    Ok(decision)
+}
+
+async fn load_admission_context<C>(
+    client: &C,
     provider_id: &str,
     provider_status: String,
     inventory: InventoryCandidate,
-) -> Result<AdmissionContext, SessionError> {
+) -> Result<AdmissionContext, SessionError>
+where
+    C: GenericClient + Sync,
+{
     let key_rows = client
         .query(
             "SELECT public_key_id FROM provider_public_keys WHERE provider_id = $1 AND device_id = $2 AND status = 'active' ORDER BY created_at DESC",
@@ -727,6 +818,39 @@ mod tests {
             decision
                 .reason_codes
                 .contains(&"runtime_verification_expired".to_string())
+        );
+    }
+
+    #[test]
+    fn stale_runtime_observation_is_denied_with_specific_reason() {
+        let now = Utc::now();
+        let mut context = context(now);
+        context.observation.as_mut().unwrap().server_received_at =
+            now - Duration::seconds(i64::from(policy().observation_max_age_seconds + 1));
+        let decision = evaluate_runtime_admission(context, &policy(), now);
+        assert!(
+            decision
+                .reason_codes
+                .contains(&"runtime_observation_stale".to_string())
+        );
+    }
+
+    #[test]
+    fn gpu_omitted_from_runtime_observation_is_denied() {
+        let now = Utc::now();
+        let mut context = context(now);
+        context
+            .observation
+            .as_mut()
+            .unwrap()
+            .payload
+            .gpu_uuids
+            .clear();
+        let decision = evaluate_runtime_admission(context, &policy(), now);
+        assert!(
+            decision
+                .reason_codes
+                .contains(&"gpu_missing_from_runtime".to_string())
         );
     }
 
