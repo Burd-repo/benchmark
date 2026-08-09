@@ -32,6 +32,14 @@ the job to `assigned`. The assignment may use a newer valid proof than the sched
 
 The execution specification never contains the raw data-plane credential, arbitrary command text, or an entrypoint override. The credential remains only in `data_plane` and must be redacted from logs; only its hash and expiry are persisted.
 
+Acceptance is a separate authority gate. `POST /v1/sessions/{session_id}/jobs/{job_id}/accept`
+locks the assigned job and its latest lease together, requires an unexpired `offered` lease with
+the exact provider/device/session/GPU binding, and re-evaluates Runtime Admission before execution
+can begin. A denied accept returns the job to `queued`, clears its credential hash and expiry,
+terminalizes an active lease, and records a non-secret acceptance-withheld audit event. A successful
+accept updates exactly one offered lease and audits the current Runtime Admission evidence in the
+same transaction.
+
 ## Execution States
 
 The contract defines these provider-runner states:
@@ -89,7 +97,7 @@ Implemented:
 - explicit transition validation with a fake executor in tests;
 - canonical approved-template list shared by protocol and Control Plane;
 - a separate Agent provider job worker and executor interface;
-- authenticated polling, local bundle/session/GPU/expiry validation, acceptance, ordered `provisioning`, `running`, and `uploading` events, and terminal result submission;
+- authenticated polling, local bundle/session/GPU/expiry validation, backend-authoritative acceptance revalidation, ordered `provisioning`, `running`, and `uploading` events, and terminal result submission;
 - one active execution at a time per worker, bounded in-memory replay rejection, authoritative deadline cancellation, and cooperative Agent shutdown;
 - deterministic fake-executor coverage for success, failure, invalid bundles, expiry, shutdown, and replay;
 - integration-only session-supervisor wiring for the provider job worker.

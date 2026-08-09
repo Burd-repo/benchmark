@@ -108,6 +108,19 @@ cleared, and `lease.assignment_withheld` records the current non-secret decision
 decision can reach the linearization point that hashes the new credential and moves the locked job
 to `assigned` in the same commit.
 
+## Acceptance revalidation
+
+`POST /v1/sessions/{session_id}/jobs/{job_id}/accept` evaluates Runtime Admission again after
+locking the assigned job and latest lease. The lease must still be an unexpired `offered` lease and
+must preserve the exact provider/device/session/GPU binding. This closes the authority window
+between credential issuance and the Agent's acknowledgement immediately before execution.
+
+Denied acceptance is persisted fail-closed before returning `409`: the job returns to `queued`, its
+credential hash and expiry are cleared, an active lease becomes `expired`, and a
+`lease.acceptance_withheld` audit event records reason codes and current non-secret admission
+evidence. Successful acceptance moves both job and exactly one lease to `accepted` in the same
+transaction.
+
 ## Versioning and migration
 
 Migration `0027_runtime_verified_admission` adds immutable runtime observations and extends runtime

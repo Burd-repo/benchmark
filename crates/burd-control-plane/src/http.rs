@@ -2325,7 +2325,13 @@ async fn accept_job(
         authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
     state
         .db
-        .accept_job(&request_id, &authorized, &job_id, &payload)
+        .accept_job(
+            &request_id,
+            &authorized,
+            &job_id,
+            &payload,
+            &runtime_admission_policy(&state.config),
+        )
         .await
         .map(Json)
         .map_err(|error| session_api_error(error, request_id))

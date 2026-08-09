@@ -360,15 +360,21 @@ pub(crate) async fn load_job_lease_in_transaction(
 
 pub(crate) async fn mark_lease_accepted_for_job(
     transaction: &Transaction<'_>,
+    lease_id: &str,
     job_id: &str,
     now: &str,
 ) -> Result<(), SessionError> {
-    transaction
+    let updated = transaction
         .execute(
-            "UPDATE job_leases SET status = 'accepted', accepted_at = COALESCE(accepted_at, $1), updated_at = $1 WHERE job_id = $2 AND status = 'offered'",
-            &[&now, &job_id],
+            "UPDATE job_leases SET status = 'accepted', accepted_at = COALESCE(accepted_at, $1), updated_at = $1 WHERE lease_id = $2 AND job_id = $3 AND status = 'offered' AND expires_at > $1",
+            &[&now, &lease_id, &job_id],
         )
         .await?;
+    if updated != 1 {
+        return Err(SessionError::Conflict(
+            "job acceptance requires exactly one current offered lease".to_string(),
+        ));
+    }
     Ok(())
 }
 

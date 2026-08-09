@@ -772,7 +772,15 @@ verified receipt. Successful terminal results must match every verified upload.
 
 ### `POST /v1/sessions/{session_id}/jobs/{job_id}/accept`
 
-Device-session endpoint. Moves an assigned job to `accepted` and records optional provider status text.
+Device-session endpoint and final pre-execution authority gate. It locks the assigned job and latest
+lease together, requires an unexpired `offered` lease with exact provider/device/session/GPU
+binding, and re-evaluates Runtime Admission using server time. Success moves the job and exactly one
+lease to `accepted` atomically and records optional provider status text plus non-secret admission
+evidence.
+
+Missing, expired, terminal, mismatched, or newly denied authority returns `409` after invalidating
+the job credential, returning the job to `queued`, terminalizing any active lease, and persisting an
+acceptance-withheld audit event. A zero-row lease acknowledgement is never treated as success.
 
 ### `POST /v1/sessions/{session_id}/jobs/{job_id}/events`
 
