@@ -979,6 +979,25 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
+            "/v1/sessions/{session_id}/jobs/{job_id}/control": {
+                "get": {
+                    "summary": "Poll the authoritative directive for one exact active job assignment",
+                    "security": [{ "deviceBearer": [] }],
+                    "parameters": [{
+                        "name": "lease_id",
+                        "in": "query",
+                        "required": true,
+                        "schema": { "type": "string", "minLength": 1, "maxLength": 128 }
+                    }],
+                    "responses": {
+                        "200": { "description": "continue or cancel directive returned" },
+                        "400": { "description": "lease_id query parameter missing or invalid" },
+                        "401": { "description": "device or session authority lost" },
+                        "404": { "description": "job not found" },
+                        "409": { "description": "assignment is stale, mismatched, or no longer executable" }
+                    }
+                }
+            },
             "/v1/sessions/{session_id}/jobs/{job_id}/events": {
                 "post": {
                     "summary": "Append a sequenced provider job progress event",
@@ -3099,9 +3118,10 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
         "ProviderJobCancellationPolicy".to_string(),
         serde_json::json!({
             "type": "object",
-            "required": ["poll_interval_seconds", "graceful_stop_seconds", "force_kill_after_seconds"],
+            "required": ["poll_interval_seconds", "max_control_silence_seconds", "graceful_stop_seconds", "force_kill_after_seconds"],
             "properties": {
                 "poll_interval_seconds": { "type": "integer", "minimum": 1 },
+                "max_control_silence_seconds": { "type": "integer", "minimum": 1 },
                 "graceful_stop_seconds": { "type": "integer", "minimum": 1 },
                 "force_kill_after_seconds": { "type": "integer", "minimum": 1 }
             }
@@ -3126,7 +3146,7 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
             "type": "object",
             "required": ["schema_version", "policy_version", "job_schema_version", "lease_schema_version", "data_plane_schema_version", "job_id", "lease_id", "provider_id", "device_id", "session_id", "workload_type", "template_id", "image_ref", "gpu_uuid", "backend", "initial_state", "timeout_seconds", "lease_expires_at", "data_plane_credential_expires_at", "runtime", "cancellation", "cleanup"],
             "properties": {
-                "schema_version": { "type": "string", "const": "burd-provider-job-execution-v2" },
+                "schema_version": { "type": "string", "const": "burd-provider-job-execution-v3" },
                 "policy_version": { "type": "string", "const": "burd-provider-job-runtime-policy-v2" },
                 "job_schema_version": { "type": "string" },
                 "lease_schema_version": { "type": "string" },
@@ -3175,6 +3195,22 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
             "properties": {
                 "lease_id": { "type": "string" },
                 "status_message": { "type": ["string", "null"] }
+            }
+        }),
+    );
+    schemas.insert(
+        "JobExecutionControlResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["schema_version", "request_id", "job_id", "lease_id", "directive", "server_time"],
+            "properties": {
+                "schema_version": { "type": "string", "const": "burd-job-execution-control-v1" },
+                "request_id": { "type": "string" },
+                "job_id": { "type": "string" },
+                "lease_id": { "type": "string" },
+                "directive": { "type": "string", "enum": ["continue", "cancel"] },
+                "reason_code": { "type": ["string", "null"] },
+                "server_time": { "type": "string", "format": "date-time" }
             }
         }),
     );
@@ -3511,6 +3547,13 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
         "post",
         "200",
         "JobResponse",
+    );
+    set_json_response(
+        document,
+        "/v1/sessions/{session_id}/jobs/{job_id}/control",
+        "get",
+        "200",
+        "JobExecutionControlResponse",
     );
     set_request_body(
         document,
@@ -4683,6 +4726,7 @@ mod tests {
             "ProviderJobExecutionSpec",
             "NextJobResponse",
             "AcceptJobRequest",
+            "JobExecutionControlResponse",
             "JobEventRequest",
             "JobEventResponse",
             "SubmitJobResultRequest",
@@ -4708,7 +4752,7 @@ mod tests {
         );
         assert_eq!(
             schemas["ProviderJobExecutionSpec"]["properties"]["schema_version"]["const"],
-            "burd-provider-job-execution-v2"
+            "burd-provider-job-execution-v3"
         );
         assert_eq!(
             schemas["ProviderJobExecutionSpec"]["properties"]["policy_version"]["const"],
@@ -4738,6 +4782,10 @@ mod tests {
         assert_eq!(
             schemas["AcceptJobRequest"]["required"],
             serde_json::json!(["lease_id"])
+        );
+        assert_eq!(
+            schemas["ProviderJobCancellationPolicy"]["properties"]["max_control_silence_seconds"]["minimum"],
+            1
         );
 
         let paths = document["paths"].as_object().unwrap();
@@ -4772,6 +4820,15 @@ mod tests {
                 "post"
             ),
             "#/components/schemas/AcceptJobRequest"
+        );
+        assert_eq!(
+            response_schema_ref(
+                paths,
+                "/v1/sessions/{session_id}/jobs/{job_id}/control",
+                "get",
+                "200"
+            ),
+            "#/components/schemas/JobExecutionControlResponse"
         );
         assert_eq!(
             request_schema_ref(

@@ -25,6 +25,7 @@ use crate::security_hardening::SecurityPolicy;
 use crate::telemetry::TelemetryPolicy;
 use crate::verification_policy::{RecurringProofProfile, VerificationPolicy};
 use axum::body::{Body, Bytes};
+use axum::extract::rejection::QueryRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -171,6 +172,11 @@ struct DeviceGpuInventoryListQuery {
 struct JobListQuery {
     #[serde(default)]
     limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct JobExecutionControlQuery {
+    lease_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -433,6 +439,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/sessions/{session_id}/jobs/{job_id}/accept",
             post(accept_job),
+        )
+        .route(
+            "/v1/sessions/{session_id}/jobs/{job_id}/control",
+            get(job_execution_control),
         )
         .route(
             "/v1/sessions/{session_id}/jobs/{job_id}/events",
@@ -2337,6 +2347,26 @@ async fn accept_job(
         .map_err(|error| session_api_error(error, request_id))
 }
 
+async fn job_execution_control(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, job_id)): Path<(String, String)>,
+    query: Result<Query<JobExecutionControlQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let Query(query) = query.map_err(|_| {
+        ApiError::invalid_request("lease_id query parameter is required", request_id.clone())
+    })?;
+    let authorized =
+        authorize_session_headers(&state, &headers, &session_id, &request_id, false).await?;
+    state
+        .db
+        .job_execution_control(&request_id, &authorized, &job_id, &query.lease_id)
+        .await
+        .map(|response| sensitive_json_response(StatusCode::OK, response))
+        .map_err(|error| session_api_error(error, request_id))
+}
+
 async fn record_job_event(
     State(state): State<Arc<AppState>>,
     Path((session_id, job_id)): Path<(String, String)>,
@@ -3546,6 +3576,25 @@ mod tests {
         assert_eq!(
             response.headers().get(header::PRAGMA),
             Some(&HeaderValue::from_static("no-cache"))
+        );
+    }
+
+    #[tokio::test]
+    async fn job_execution_control_query_failure_uses_bn00_error_envelope() {
+        let response = send_request(
+            test_app("postgres://localhost/unavailable"),
+            Method::GET,
+            "/v1/sessions/session_1/jobs/job_1/control",
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let value = response_json(response).await;
+        assert_error_envelope(&value, "invalid_request");
+        assert_eq!(
+            value["error"]["message"],
+            "lease_id query parameter is required"
         );
     }
 

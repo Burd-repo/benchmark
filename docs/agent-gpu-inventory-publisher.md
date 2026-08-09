@@ -66,8 +66,6 @@ the non-secret inventory hash.
 
 ## Deferred work
 
-- exact assignment/lease acknowledgement binding;
-- authoritative remote cancellation discovery while a job is active;
 - production Provider Job Worker activation;
 - non-NVIDIA inventory backends;
 - persistent local publication state across Agent restarts.

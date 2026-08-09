@@ -708,7 +708,7 @@ Initial approved runtime templates:
 Backend-authoritative execution binding now implemented:
 
 - the Control Plane chooses the approved template and image digest;
-- `burd-provider-job-execution-v2` binds provider, device, session, GPU UUID, job, lease, workload policy, timeout, and expiries;
+- `burd-provider-job-execution-v3` binds provider, device, session, GPU UUID, job, lease, workload policy, timeout, expiries, and a maximum Control Plane silence bound;
 - `burd-provider-job-runtime-policy-v2` requires a Linux container with Docker,
   CUDA, and NVIDIA without requiring a Linux physical host;
 - the assignment includes a separate job-specific data-plane credential that authorizes scoped Control Plane byte transfer and never enters the workload container; external signed object-storage URLs are not implemented;
@@ -785,6 +785,21 @@ the backend returns `409` after invalidating its credential, returning the job t
 terminalizing its active lease, and persisting an acceptance-withheld audit event. Missing
 `lease_id` is invalid JSON; there is no fallback to the latest lease.
 
+### `GET /v1/sessions/{session_id}/jobs/{job_id}/control?lease_id={lease_id}`
+
+Device-session endpoint for active execution control. It locks and validates the exact persisted
+assignment binding across job, lease, provider, device and authenticated session. It returns a
+versioned `continue | cancel` directive with the exact `job_id` and `lease_id`; it does not return
+the complete job or the administrator's free-form cancellation reason. Responses set
+`Cache-Control: no-store` so a stale `continue` directive cannot be reused.
+
+`continue` is returned only while job and lease states consistently represent that execution.
+Administrative cancellation and terminal job state return `cancel`. A missing, stale, mismatched or
+replaced assignment returns `404` or `409`; the Agent treats those responses and session authority
+loss as a local stop without mutating any newer assignment. Transport and server errors are retried
+only until the execution policy's independent `max_control_silence_seconds` limit, after which the
+Agent stops fail closed.
+
 ### `POST /v1/sessions/{session_id}/jobs/{job_id}/events`
 
 Device-session endpoint. Appends a unique sequence number per job. Event types can update status to `provisioning`, `running`, or `uploading`; other events update progress/message metadata only.
@@ -799,7 +814,9 @@ Device-session endpoint. Accepts final `succeeded` or `failed` result metadata, 
 - `GET /v1/providers/{provider_id}/jobs` lists provider jobs with a bounded limit.
 - `GET /v1/jobs/{job_id}/leases` lists lease history for one job.
 - `GET /v1/providers/{provider_id}/leases` lists provider lease history with a bounded limit.
-- `POST /v1/jobs/{job_id}/cancel` moves a non-terminal job to `cancelled` and closes any active lease.
+- `POST /v1/jobs/{job_id}/cancel` moves a non-terminal job to `cancelled`, closes any active lease,
+  invalidates its data-plane credential and becomes discoverable by the exact-assignment control
+  endpoint. The Agent cleans up and does not submit a contradictory failed result.
 
 BN-16 adds backend-owned marketplace listing snapshots. The disconnected provider executor and byte-level artifact plane now exist, but customer artifact ingress, external object-storage signing/adapters, controlled production activation, customer reservations, billing, Pix, payouts, multi-GPU jobs, and multi-provider jobs remain unimplemented.
 

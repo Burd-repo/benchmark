@@ -120,7 +120,7 @@ impl HttpProviderJobDataPlane {
 
     fn download_input(
         &self,
-        assignment: &ProviderJobAssignment,
+        credential: &str,
         artifact: &JobArtifact,
         grant_url: &JobDataPlaneUrl,
         workspace: &ProviderJobExecutionWorkspace,
@@ -143,10 +143,7 @@ impl HttpProviderJobDataPlane {
             .http_status_as_error(false)
             .build();
         let mut response = request
-            .header(
-                "Authorization",
-                &format!("Bearer {}", assignment.data_plane.credential),
-            )
+            .header("Authorization", &format!("Bearer {credential}"))
             .call()
             .map_err(|_| data_plane_error("artifact_download_transport"))?;
         if !response.status().is_success() {
@@ -280,13 +277,15 @@ impl HttpProviderJobDataPlane {
                 sha256: &sha256,
             },
             file,
+            cancellation,
         )
     }
 
-    fn send_output(
+    fn send_output<R: Read>(
         &self,
         upload: OutputUpload<'_>,
-        file: File,
+        reader: R,
+        cancellation: &JobCancellation,
     ) -> Result<JobArtifact, ProviderJobExecutionError> {
         let url = self.scoped_url(upload.grant_url)?;
         let request = ureq::put(&url)
@@ -295,6 +294,10 @@ impl HttpProviderJobDataPlane {
             .max_redirects(0)
             .http_status_as_error(false)
             .build();
+        let mut reader = CancellableReader {
+            inner: reader,
+            cancellation: cancellation.clone(),
+        };
         let mut response = request
             .header("Authorization", &format!("Bearer {}", upload.credential))
             .header("Content-Length", &upload.size.to_string())
@@ -307,7 +310,7 @@ impl HttpProviderJobDataPlane {
                     .as_deref()
                     .unwrap_or("application/octet-stream"),
             )
-            .send(file)
+            .send(ureq::SendBody::from_reader(&mut reader))
             .map_err(|_| data_plane_error("artifact_upload_transport"))?;
         if !response.status().is_success() {
             return Err(data_plane_error("artifact_upload_rejected"));
@@ -325,6 +328,23 @@ impl HttpProviderJobDataPlane {
             return Err(data_plane_error("artifact_upload_receipt_mismatch"));
         }
         Ok(receipt.artifact)
+    }
+}
+
+struct CancellableReader<R> {
+    inner: R,
+    cancellation: JobCancellation,
+}
+
+impl<R: Read> Read for CancellableReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancellation.requested() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "provider job transfer cancelled",
+            ));
+        }
+        self.inner.read(buffer)
     }
 }
 
@@ -377,11 +397,19 @@ impl ProviderJobDataPlane for HttpProviderJobDataPlane {
                 let url = urls
                     .get(artifact.artifact_id.as_str())
                     .ok_or_else(|| data_plane_error("artifact_download_grant_missing"))?;
-                self.download_input(assignment, artifact, url, &workspace, cancellation)
+                self.download_input(
+                    &assignment.data_plane.credential,
+                    artifact,
+                    url,
+                    &workspace,
+                    cancellation,
+                )
             });
         if let Err(error) = prepared {
-            let _ = self.cleanup_workspace(&workspace);
-            return Err(error);
+            return match self.cleanup_workspace(&workspace) {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(cleanup_error),
+            };
         }
         Ok(Some(workspace))
     }
@@ -648,10 +676,228 @@ mod tests {
                     sha256: &sha256,
                 },
                 File::open(&path).unwrap(),
+                &JobCancellation::default(),
             )
             .unwrap();
         assert_eq!(receipt.sha256.as_deref(), Some(sha256.as_str()));
         server.join().unwrap();
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn active_http_download_stops_after_cancellation() {
+        let total_size = 4 * 1024 * 1024;
+        let bytes = vec![b'd'; total_size];
+        let mut digest = Sha256Accumulator::new();
+        digest.update(&bytes);
+        let artifact = JobArtifact {
+            artifact_id: "input.bin".to_string(),
+            role: "input".to_string(),
+            object_key: "jobs/job_1/input.bin".to_string(),
+            sha256: Some(format!("sha256:{}", digest.finish_hex())),
+            size_bytes: Some(total_size as u64),
+            content_type: Some("application/octet-stream".to_string()),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {total_size}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            for chunk in bytes.chunks(8 * 1024) {
+                if stream.write_all(chunk).is_err() || stream.flush().is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+        });
+
+        let root = std::env::temp_dir().join(format!(
+            "burd-active-download-{}-{}",
+            std::process::id(),
+            random_token("test").unwrap()
+        ));
+        let workspace = ProviderJobExecutionWorkspace {
+            inputs_dir: root.join("inputs"),
+            outputs_dir: root.join("outputs"),
+            root: root.clone(),
+        };
+        fs::create_dir_all(&workspace.inputs_dir).unwrap();
+        fs::create_dir_all(&workspace.outputs_dir).unwrap();
+        let partial = workspace.inputs_dir.join(".input.bin.partial");
+        let cancellation = JobCancellation::default();
+        let cancellation_observer = cancellation.clone();
+        let canceller = thread::spawn(move || {
+            for _ in 0..1_000 {
+                if fs::metadata(&partial).is_ok_and(|metadata| metadata.len() > 0) {
+                    cancellation_observer.cancel();
+                    return;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            panic!("download did not make progress before cancellation deadline");
+        });
+        let mut client =
+            HttpProviderJobDataPlane::new(format!("http://{address}"), root.clone()).unwrap();
+        client.timeout = Duration::from_secs(5);
+        let grant_url = JobDataPlaneUrl {
+            artifact_id: artifact.artifact_id.clone(),
+            method: "GET".to_string(),
+            url: "/download".to_string(),
+            expires_at: "2026-08-08T00:00:00Z".to_string(),
+        };
+        let started = std::time::Instant::now();
+        let error = client
+            .download_input(
+                "jobcred_test_only",
+                &artifact,
+                &grant_url,
+                &workspace,
+                &cancellation,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "execution_cancelled");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        canceller.join().unwrap();
+        server.join().unwrap();
+        assert!(!workspace.inputs_dir.join(".input.bin.partial").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn active_http_upload_propagates_reader_cancellation() {
+        struct CancelAfterFirstChunk {
+            bytes: std::io::Cursor<Vec<u8>>,
+            cancellation: JobCancellation,
+            first_read: bool,
+        }
+
+        impl Read for CancelAfterFirstChunk {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let limit = buffer.len().min(8 * 1024);
+                let read = self.bytes.read(&mut buffer[..limit])?;
+                if self.first_read && read > 0 {
+                    self.first_read = false;
+                    self.cancellation.cancel();
+                }
+                Ok(read)
+            }
+        }
+
+        let bytes = vec![b'u'; 4 * TRANSFER_BUFFER_BYTES];
+        let mut digest = Sha256Accumulator::new();
+        digest.update(&bytes);
+        let sha256 = format!("sha256:{}", digest.finish_hex());
+        let expected = JobArtifact {
+            artifact_id: "output.bin".to_string(),
+            role: "output".to_string(),
+            object_key: "jobs/job_1/output.bin".to_string(),
+            sha256: None,
+            size_bytes: Some(bytes.len() as u64),
+            content_type: Some("application/octet-stream".to_string()),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut received = Vec::new();
+            let mut buffer = [0_u8; 8 * 1024];
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => received.extend_from_slice(&buffer[..read]),
+                }
+            }
+            assert!(received.windows(4).any(|part| part == b"\r\n\r\n"));
+        });
+
+        let cancellation = JobCancellation::default();
+        let reader = CancelAfterFirstChunk {
+            bytes: std::io::Cursor::new(bytes.clone()),
+            cancellation: cancellation.clone(),
+            first_read: true,
+        };
+        let mut client =
+            HttpProviderJobDataPlane::new(format!("http://{address}"), "work").unwrap();
+        client.timeout = Duration::from_secs(5);
+        let grant_url = JobDataPlaneUrl {
+            artifact_id: expected.artifact_id.clone(),
+            method: "PUT".to_string(),
+            url: "/upload".to_string(),
+            expires_at: "2026-08-08T00:00:00Z".to_string(),
+        };
+        let started = std::time::Instant::now();
+        let error = client
+            .send_output(
+                OutputUpload {
+                    credential: "jobcred_test_only",
+                    job_id: "job_1",
+                    expected: &expected,
+                    grant_url: &grant_url,
+                    size: bytes.len() as u64,
+                    sha256: &sha256,
+                },
+                reader,
+                &cancellation,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "artifact_upload_transport");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn upload_reader_stops_before_reading_after_cancellation() {
+        let cancellation = JobCancellation::default();
+        cancellation.cancel();
+        let mut reader = CancellableReader {
+            inner: std::io::Cursor::new(b"must not be sent"),
+            cancellation,
+        };
+        let error = reader.read(&mut [0_u8; 8]).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    }
+
+    #[test]
+    fn upload_reader_stops_between_progress_chunks() {
+        struct CancelAfterRead {
+            bytes: std::io::Cursor<&'static [u8]>,
+            cancellation: JobCancellation,
+        }
+
+        impl Read for CancelAfterRead {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.bytes.read(buffer)?;
+                if read > 0 {
+                    self.cancellation.cancel();
+                }
+                Ok(read)
+            }
+        }
+
+        let cancellation = JobCancellation::default();
+        let mut reader = CancellableReader {
+            inner: CancelAfterRead {
+                bytes: std::io::Cursor::new(b"first chunk then stop"),
+                cancellation: cancellation.clone(),
+            },
+            cancellation,
+        };
+        assert!(reader.read(&mut [0_u8; 5]).unwrap() > 0);
+        let error = reader.read(&mut [0_u8; 5]).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
     }
 }

@@ -6,9 +6,10 @@ use crate::provider_job_executor::{
 use crate::remote_enrollment::join_url;
 use burd_hardware::{NvidiaTelemetryCollection, collect_nvidia_telemetry};
 use burd_protocol::{
-    AcceptJobRequest, JobEventRequest, JobEventResponse, JobResponse, NextJobResponse,
-    RemoteEnrollmentState, RemoteSessionState, SubmitJobResultRequest, SubmitJobResultResponse,
-    load_remote_enrollment, load_remote_session, validate_next_job_execution_response,
+    AcceptJobRequest, JobEventRequest, JobEventResponse, JobExecutionControlResponse,
+    JobExecutionDirective, JobResponse, NextJobResponse, RemoteEnrollmentState, RemoteSessionState,
+    SubmitJobResultRequest, SubmitJobResultResponse, load_remote_enrollment, load_remote_session,
+    validate_job_execution_control_response, validate_next_job_execution_response,
     validate_provider_job_execution_bundle,
 };
 use chrono::{DateTime, Utc};
@@ -18,7 +19,8 @@ use serde_json::json;
 use std::collections::{HashSet, VecDeque};
 use std::fmt::{self, Display, Formatter};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool as SyncAtomicBool, Ordering as AtomicOrdering};
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 const JOB_POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -100,6 +102,14 @@ pub trait ProviderJobControlPlane: Send + Sync + 'static {
         job_id: &str,
         request: &AcceptJobRequest,
     ) -> Result<JobResponse, ProviderJobControlError>;
+
+    fn execution_control(
+        &self,
+        context: &ProviderJobWorkerContext,
+        job_id: &str,
+        lease_id: &str,
+        timeout: Duration,
+    ) -> Result<JobExecutionControlResponse, ProviderJobControlError>;
 
     fn record_event(
         &self,
@@ -225,6 +235,21 @@ impl ProviderJobControlPlane for LocalProviderJobControlPlane {
         post_json(&url, &enrollment, &session, request)
     }
 
+    fn execution_control(
+        &self,
+        context: &ProviderJobWorkerContext,
+        job_id: &str,
+        lease_id: &str,
+        timeout: Duration,
+    ) -> Result<JobExecutionControlResponse, ProviderJobControlError> {
+        let (enrollment, session) = self.load_bound_auth_state(context)?;
+        let url = format!(
+            "{}?lease_id={lease_id}",
+            job_session_url(&session, job_id, "control")
+        );
+        get_json_with_timeout(&url, &enrollment, &session, timeout)
+    }
+
     fn record_event(
         &self,
         context: &ProviderJobWorkerContext,
@@ -260,9 +285,18 @@ fn get_json<T: DeserializeOwned>(
     enrollment: &RemoteEnrollmentState,
     session: &RemoteSessionState,
 ) -> Result<T, ProviderJobControlError> {
+    get_json_with_timeout(url, enrollment, session, JOB_HTTP_TIMEOUT)
+}
+
+fn get_json_with_timeout<T: DeserializeOwned>(
+    url: &str,
+    enrollment: &RemoteEnrollmentState,
+    session: &RemoteSessionState,
+    timeout: Duration,
+) -> Result<T, ProviderJobControlError> {
     let request = ureq::get(url)
         .config()
-        .timeout_global(Some(JOB_HTTP_TIMEOUT))
+        .timeout_global(Some(timeout))
         .http_status_as_error(false)
         .build();
     let mut response = request
@@ -514,12 +548,42 @@ enum AssignmentDisposition {
     Shutdown,
 }
 
+#[derive(Clone, Default)]
+struct RemoteCancellationState {
+    requested: Arc<SyncAtomicBool>,
+}
+
+impl RemoteCancellationState {
+    fn requested(&self) -> bool {
+        self.requested.load(AtomicOrdering::SeqCst)
+    }
+
+    fn request(
+        &self,
+        cancellation: &JobCancellation,
+        job_id: &str,
+        lease_id: &str,
+        reason: &'static str,
+    ) {
+        let first_request = !self.requested.swap(true, AtomicOrdering::SeqCst);
+        cancellation.cancel();
+        if first_request {
+            log_worker_event(
+                "provider_job_remote_cancellation_requested",
+                Some(job_id),
+                Some(lease_id),
+                reason,
+            );
+        }
+    }
+}
+
 async fn run_assignment(
     control_plane: Arc<dyn ProviderJobControlPlane>,
     executor: Arc<dyn ProviderJobExecutor>,
     data_plane: Arc<dyn ProviderJobDataPlane>,
     context: ProviderJobWorkerContext,
-    mut assignment: ProviderJobAssignment,
+    assignment: ProviderJobAssignment,
     shutdown: &mut watch::Receiver<bool>,
     shutdown_grace: Duration,
 ) -> Result<AssignmentDisposition, String> {
@@ -576,14 +640,107 @@ async fn run_assignment(
         Ok(_) => {}
     }
 
+    let cancellation = JobCancellation::default();
+    let remote_cancellation = RemoteCancellationState::default();
+    let cancellation_policy = assignment.execution.cancellation.clone();
+    let (watcher_stop_tx, watcher_stop_rx) = watch::channel(false);
+    let mut watcher = tokio::spawn(watch_remote_cancellation(
+        RemoteCancellationWatch {
+            control_plane: Arc::clone(&control_plane),
+            context: context.clone(),
+            job_id: job_id.clone(),
+            lease_id: lease_id.clone(),
+            policy: cancellation_policy.clone(),
+            cancellation: cancellation.clone(),
+            remote_cancellation: remote_cancellation.clone(),
+        },
+        watcher_stop_rx,
+    ));
+    let result = run_accepted_assignment(
+        AcceptedAssignmentRun {
+            control_plane,
+            executor,
+            data_plane,
+            context,
+            deadline,
+            cancellation,
+            remote_cancellation,
+            shutdown_grace,
+        },
+        assignment,
+        shutdown,
+    )
+    .await;
+    let _ = watcher_stop_tx.send(true);
+    let watcher_join_timeout =
+        Duration::from_secs(u64::from(cancellation_policy.poll_interval_seconds.max(1)))
+            + Duration::from_secs(1);
+    match tokio::time::timeout(watcher_join_timeout, &mut watcher).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => log_worker_event(
+            "provider_job_cancellation_watcher_stop_failed",
+            Some(&job_id),
+            Some(&lease_id),
+            "watcher_task_failed",
+        ),
+        Err(_) => {
+            watcher.abort();
+            let _ = watcher.await;
+            log_worker_event(
+                "provider_job_cancellation_watcher_stop_failed",
+                Some(&job_id),
+                Some(&lease_id),
+                "watcher_stop_timeout",
+            );
+        }
+    }
+    result
+}
+
+struct AcceptedAssignmentRun {
+    control_plane: Arc<dyn ProviderJobControlPlane>,
+    executor: Arc<dyn ProviderJobExecutor>,
+    data_plane: Arc<dyn ProviderJobDataPlane>,
+    context: ProviderJobWorkerContext,
+    deadline: DateTime<Utc>,
+    cancellation: JobCancellation,
+    remote_cancellation: RemoteCancellationState,
+    shutdown_grace: Duration,
+}
+
+async fn run_accepted_assignment(
+    run: AcceptedAssignmentRun,
+    mut assignment: ProviderJobAssignment,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<AssignmentDisposition, String> {
+    let AcceptedAssignmentRun {
+        control_plane,
+        executor,
+        data_plane,
+        context,
+        deadline,
+        cancellation,
+        remote_cancellation,
+        shutdown_grace,
+    } = run;
+    let job_id = assignment.job.job_id.clone();
+    if remote_cancellation.requested() {
+        return finish_remote_cancellation(&*data_plane, &assignment);
+    }
+
     let Some(provisioning) = report_bound_event(
-        Arc::clone(&control_plane),
-        &context,
-        &job_id,
-        JobEventTransition {
-            sequence: 1,
-            event_type: "provisioning",
-            expected_status: "provisioning",
+        BoundJobEventReport {
+            control_plane: Arc::clone(&control_plane),
+            context: &context,
+            job_id: &job_id,
+            lease_id: &assignment.lease.lease_id,
+            transition: JobEventTransition {
+                sequence: 1,
+                event_type: "provisioning",
+                expected_status: "provisioning",
+            },
+            cancellation: &cancellation,
+            remote_cancellation: &remote_cancellation,
         },
         shutdown,
         shutdown_grace,
@@ -592,6 +749,9 @@ async fn run_assignment(
     else {
         return Ok(AssignmentDisposition::Shutdown);
     };
+    if remote_cancellation.requested() {
+        return finish_remote_cancellation(&*data_plane, &assignment);
+    }
     if let Err(error) = provisioning {
         return submit_failed_best_effort(
             Arc::clone(&control_plane),
@@ -604,7 +764,6 @@ async fn run_assignment(
         .await;
     }
 
-    let cancellation = JobCancellation::default();
     let prepared = run_provider_stage(
         {
             let data_plane = Arc::clone(&data_plane);
@@ -620,6 +779,9 @@ async fn run_assignment(
     .await?;
     match prepared {
         ProviderStage::Shutdown => return Ok(AssignmentDisposition::Shutdown),
+        ProviderStage::Deadline if remote_cancellation.requested() => {
+            return finish_remote_cancellation(&*data_plane, &assignment);
+        }
         ProviderStage::Deadline => {
             return submit_failed_best_effort(
                 Arc::clone(&control_plane),
@@ -634,6 +796,15 @@ async fn run_assignment(
             )
             .await;
         }
+        ProviderStage::Completed(Err(error)) if remote_cancellation.requested() => {
+            if matches!(
+                error.code(),
+                "workspace_cleanup_failed" | "workspace_cleanup_scope_invalid"
+            ) {
+                return remote_cancellation_cleanup_failure(&assignment);
+            }
+            return finish_remote_cancellation(&*data_plane, &assignment);
+        }
         ProviderStage::Completed(Err(error)) => {
             return submit_failed_best_effort(
                 Arc::clone(&control_plane),
@@ -647,15 +818,23 @@ async fn run_assignment(
         }
         ProviderStage::Completed(Ok(workspace)) => assignment.workspace = workspace,
     }
+    if remote_cancellation.requested() {
+        return finish_remote_cancellation(&*data_plane, &assignment);
+    }
 
     let Some(running) = report_bound_event(
-        Arc::clone(&control_plane),
-        &context,
-        &job_id,
-        JobEventTransition {
-            sequence: 2,
-            event_type: "running",
-            expected_status: "running",
+        BoundJobEventReport {
+            control_plane: Arc::clone(&control_plane),
+            context: &context,
+            job_id: &job_id,
+            lease_id: &assignment.lease.lease_id,
+            transition: JobEventTransition {
+                sequence: 2,
+                event_type: "running",
+                expected_status: "running",
+            },
+            cancellation: &cancellation,
+            remote_cancellation: &remote_cancellation,
         },
         shutdown,
         shutdown_grace,
@@ -665,6 +844,9 @@ async fn run_assignment(
         let _ = cleanup_assignment_workspace(&*data_plane, &assignment);
         return Ok(AssignmentDisposition::Shutdown);
     };
+    if remote_cancellation.requested() {
+        return finish_remote_cancellation(&*data_plane, &assignment);
+    }
     if let Err(error) = running {
         let error = cleanup_or_replace(&*data_plane, &assignment, error);
         return submit_failed_best_effort(
@@ -691,6 +873,9 @@ async fn run_assignment(
         shutdown_grace,
     )
     .await?;
+    if remote_cancellation.requested() {
+        return finish_remote_cancellation(&*data_plane, &assignment);
+    }
 
     let mut outcome = match execution {
         ProviderStage::Shutdown => {
@@ -752,13 +937,18 @@ async fn run_assignment(
     }
 
     let Some(uploading) = report_bound_event(
-        Arc::clone(&control_plane),
-        &context,
-        &job_id,
-        JobEventTransition {
-            sequence: 3,
-            event_type: "uploading",
-            expected_status: "uploading",
+        BoundJobEventReport {
+            control_plane: Arc::clone(&control_plane),
+            context: &context,
+            job_id: &job_id,
+            lease_id: &assignment.lease.lease_id,
+            transition: JobEventTransition {
+                sequence: 3,
+                event_type: "uploading",
+                expected_status: "uploading",
+            },
+            cancellation: &cancellation,
+            remote_cancellation: &remote_cancellation,
         },
         shutdown,
         shutdown_grace,
@@ -768,6 +958,9 @@ async fn run_assignment(
         let _ = cleanup_assignment_workspace(&*data_plane, &assignment);
         return Ok(AssignmentDisposition::Shutdown);
     };
+    if remote_cancellation.requested() {
+        return finish_remote_cancellation(&*data_plane, &assignment);
+    }
     if let Err(error) = uploading {
         let error = cleanup_or_replace(&*data_plane, &assignment, error);
         return submit_failed_best_effort(
@@ -794,6 +987,9 @@ async fn run_assignment(
         shutdown_grace,
     )
     .await?;
+    if remote_cancellation.requested() {
+        return finish_remote_cancellation(&*data_plane, &assignment);
+    }
     let artifacts = match uploaded {
         ProviderStage::Shutdown => {
             let _ = cleanup_assignment_workspace(&*data_plane, &assignment);
@@ -830,6 +1026,9 @@ async fn run_assignment(
         ProviderStage::Completed(Ok(artifacts)) => artifacts,
     };
     outcome.result_artifacts = artifacts;
+    if remote_cancellation.requested() {
+        return finish_remote_cancellation(&*data_plane, &assignment);
+    }
     if let Err(error) = cleanup_assignment_workspace(&*data_plane, &assignment) {
         return submit_failed_best_effort(
             Arc::clone(&control_plane),
@@ -850,6 +1049,166 @@ async fn run_assignment(
         shutdown_grace,
     )
     .await
+}
+
+struct RemoteCancellationWatch {
+    control_plane: Arc<dyn ProviderJobControlPlane>,
+    context: ProviderJobWorkerContext,
+    job_id: String,
+    lease_id: String,
+    policy: burd_protocol::ProviderJobCancellationPolicy,
+    cancellation: JobCancellation,
+    remote_cancellation: RemoteCancellationState,
+}
+
+async fn watch_remote_cancellation(
+    watch: RemoteCancellationWatch,
+    mut stop: watch::Receiver<bool>,
+) {
+    let RemoteCancellationWatch {
+        control_plane,
+        context,
+        job_id,
+        lease_id,
+        policy,
+        cancellation,
+        remote_cancellation,
+    } = watch;
+    let poll_interval = Duration::from_secs(u64::from(policy.poll_interval_seconds.max(1)));
+    let max_silence = Duration::from_secs(u64::from(
+        policy
+            .max_control_silence_seconds
+            .max(policy.poll_interval_seconds.max(1)),
+    ));
+    let mut last_authoritative_response = Instant::now();
+
+    loop {
+        if *stop.borrow() {
+            return;
+        }
+        let remaining_silence = max_silence.saturating_sub(last_authoritative_response.elapsed());
+        if remaining_silence.is_zero() {
+            remote_cancellation.request(
+                &cancellation,
+                &job_id,
+                &lease_id,
+                "control_silence_exceeded",
+            );
+            return;
+        }
+        let request_timeout = poll_interval.min(remaining_silence);
+        let request_control_plane = Arc::clone(&control_plane);
+        let request_context = context.clone();
+        let request_job_id = job_id.clone();
+        let request_lease_id = lease_id.clone();
+        let mut request = tokio::task::spawn_blocking(move || {
+            request_control_plane.execution_control(
+                &request_context,
+                &request_job_id,
+                &request_lease_id,
+                request_timeout,
+            )
+        });
+        let response = tokio::select! {
+            biased;
+            _ = wait_for_shutdown(&mut stop) => {
+                let _ = tokio::time::timeout(request_timeout, &mut request).await;
+                return;
+            }
+            _ = tokio::time::sleep(remaining_silence) => {
+                remote_cancellation.request(
+                    &cancellation,
+                    &job_id,
+                    &lease_id,
+                    "control_silence_exceeded",
+                );
+                return;
+            }
+            response = &mut request => response,
+        };
+        match response {
+            Ok(Ok(response)) => {
+                if validate_job_execution_control_response(&response, &job_id, &lease_id).is_err() {
+                    remote_cancellation.request(
+                        &cancellation,
+                        &job_id,
+                        &lease_id,
+                        "control_contract_invalid",
+                    );
+                    return;
+                }
+                last_authoritative_response = Instant::now();
+                if response.directive == JobExecutionDirective::Cancel {
+                    remote_cancellation.request(&cancellation, &job_id, &lease_id, "job_cancelled");
+                    return;
+                }
+            }
+            Ok(Err(error)) if control_error_is_retryable(error.kind()) => {}
+            Ok(Err(error)) => {
+                remote_cancellation.request(
+                    &cancellation,
+                    &job_id,
+                    &lease_id,
+                    control_error_cancellation_reason(error.kind()),
+                );
+                return;
+            }
+            Err(_) => {
+                remote_cancellation.request(
+                    &cancellation,
+                    &job_id,
+                    &lease_id,
+                    "control_task_failed",
+                );
+                return;
+            }
+        }
+
+        let remaining_silence = max_silence.saturating_sub(last_authoritative_response.elapsed());
+        if remaining_silence.is_zero() {
+            continue;
+        }
+        tokio::select! {
+            biased;
+            _ = wait_for_shutdown(&mut stop) => return,
+            _ = tokio::time::sleep(poll_interval.min(remaining_silence)) => {}
+        }
+    }
+}
+
+fn control_error_is_retryable(kind: &str) -> bool {
+    matches!(kind, "transport" | "server_error")
+}
+
+fn control_error_cancellation_reason(kind: &str) -> &'static str {
+    match kind {
+        "unauthorized" | "revoked" | "expired" => "session_authority_lost",
+        "conflict" | "not_found" => "assignment_authority_lost",
+        "session_changed" | "local_state" => "local_authority_lost",
+        _ => "control_authority_lost",
+    }
+}
+
+fn finish_remote_cancellation(
+    data_plane: &dyn ProviderJobDataPlane,
+    assignment: &ProviderJobAssignment,
+) -> Result<AssignmentDisposition, String> {
+    if cleanup_assignment_workspace(data_plane, assignment).is_err() {
+        return remote_cancellation_cleanup_failure(assignment);
+    }
+    Ok(AssignmentDisposition::Continue)
+}
+
+fn remote_cancellation_cleanup_failure(
+    assignment: &ProviderJobAssignment,
+) -> Result<AssignmentDisposition, String> {
+    log_worker_event(
+        "provider_job_remote_cancellation_cleanup_failed",
+        Some(&assignment.job.job_id),
+        Some(&assignment.lease.lease_id),
+        "workspace_cleanup_failed",
+    );
+    Err("provider job remote cancellation cleanup failed".to_string())
 }
 
 enum ProviderStage<T> {
@@ -990,14 +1349,30 @@ struct JobEventTransition {
     expected_status: &'static str,
 }
 
-async fn report_bound_event(
+struct BoundJobEventReport<'a> {
     control_plane: Arc<dyn ProviderJobControlPlane>,
-    context: &ProviderJobWorkerContext,
-    job_id: &str,
+    context: &'a ProviderJobWorkerContext,
+    job_id: &'a str,
+    lease_id: &'a str,
     transition: JobEventTransition,
+    cancellation: &'a JobCancellation,
+    remote_cancellation: &'a RemoteCancellationState,
+}
+
+async fn report_bound_event(
+    report: BoundJobEventReport<'_>,
     shutdown: &mut watch::Receiver<bool>,
     shutdown_grace: Duration,
 ) -> Result<Option<Result<(), ProviderJobExecutionError>>, String> {
+    let BoundJobEventReport {
+        control_plane,
+        context,
+        job_id,
+        lease_id,
+        transition,
+        cancellation,
+        remote_cancellation,
+    } = report;
     let Some(result) = report_event(
         control_plane,
         context,
@@ -1020,6 +1395,14 @@ async fn report_bound_event(
                 None,
                 error.kind(),
             );
+            if !control_error_is_retryable(error.kind()) {
+                remote_cancellation.request(
+                    cancellation,
+                    job_id,
+                    lease_id,
+                    control_error_cancellation_reason(error.kind()),
+                );
+            }
             return Ok(Some(Err(ProviderJobExecutionError::new(
                 "state_reporting_failed",
                 "provider job state reporting failed",
@@ -1036,6 +1419,7 @@ async fn report_bound_event(
     ) {
         Ok(Some(Ok(())))
     } else {
+        remote_cancellation.request(cancellation, job_id, lease_id, "control_contract_invalid");
         Ok(Some(Err(ProviderJobExecutionError::new(
             "state_reporting_failed",
             "provider job state response violated its contract",
@@ -1279,6 +1663,7 @@ impl CompletedAssignments {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider_job_executor::ProviderJobExecutionWorkspace;
     use burd_protocol::{
         JOB_DATA_PLANE_GRANT_VERSION, JOB_LEASE_SCHEMA_VERSION, JOB_SCHEMA_VERSION,
         JobDataPlaneGrant, JobLeaseRecord, JobRecord, PROVIDER_JOB_EXECUTION_POLICY_VERSION,
@@ -1301,6 +1686,9 @@ mod tests {
         poll_count: usize,
         accepts: usize,
         accepted_lease_ids: Vec<String>,
+        execution_controls: usize,
+        remote_cancel_requested: bool,
+        control_error_kind: Option<&'static str>,
         events: Vec<String>,
         results: Vec<SubmitJobResultRequest>,
     }
@@ -1328,6 +1716,18 @@ mod tests {
 
         fn accepted_lease_ids(&self) -> Vec<String> {
             self.state.lock().unwrap().accepted_lease_ids.clone()
+        }
+
+        fn request_remote_cancel(&self) {
+            self.state.lock().unwrap().remote_cancel_requested = true;
+        }
+
+        fn set_control_error(&self, kind: &'static str) {
+            self.state.lock().unwrap().control_error_kind = Some(kind);
+        }
+
+        fn execution_control_count(&self) -> usize {
+            self.state.lock().unwrap().execution_controls
         }
     }
 
@@ -1361,6 +1761,38 @@ mod tests {
             Ok(JobResponse {
                 request_id: "req_accept".to_string(),
                 job: job_with_status(job_id, "accepted"),
+            })
+        }
+
+        fn execution_control(
+            &self,
+            _context: &ProviderJobWorkerContext,
+            job_id: &str,
+            lease_id: &str,
+            _timeout: Duration,
+        ) -> Result<JobExecutionControlResponse, ProviderJobControlError> {
+            let mut state = self.state.lock().unwrap();
+            state.execution_controls += 1;
+            if let Some(kind) = state.control_error_kind {
+                return Err(ProviderJobControlError::new(
+                    kind,
+                    "deterministic execution control failure",
+                ));
+            }
+            Ok(JobExecutionControlResponse {
+                schema_version: burd_protocol::JOB_EXECUTION_CONTROL_SCHEMA_VERSION.to_string(),
+                request_id: format!("req_control_{}", state.execution_controls),
+                job_id: job_id.to_string(),
+                lease_id: lease_id.to_string(),
+                directive: if state.remote_cancel_requested {
+                    JobExecutionDirective::Cancel
+                } else {
+                    JobExecutionDirective::Continue
+                },
+                reason_code: state
+                    .remote_cancel_requested
+                    .then(|| "job_cancelled".to_string()),
+                server_time: Utc::now().to_rfc3339(),
             })
         }
 
@@ -1474,6 +1906,108 @@ mod tests {
                         "fake executor did not receive cancellation",
                     ))
                 }
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum DataPlaneBehavior {
+        WaitDuringPreparation,
+        WaitDuringUpload,
+    }
+
+    struct FakeCancellableDataPlane {
+        behavior: DataPlaneBehavior,
+        stage_started: AtomicBool,
+        observed_cancellation: AtomicBool,
+        cleanup_calls: AtomicUsize,
+        cleanup_fails: AtomicBool,
+    }
+
+    impl FakeCancellableDataPlane {
+        fn new(behavior: DataPlaneBehavior) -> Self {
+            Self {
+                behavior,
+                stage_started: AtomicBool::new(false),
+                observed_cancellation: AtomicBool::new(false),
+                cleanup_calls: AtomicUsize::new(0),
+                cleanup_fails: AtomicBool::new(false),
+            }
+        }
+
+        fn fail_cleanup(&self) {
+            self.cleanup_fails.store(true, Ordering::SeqCst);
+        }
+
+        fn wait_for_cancellation(
+            &self,
+            cancellation: &JobCancellation,
+        ) -> Result<(), ProviderJobExecutionError> {
+            self.stage_started.store(true, Ordering::SeqCst);
+            for _ in 0..5_000 {
+                if cancellation.requested() {
+                    self.observed_cancellation.store(true, Ordering::SeqCst);
+                    return Err(ProviderJobExecutionError::new(
+                        "execution_cancelled",
+                        "fake data plane observed cancellation",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(ProviderJobExecutionError::new(
+                "fake_data_plane_timeout",
+                "fake data plane did not receive cancellation",
+            ))
+        }
+    }
+
+    impl ProviderJobDataPlane for FakeCancellableDataPlane {
+        fn prepare_workspace(
+            &self,
+            _assignment: &ProviderJobAssignment,
+            cancellation: &JobCancellation,
+        ) -> Result<Option<ProviderJobExecutionWorkspace>, ProviderJobExecutionError> {
+            if matches!(self.behavior, DataPlaneBehavior::WaitDuringPreparation) {
+                let result = self.wait_for_cancellation(cancellation);
+                if self.cleanup_fails.load(Ordering::SeqCst) {
+                    self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                    return Err(ProviderJobExecutionError::new(
+                        "workspace_cleanup_failed",
+                        "fake preparation cleanup failed",
+                    ));
+                }
+                result?;
+            }
+            Ok(Some(ProviderJobExecutionWorkspace {
+                root: "fake-workspace".into(),
+                inputs_dir: "fake-workspace/inputs".into(),
+                outputs_dir: "fake-workspace/outputs".into(),
+            }))
+        }
+
+        fn upload_outputs(
+            &self,
+            _assignment: &ProviderJobAssignment,
+            cancellation: &JobCancellation,
+        ) -> Result<Vec<burd_protocol::JobArtifact>, ProviderJobExecutionError> {
+            if matches!(self.behavior, DataPlaneBehavior::WaitDuringUpload) {
+                self.wait_for_cancellation(cancellation)?;
+            }
+            Ok(Vec::new())
+        }
+
+        fn cleanup_workspace(
+            &self,
+            _workspace: &ProviderJobExecutionWorkspace,
+        ) -> Result<(), ProviderJobExecutionError> {
+            self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
+            if self.cleanup_fails.load(Ordering::SeqCst) {
+                Err(ProviderJobExecutionError::new(
+                    "workspace_cleanup_failed",
+                    "fake workspace cleanup failed",
+                ))
+            } else {
+                Ok(())
             }
         }
     }
@@ -1605,7 +2139,7 @@ mod tests {
     }
 
     async fn wait_until(mut predicate: impl FnMut() -> bool) {
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             while !predicate() {
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
@@ -1616,7 +2150,14 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn success_uses_the_authoritative_state_flow() {
-        let control = Arc::new(FakeControlPlane::new(vec![assignment_response()]));
+        let mut response = assignment_response();
+        response
+            .execution
+            .as_mut()
+            .unwrap()
+            .cancellation
+            .poll_interval_seconds = 1;
+        let control = Arc::new(FakeControlPlane::new(vec![response]));
         let executor = Arc::new(FakeProviderJobExecutor::new(ExecutorBehavior::Succeed));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let worker = tokio::spawn(run_worker_with_config(
@@ -1626,6 +2167,9 @@ mod tests {
             test_config(),
         ));
         wait_until(|| !control.snapshot().3.is_empty()).await;
+        let controls_after_completion = control.execution_control_count();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert_eq!(control.execution_control_count(), controls_after_completion);
         shutdown_tx.send(true).unwrap();
         worker.await.unwrap().unwrap();
 
@@ -1742,6 +2286,184 @@ mod tests {
         shutdown_tx.send(true).unwrap();
         worker.await.unwrap().unwrap();
         assert!(executor.observed_cancellation.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_cancellation_stops_execution_without_submitting_failure() {
+        let mut response = assignment_response();
+        response
+            .execution
+            .as_mut()
+            .unwrap()
+            .cancellation
+            .poll_interval_seconds = 1;
+        let control = Arc::new(FakeControlPlane::new(vec![response]));
+        let executor = Arc::new(FakeProviderJobExecutor::new(
+            ExecutorBehavior::WaitForCancellation,
+        ));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let worker = tokio::spawn(run_worker_with_config(
+            control.clone(),
+            executor.clone(),
+            shutdown_rx,
+            test_config(),
+        ));
+        wait_until(|| executor.calls.load(Ordering::SeqCst) == 1).await;
+        control.request_remote_cancel();
+        wait_until(|| executor.observed_cancellation.load(Ordering::SeqCst)).await;
+        wait_until(|| control.snapshot().0 >= 2).await;
+        assert!(control.snapshot().3.is_empty());
+        shutdown_tx.send(true).unwrap();
+        worker.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn remote_cancellation_state_is_visible_before_the_shared_token() {
+        let remote = RemoteCancellationState::default();
+        let cancellation = JobCancellation::default();
+        let observed_remote = remote.clone();
+        let observed_cancellation = cancellation.clone();
+        let observer = std::thread::spawn(move || {
+            while !observed_cancellation.requested() {
+                std::thread::yield_now();
+            }
+            assert!(observed_remote.requested());
+        });
+
+        remote.request(&cancellation, "job_test", "lease_test", "job_cancelled");
+        observer.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_cancellation_stops_preparation_and_upload_with_cleanup() {
+        for behavior in [
+            DataPlaneBehavior::WaitDuringPreparation,
+            DataPlaneBehavior::WaitDuringUpload,
+        ] {
+            let mut response = assignment_response();
+            response
+                .execution
+                .as_mut()
+                .unwrap()
+                .cancellation
+                .poll_interval_seconds = 1;
+            let control = Arc::new(FakeControlPlane::new(vec![response]));
+            let executor = Arc::new(FakeProviderJobExecutor::new(ExecutorBehavior::Succeed));
+            let data_plane = Arc::new(FakeCancellableDataPlane::new(behavior));
+            let (shutdown_tx, shutdown_rx) = watch::channel(false);
+            let worker = tokio::spawn(run_worker_with_data_plane_and_config(
+                control.clone(),
+                executor,
+                data_plane.clone(),
+                shutdown_rx,
+                test_config(),
+            ));
+            wait_until(|| data_plane.stage_started.load(Ordering::SeqCst)).await;
+            let cancellation_started_at = Instant::now();
+            control.request_remote_cancel();
+            wait_until(|| data_plane.observed_cancellation.load(Ordering::SeqCst)).await;
+            assert!(cancellation_started_at.elapsed() < Duration::from_secs(5));
+            wait_until(|| control.snapshot().0 >= 2).await;
+            assert!(control.snapshot().3.is_empty());
+            if matches!(behavior, DataPlaneBehavior::WaitDuringUpload) {
+                assert_eq!(data_plane.cleanup_calls.load(Ordering::SeqCst), 1);
+            }
+            shutdown_tx.send(true).unwrap();
+            worker.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_cancellation_cleanup_failure_stops_the_worker() {
+        for behavior in [
+            DataPlaneBehavior::WaitDuringPreparation,
+            DataPlaneBehavior::WaitDuringUpload,
+        ] {
+            let mut response = assignment_response();
+            response
+                .execution
+                .as_mut()
+                .unwrap()
+                .cancellation
+                .poll_interval_seconds = 1;
+            let control = Arc::new(FakeControlPlane::new(vec![response]));
+            let executor = Arc::new(FakeProviderJobExecutor::new(ExecutorBehavior::Succeed));
+            let data_plane = Arc::new(FakeCancellableDataPlane::new(behavior));
+            data_plane.fail_cleanup();
+            let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+            let worker = tokio::spawn(run_worker_with_data_plane_and_config(
+                control.clone(),
+                executor,
+                data_plane.clone(),
+                shutdown_rx,
+                test_config(),
+            ));
+            wait_until(|| data_plane.stage_started.load(Ordering::SeqCst)).await;
+            control.request_remote_cancel();
+
+            let error = tokio::time::timeout(Duration::from_secs(5), worker)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(error, "provider job remote cancellation cleanup failed");
+            assert_eq!(data_plane.cleanup_calls.load(Ordering::SeqCst), 1);
+            assert!(control.snapshot().3.is_empty());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn terminal_control_errors_stop_only_the_current_execution() {
+        for kind in ["unauthorized", "revoked", "not_found", "conflict"] {
+            let control = Arc::new(FakeControlPlane::new(vec![assignment_response()]));
+            control.set_control_error(kind);
+            let executor = Arc::new(FakeProviderJobExecutor::new(
+                ExecutorBehavior::WaitForCancellation,
+            ));
+            let (shutdown_tx, shutdown_rx) = watch::channel(false);
+            let worker = tokio::spawn(run_worker_with_config(
+                control.clone(),
+                executor.clone(),
+                shutdown_rx,
+                test_config(),
+            ));
+            wait_until(|| control.execution_control_count() >= 1).await;
+            wait_until(|| control.snapshot().0 >= 2).await;
+            assert!(
+                executor.calls.load(Ordering::SeqCst) == 0
+                    || executor.observed_cancellation.load(Ordering::SeqCst)
+            );
+            assert!(control.snapshot().3.is_empty());
+            shutdown_tx.send(true).unwrap();
+            worker.await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repeated_control_failures_cancel_after_the_silence_bound() {
+        let mut response = assignment_response();
+        let policy = &mut response.execution.as_mut().unwrap().cancellation;
+        policy.poll_interval_seconds = 1;
+        policy.max_control_silence_seconds = 2;
+        let control = Arc::new(FakeControlPlane::new(vec![response]));
+        control.set_control_error("server_error");
+        let executor = Arc::new(FakeProviderJobExecutor::new(
+            ExecutorBehavior::WaitForCancellation,
+        ));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let started_at = Instant::now();
+        let worker = tokio::spawn(run_worker_with_config(
+            control.clone(),
+            executor.clone(),
+            shutdown_rx,
+            test_config(),
+        ));
+        wait_until(|| executor.observed_cancellation.load(Ordering::SeqCst)).await;
+        assert!(started_at.elapsed() >= Duration::from_secs(2));
+        assert!(started_at.elapsed() < Duration::from_secs(4));
+        assert!(control.snapshot().3.is_empty());
+        shutdown_tx.send(true).unwrap();
+        worker.await.unwrap().unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

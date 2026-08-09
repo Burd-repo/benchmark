@@ -120,11 +120,13 @@ pub use job::{
     SubmitJobResultResponse,
 };
 pub use job_execution::{
+    JOB_EXECUTION_CONTROL_SCHEMA_VERSION, JobExecutionControlResponse, JobExecutionDirective,
     PROVIDER_JOB_APPROVED_TEMPLATES, PROVIDER_JOB_EXECUTION_POLICY_VERSION,
     PROVIDER_JOB_EXECUTION_SCHEMA_VERSION, ProviderJobCancellationPolicy, ProviderJobCleanupPolicy,
     ProviderJobExecutionSpec, ProviderJobExecutionState, ProviderJobRuntimePolicy,
-    validate_next_job_execution_response, validate_provider_job_execution_bundle,
-    validate_provider_job_runtime_policy, validate_provider_runtime_compatibility,
+    validate_job_execution_control_response, validate_next_job_execution_response,
+    validate_provider_job_execution_bundle, validate_provider_job_runtime_policy,
+    validate_provider_runtime_compatibility,
 };
 pub use lease::{
     JOB_LEASE_SCHEMA_VERSION, JobLeaseRecord, ListJobLeasesResponse, RunSchedulerRequest,

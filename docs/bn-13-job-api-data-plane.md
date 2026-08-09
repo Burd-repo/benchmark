@@ -11,7 +11,7 @@ BN-13 adds:
 - `compute_jobs`, an appendable job metadata and state table;
 - `job_events`, a sequenced provider progress event table;
 - `job_artifact_uploads`, a registry of output bytes verified by the Control Plane;
-- `burd-protocol` job, artifact, event, result, cancel, list, next-job, and data-plane grant contracts;
+- `burd-protocol` job, artifact, event, result, cancel, execution-control, list, next-job, and data-plane grant contracts;
 - admin job creation with `Idempotency-Key` replay protection;
 - provider pull of the next queued job using an authenticated remote session;
 - job-scoped data-plane grants with separate credentials and scoped artifact paths;
@@ -43,6 +43,9 @@ Provider-session endpoints:
 - `GET /v1/sessions/{session_id}/jobs/next` atomically assigns the oldest queued job for that provider/device/session and returns a job-scoped data-plane grant.
 - `POST /v1/sessions/{session_id}/jobs/{job_id}/accept` acknowledges the exact assignment
   `lease_id` before provisioning; stale acknowledgements cannot mutate a newer assignment.
+- `GET /v1/sessions/{session_id}/jobs/{job_id}/control?lease_id={lease_id}` returns an
+  exact-assignment `continue | cancel` directive. Stale assignment, session authority loss and
+  excessive Control Plane silence stop the disconnected Agent worker fail closed.
 - `POST /v1/sessions/{session_id}/jobs/{job_id}/events` appends a sequenced progress event and may move the job to `provisioning`, `running`, or `uploading`.
 - `POST /v1/sessions/{session_id}/jobs/{job_id}/result` submits final `succeeded` or `failed` result metadata and output artifact references.
 
@@ -67,6 +70,13 @@ The paths do not embed the credential. The Agent sends it only in the
 accepts no redirects. Input and output bytes are streamed with exact size and
 SHA-256 verification. Uploads finalize atomically and terminal success is
 accepted only when every declared output matches a verified upload record.
+
+The Agent polls active execution control immediately after acceptance. Remote cancellation is
+propagated through data-plane operations and the executor, always attempts workspace cleanup, and
+does not submit a contradictory `failed` result after the Control Plane has made `cancelled`
+authoritative. A failed cleanup stops the worker before it accepts another assignment. Transfer
+cancellation is cooperative per 64 KiB progress chunk; no-progress HTTP I/O is still bounded by the
+existing 120-second transport timeout.
 
 The current transport is a Control Plane-owned filesystem object-store adapter.
 Customer input ingestion, externally signed object-store URLs, retention, and

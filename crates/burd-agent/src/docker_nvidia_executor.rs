@@ -1079,6 +1079,7 @@ mod tests {
             runtime: ProviderJobRuntimePolicy::v2(),
             cancellation: ProviderJobCancellationPolicy {
                 poll_interval_seconds: 1,
+                max_control_silence_seconds: 2,
                 graceful_stop_seconds: 1,
                 force_kill_after_seconds: 2,
             },

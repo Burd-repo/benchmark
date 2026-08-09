@@ -94,4 +94,6 @@ exported byte-for-byte, and containers/volumes are removed.
 This slice does not provide customer input upload, external S3-compatible or
 signed-URL adapters, retention/garbage collection, malware scanning, runtime
 proof, scheduler admission by verified capability, active-job remote
-cancellation discovery, production worker wiring, or paid execution.
+cancellation push, production worker wiring, or paid execution. The disconnected
+provider worker now discovers cancellation through authenticated polling and
+propagates it to this data plane.
