@@ -77,6 +77,19 @@ The assignment audit records the current verification ID, runtime verification f
 
 This prevents a provider from pulling work that the scheduler did not reserve for that exact session or whose runtime authority changed after scheduling.
 
+## Acceptance Rules
+
+`POST /v1/sessions/{session_id}/jobs/{job_id}/accept` is the final authority gate before provider
+execution side effects. It locks the assigned job and latest lease in one transaction, requires the
+lease to remain `offered` and unexpired, rechecks exact provider/device/session/GPU bindings, and
+re-evaluates Runtime Admission with server time. Only then may the job and exactly one lease move
+to `accepted` together.
+
+Missing, stale, terminal, mismatched, or newly denied authority cannot start execution. The job is
+returned to `queued`, job credentials are invalidated, any active lease is expired, and the reason
+plus non-secret Runtime Admission evidence is audited. A lease update affecting zero rows is a
+conflict, never a successful acknowledgement.
+
 ## Deferred
 
 BN-14 intentionally leaves out:

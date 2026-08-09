@@ -121,6 +121,7 @@ evidence, and backend observations.
 | Provider disappears after lease offer | Offered leases have short server-side TTL and later scheduler passes expire stale offers. |
 | Lease replay after expiry | `jobs/next` requires `status = offered` and `expires_at` later than server time before assignment. |
 | Runtime authority changes after lease offer | `jobs/next` re-evaluates exact provider/device/GPU Runtime Admission inside the locked assignment transaction. Denied offers expire without a credential and the job remains queued. |
+| Lease or runtime authority changes after assignment | Job acceptance locks job and lease together, checks offered status, server-side expiry and exact bindings, re-evaluates Runtime Admission, and only then atomically accepts exactly one lease. Denial requeues the job and invalidates its credential before returning. |
 | Data-plane credential leakage through URLs | BN-13 returns scoped artifact paths separately from the opaque job credential; raw credentials are not embedded in URLs. |
 | Data-plane credential exposed to customer code | The Agent performs HTTP transfer and never copies the credential into the container plan, filesystem, environment, logs, or metrics. |
 | Artifact path traversal or host mount escape | Manifests reject unsafe paths; object storage canonicalizes containment and rejects symlinks; workloads receive separate bounded tmpfs volumes held by a fixed offline anchor and populated through trusted helpers, never a host bind mount. |

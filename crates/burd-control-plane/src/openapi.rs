@@ -969,13 +969,13 @@ pub fn document() -> serde_json::Value {
             },
             "/v1/sessions/{session_id}/jobs/{job_id}/accept": {
                 "post": {
-                    "summary": "Acknowledge a job assignment before provider provisioning",
+                    "summary": "Accept an assignment after authoritative lease and runtime revalidation",
                     "security": [{ "deviceBearer": [] }],
                     "responses": {
                         "200": { "description": "job accepted" },
                         "401": { "description": "device or session unauthorized for job" },
                         "404": { "description": "job not found" },
-                        "409": { "description": "job is not assigned" }
+                        "409": { "description": "job is not assigned or acceptance authority is no longer valid" }
                     }
                 }
             },
