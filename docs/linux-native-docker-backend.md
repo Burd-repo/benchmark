@@ -114,19 +114,23 @@ labels, Docker arguments, logs, or metrics.
 ## Physical NVIDIA isolation test
 
 The normal CI suite uses a fake backend and never requires Docker or NVIDIA.
-The ignored physical test requires Linux, Docker Engine, NVIDIA Container
-Toolkit, two or more visible GPUs for the strongest assertion, and a
-digest-pinned image whose default command prints `nvidia-smi -L`.
+The ignored physical gates require Linux, Docker Engine, NVIDIA Container
+Toolkit, at least two visible GPUs, a digest-pinned report image, and a
+digest-pinned lifecycle image that remains active and ignores `TERM`.
 
 ```bash
 export BURD_LINUX_NVIDIA_TEST_IMAGE='registry/image@sha256:<64-hex-digest>'
+export BURD_LINUX_NVIDIA_LIFECYCLE_TEST_IMAGE='registry/image@sha256:<64-hex-digest>'
 export BURD_LINUX_NVIDIA_TEST_GPU_UUID='GPU-...'
-cargo test -p burd-agent physical_linux_nvidia_container_sees_only_leased_gpu -- --ignored --nocapture
+cargo test -p burd-agent physical_linux_nvidia_isolation_gate -- --ignored --nocapture --test-threads=1
+cargo test -p burd-agent physical_linux_nvidia_lifecycle_gate -- --ignored --nocapture --test-threads=1
 ```
 
-The test succeeds only when the log contains the leased UUID and exactly one
-`GPU-` entry. A physical multi-GPU run is still required before claiming
-production GPU-isolation verification.
+The isolation gate requires the selected UUID, exactly one `GPU-` entry, no
+other host GPU UUID, negative rejection of an unavailable UUID, and complete
+cleanup. The lifecycle gate exercises cancellation, bounded force kill,
+timeout, and cleanup against a running container. See
+`physical-nvidia-gates.md` for the separate CUDA proof and evidence contract.
 
 ## Explicit non-goals
 

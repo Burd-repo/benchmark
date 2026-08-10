@@ -16,13 +16,18 @@ recommends ephemeral runners over persistent runners. References:
 The workflow:
 
 - runs only through `workflow_dispatch`;
+- refuses every ref except `refs/heads/main`;
 - requires the operator to select `RUN`;
-- targets `[self-hosted, Windows, X64, burd-hardware]`;
+- keeps generic detection on `[self-hosted, Windows, X64, burd-hardware]`;
+- targets physical gates only on dedicated `burd-nvidia-linux` or
+  `burd-nvidia-windows` runners;
 - uses the protected `real-hardware` environment;
 - grants only `contents: read`;
 - disables persisted checkout credentials;
-- isolates `BURD_AGENT_HOME` and `BURD_AGENT_CONFIG` under `runner.temp`;
-- removes temporary Burd state after the job.
+- isolates generic detection state under `runner.temp`;
+- requires digest-pinned gate images already present on NVIDIA runners;
+- executes full-SHA-pinned Actions with Rust `1.96.0`;
+- uploads sanitized physical-gate evidence for the evaluated commit.
 
 In GitHub repository settings, configure the `real-hardware` environment with
 required reviewers before using the runner.
@@ -53,6 +58,27 @@ Remove-Item Env:\GITHUB_RUNNER_REGISTRATION_TOKEN
 The script downloads the latest official Windows x64 GitHub Actions runner,
 registers the `burd-hardware` label, and configures an ephemeral runner by
 default. It does not start a service or long-running process.
+
+For a dedicated Windows/WSL2 NVIDIA gate runner, add its isolated label:
+
+```powershell
+$env:GITHUB_RUNNER_REGISTRATION_TOKEN = "<fresh-registration-token>"
+.\scripts\configure-hardware-runner.ps1 `
+  -RunnerRoot C:\burd-actions-runner-nvidia `
+  -AdditionalLabels burd-nvidia-windows
+Remove-Item Env:\GITHUB_RUNNER_REGISTRATION_TOKEN
+```
+
+Configure a Linux runner from the official GitHub Linux instructions and add
+`burd-nvidia-linux`. Do not give a generic runner either NVIDIA label. Both
+NVIDIA runners require Docker, the NVIDIA container runtime, at least two
+physical NVIDIA GPUs, the exact pre-pulled gate images, and no personal or
+production credentials.
+
+The protected environment variables and physical promotion rule are documented
+in `physical-nvidia-gates.md`. A successful workflow artifact must be retained
+and reviewed; runner registration or harness availability alone does not mark a
+platform verified.
 
 Start the runner manually immediately before dispatching the workflow:
 

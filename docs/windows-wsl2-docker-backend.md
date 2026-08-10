@@ -61,15 +61,19 @@ physical Windows test remains ignored until run on a suitable machine:
 
 ```powershell
 $env:BURD_WINDOWS_WSL2_NVIDIA_TEST_IMAGE = 'registry/image@sha256:<64-hex-digest>'
+$env:BURD_WINDOWS_WSL2_NVIDIA_LIFECYCLE_TEST_IMAGE = 'registry/image@sha256:<64-hex-digest>'
 $env:BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID = 'GPU-...'
-cargo test -p burd-agent physical_windows_wsl2_nvidia_container_sees_only_leased_gpu -- --ignored --nocapture
+cargo test -p burd-agent physical_windows_wsl2_nvidia_isolation_gate -- --ignored --nocapture --test-threads=1
+cargo test -p burd-agent physical_windows_wsl2_nvidia_lifecycle_gate -- --ignored --nocapture --test-threads=1
 ```
 
-The strongest gate uses at least two host GPUs, leases GPU-B, and succeeds only
-when the container log contains GPU-B and exactly one `GPU-` entry. Until that
-physical test and Control Plane verification exist, Windows capability remains
-`not_ready`, `authority=agent`, `status=reported`, and
-`gpu_uuid_binding=unverified`.
+The gate requires at least two host GPUs, leases one exact UUID, rejects
+cross-GPU visibility and an unavailable UUID, and proves cancellation, force
+kill, timeout, and cleanup. A separate runtime-proof test performs the real CUDA
+operation. Until a reviewed physical workflow run exists, Windows remains
+denied by Runtime Admission with `windows_physical_gate_required`; local Agent
+capability remains reported rather than scheduler-authoritative. See
+`physical-nvidia-gates.md`.
 
 ## Explicit non-goals
 

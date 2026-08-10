@@ -3,8 +3,16 @@ name: Real Hardware Integration
 on:
   workflow_dispatch:
     inputs:
+      gate:
+        description: Select the dedicated hardware gate
+        required: true
+        type: choice
+        options:
+          - detection
+          - linux-nvidia
+          - windows-wsl2-nvidia
       confirm:
-        description: Type RUN to execute detection on the dedicated hardware runner
+        description: Type RUN to execute on a dedicated hardware runner
         required: true
         type: choice
         options:
@@ -19,8 +27,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  real-hardware-integration:
-    if: inputs.confirm == 'RUN'
+  hardware-detection:
+    if: github.ref == 'refs/heads/main' && inputs.confirm == 'RUN' && inputs.gate == 'detection'
     environment: real-hardware
     runs-on: [self-hosted, Windows, X64, burd-hardware]
     timeout-minutes: 15
@@ -30,15 +38,17 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable action code
+        with:
+          toolchain: 1.96.0
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Prepare isolated Burd state
         shell: pwsh
@@ -70,3 +80,232 @@ jobs:
           if (Test-Path -LiteralPath $target) {
             Remove-Item -LiteralPath $target -Recurse -Force
           }
+
+  linux-nvidia-gate:
+    if: github.ref == 'refs/heads/main' && inputs.confirm == 'RUN' && inputs.gate == 'linux-nvidia'
+    environment: real-hardware
+    runs-on: [self-hosted, Linux, X64, burd-nvidia-linux]
+    timeout-minutes: 45
+    env:
+      BURD_LINUX_NVIDIA_TEST_IMAGE: ${{ vars.BURD_LINUX_NVIDIA_TEST_IMAGE }}
+      BURD_LINUX_NVIDIA_LIFECYCLE_TEST_IMAGE: ${{ vars.BURD_LINUX_NVIDIA_LIFECYCLE_TEST_IMAGE }}
+      BURD_LINUX_NVIDIA_TEST_GPU_UUID: ${{ vars.BURD_LINUX_NVIDIA_TEST_GPU_UUID }}
+      BURD_RUNTIME_PROOF_IMAGE_REF: ${{ vars.BURD_RUNTIME_PROOF_IMAGE_REF }}
+      BURD_RUNTIME_PROOF_GPU_UUID: ${{ vars.BURD_LINUX_NVIDIA_TEST_GPU_UUID }}
+      EVIDENCE_DIR: ${{ runner.temp }}/burd-physical-nvidia-evidence
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable action code
+        with:
+          toolchain: 1.96.0
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Record sanitized Linux gate metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          mapfile -t gpu_uuids < <(nvidia-smi --query-gpu=uuid --format=csv,noheader | sed '/^[[:space:]]*$/d')
+          if (( ${#gpu_uuids[@]} < 2 )); then
+            echo "The physical isolation gate requires at least two NVIDIA GPUs." >&2
+            exit 1
+          fi
+          hash_value() {
+            printf '%s' "$1" | sha256sum | cut -d' ' -f1
+          }
+          for image_ref in \
+            "$BURD_LINUX_NVIDIA_TEST_IMAGE" \
+            "$BURD_LINUX_NVIDIA_LIFECYCLE_TEST_IMAGE" \
+            "$BURD_RUNTIME_PROOF_IMAGE_REF"; do
+            if [[ ! "$image_ref" =~ @sha256:[0-9a-fA-F]{64}$ ]]; then
+              echo "Every physical gate image must be digest-pinned." >&2
+              exit 1
+            fi
+            docker image inspect "$image_ref" >/dev/null
+          done
+          inventory_hash="$({ printf '%s\n' "${gpu_uuids[@]}" | tr '[:upper:]' '[:lower:]' | sort; } | sha256sum | cut -d' ' -f1)"
+          {
+            echo "schema=burd-physical-nvidia-gate-evidence-v1"
+            echo "commit=$GITHUB_SHA"
+            echo "platform=linux"
+            echo "runner_os=$RUNNER_OS"
+            echo "host_kernel=$(uname -r)"
+            echo "gpu_count=${#gpu_uuids[@]}"
+            echo "gpu_inventory_sha256=$inventory_hash"
+            echo "selected_gpu_sha256=$(hash_value "${BURD_LINUX_NVIDIA_TEST_GPU_UUID,,}")"
+            echo "docker_server_version=$(docker version --format '{{.Server.Version}}')"
+            echo "nvidia_driver_version=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | sort -u | paste -sd, -)"
+            echo "isolation_image_digest=${BURD_LINUX_NVIDIA_TEST_IMAGE##*@}"
+            echo "lifecycle_image_digest=${BURD_LINUX_NVIDIA_LIFECYCLE_TEST_IMAGE##*@}"
+            echo "runtime_proof_image_digest=${BURD_RUNTIME_PROOF_IMAGE_REF##*@}"
+            echo "rustc=$(rustc --version)"
+          } > "$EVIDENCE_DIR/metadata.txt"
+
+      - name: Run Linux NVIDIA isolation gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p burd-agent physical_linux_nvidia_isolation_gate -- --ignored --nocapture --test-threads=1 2>&1 \
+            | tee "$EVIDENCE_DIR/isolation.log"
+
+      - name: Run Linux NVIDIA cancellation, timeout, and cleanup gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p burd-agent physical_linux_nvidia_lifecycle_gate -- --ignored --nocapture --test-threads=1 2>&1 \
+            | tee "$EVIDENCE_DIR/lifecycle.log"
+
+      - name: Run physical CUDA runtime proof gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p burd-agent physical_runtime_proof_requires_multi_gpu_and_exact_binding -- --ignored --nocapture --test-threads=1 2>&1 \
+            | tee "$EVIDENCE_DIR/runtime-proof.log"
+
+      - name: Mark Linux gate evidence passed
+        shell: bash
+        run: echo "result=passed" >> "$EVIDENCE_DIR/metadata.txt"
+
+      - name: Upload sanitized Linux gate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-nvidia-gate-${{ github.sha }}
+          path: ${{ runner.temp }}/burd-physical-nvidia-evidence
+          if-no-files-found: warn
+          retention-days: 30
+
+  windows-wsl2-nvidia-gate:
+    if: github.ref == 'refs/heads/main' && inputs.confirm == 'RUN' && inputs.gate == 'windows-wsl2-nvidia'
+    environment: real-hardware
+    runs-on: [self-hosted, Windows, X64, burd-nvidia-windows]
+    timeout-minutes: 45
+    env:
+      BURD_WINDOWS_WSL2_NVIDIA_TEST_IMAGE: ${{ vars.BURD_WINDOWS_WSL2_NVIDIA_TEST_IMAGE }}
+      BURD_WINDOWS_WSL2_NVIDIA_LIFECYCLE_TEST_IMAGE: ${{ vars.BURD_WINDOWS_WSL2_NVIDIA_LIFECYCLE_TEST_IMAGE }}
+      BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID: ${{ vars.BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID }}
+      BURD_RUNTIME_PROOF_IMAGE_REF: ${{ vars.BURD_RUNTIME_PROOF_IMAGE_REF }}
+      BURD_RUNTIME_PROOF_GPU_UUID: ${{ vars.BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID }}
+      EVIDENCE_DIR: ${{ runner.temp }}/burd-physical-nvidia-evidence
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable action code
+        with:
+          toolchain: 1.96.0
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Record sanitized Windows gate metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path $env:EVIDENCE_DIR -Force | Out-Null
+          $gpuUuids = @(
+            & nvidia-smi --query-gpu=uuid --format=csv,noheader |
+              ForEach-Object { $_.Trim() } |
+              Where-Object { $_ }
+          )
+          if ($LASTEXITCODE -ne 0) {
+            throw "nvidia-smi GPU query failed."
+          }
+          if ($gpuUuids.Count -lt 2) {
+            throw "The physical isolation gate requires at least two NVIDIA GPUs."
+          }
+          function Get-Sha256([string]$Value) {
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+            return [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+          }
+          $images = @(
+            $env:BURD_WINDOWS_WSL2_NVIDIA_TEST_IMAGE,
+            $env:BURD_WINDOWS_WSL2_NVIDIA_LIFECYCLE_TEST_IMAGE,
+            $env:BURD_RUNTIME_PROOF_IMAGE_REF
+          )
+          foreach ($imageRef in $images) {
+            if ($imageRef -notmatch '@sha256:[0-9a-fA-F]{64}$') {
+              throw "Every physical gate image must be digest-pinned."
+            }
+            & docker image inspect $imageRef *> $null
+            if ($LASTEXITCODE -ne 0) {
+              throw "A physical gate image is not present locally."
+            }
+          }
+          $inventory = (($gpuUuids | ForEach-Object { $_.ToLowerInvariant() } | Sort-Object) -join "`n") + "`n"
+          $drivers = @(
+            & nvidia-smi --query-gpu=driver_version --format=csv,noheader |
+              ForEach-Object { $_.Trim() } |
+              Sort-Object -Unique
+          )
+          $dockerVersion = & docker version --format '{{.Server.Version}}'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker server version query failed."
+          }
+          $wslKernel = & wsl.exe --system uname -r
+          if ($LASTEXITCODE -ne 0) {
+            throw "WSL2 kernel query failed."
+          }
+          @(
+            "schema=burd-physical-nvidia-gate-evidence-v1"
+            "commit=$env:GITHUB_SHA"
+            "platform=windows_wsl2"
+            "runner_os=$env:RUNNER_OS"
+            "host_os=$([System.Environment]::OSVersion.VersionString)"
+            "wsl_kernel=$($wslKernel.Trim())"
+            "gpu_count=$($gpuUuids.Count)"
+            "gpu_inventory_sha256=$(Get-Sha256 $inventory)"
+            "selected_gpu_sha256=$(Get-Sha256 ($env:BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID.ToLowerInvariant()))"
+            "docker_server_version=$($dockerVersion.Trim())"
+            "nvidia_driver_version=$($drivers -join ',')"
+            "isolation_image_digest=$($env:BURD_WINDOWS_WSL2_NVIDIA_TEST_IMAGE.Split('@')[-1])"
+            "lifecycle_image_digest=$($env:BURD_WINDOWS_WSL2_NVIDIA_LIFECYCLE_TEST_IMAGE.Split('@')[-1])"
+            "runtime_proof_image_digest=$($env:BURD_RUNTIME_PROOF_IMAGE_REF.Split('@')[-1])"
+            "rustc=$(& rustc --version)"
+          ) | Set-Content -LiteralPath (Join-Path $env:EVIDENCE_DIR "metadata.txt") -Encoding utf8
+
+      - name: Run Windows WSL2 NVIDIA isolation gate
+        shell: pwsh
+        run: |
+          & cargo test -p burd-agent physical_windows_wsl2_nvidia_isolation_gate -- --ignored --nocapture --test-threads=1 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:EVIDENCE_DIR "isolation.log")
+          if ($LASTEXITCODE -ne 0) { throw "Physical NVIDIA isolation gate failed." }
+
+      - name: Run Windows WSL2 NVIDIA cancellation, timeout, and cleanup gate
+        shell: pwsh
+        run: |
+          & cargo test -p burd-agent physical_windows_wsl2_nvidia_lifecycle_gate -- --ignored --nocapture --test-threads=1 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:EVIDENCE_DIR "lifecycle.log")
+          if ($LASTEXITCODE -ne 0) { throw "Physical NVIDIA lifecycle gate failed." }
+
+      - name: Run physical CUDA runtime proof gate
+        shell: pwsh
+        run: |
+          & cargo test -p burd-agent physical_runtime_proof_requires_multi_gpu_and_exact_binding -- --ignored --nocapture --test-threads=1 2>&1 |
+            Tee-Object -FilePath (Join-Path $env:EVIDENCE_DIR "runtime-proof.log")
+          if ($LASTEXITCODE -ne 0) { throw "Physical CUDA runtime proof gate failed." }
+
+      - name: Mark Windows WSL2 gate evidence passed
+        shell: pwsh
+        run: Add-Content -LiteralPath (Join-Path $env:EVIDENCE_DIR "metadata.txt") -Value "result=passed"
+
+      - name: Upload sanitized Windows WSL2 gate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-wsl2-nvidia-gate-${{ github.sha }}
+          path: ${{ runner.temp }}/burd-physical-nvidia-evidence
+          if-no-files-found: warn
+          retention-days: 30

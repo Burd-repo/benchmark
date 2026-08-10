@@ -3,6 +3,7 @@ param(
     [string]$RunnerRoot = "C:\burd-actions-runner",
     [string]$RunnerName = "$env:COMPUTERNAME-burd-hardware",
     [string]$WorkFolder = "_work",
+    [string[]]$AdditionalLabels = @(),
     [bool]$Ephemeral = $true,
     [switch]$Replace
 )
@@ -50,12 +51,21 @@ Expand-Archive -LiteralPath $archive -DestinationPath $root -Force
 Remove-Item -LiteralPath $archive -Force
 
 $config = Join-Path $root "config.cmd"
+$labels = @("burd-hardware")
+foreach ($label in $AdditionalLabels) {
+    $normalized = $label.Trim()
+    if ($normalized -notmatch '^[A-Za-z0-9._-]+$') {
+        throw "Invalid runner label: $label"
+    }
+    $labels += $normalized
+}
+$labels = $labels | Select-Object -Unique
 $arguments = @(
     "--unattended",
     "--url", $RepositoryUrl,
     "--token", $token,
     "--name", $RunnerName,
-    "--labels", "burd-hardware",
+    "--labels", ($labels -join ","),
     "--work", $WorkFolder
 )
 if ($Ephemeral) {
@@ -65,7 +75,7 @@ if ($Replace) {
     $arguments += "--replace"
 }
 
-Write-Host "Registering runner $RunnerName with label burd-hardware..."
+Write-Host "Registering runner $RunnerName with labels $($labels -join ', ')..."
 Push-Location $root
 try {
     & $config @arguments

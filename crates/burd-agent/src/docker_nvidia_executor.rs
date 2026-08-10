@@ -708,6 +708,10 @@ mod tests {
     };
     use std::collections::VecDeque;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
+
+    static PHYSICAL_CASE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
     #[derive(Clone)]
     struct FakeClock {
@@ -1466,67 +1470,242 @@ mod tests {
         assert_eq!(ARTIFACT_BRIDGE_TIMEOUT, Duration::from_secs(120));
     }
 
-    #[test]
-    #[ignore = "requires Linux, Docker, NVIDIA runtime, and a digest-pinned image whose default command prints nvidia-smi -L"]
-    fn physical_linux_nvidia_container_sees_only_leased_gpu() {
-        use crate::docker_runtime_backend::LinuxNativeDockerBackend;
-
-        let image_ref = std::env::var("BURD_LINUX_NVIDIA_TEST_IMAGE")
-            .expect("BURD_LINUX_NVIDIA_TEST_IMAGE is required");
-        let gpu_uuid = std::env::var("BURD_LINUX_NVIDIA_TEST_GPU_UUID")
-            .expect("BURD_LINUX_NVIDIA_TEST_GPU_UUID is required");
+    fn physical_assignment(image_ref: &str, gpu_uuid: &str, case: &str) -> ProviderJobAssignment {
         let now = Utc::now();
+        let sequence = PHYSICAL_CASE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let suffix = format!("{case}_{}_{}", std::process::id(), sequence);
         let mut assignment = assignment_at(now);
-        assignment.job.image_ref = image_ref.clone();
-        assignment.execution.image_ref = image_ref.clone();
-        assignment.job.gpu_uuid = gpu_uuid.clone();
-        assignment.lease.gpu_uuid = gpu_uuid.clone();
-        assignment.execution.gpu_uuid = gpu_uuid.clone();
+        assignment.job.job_id = format!("job_{suffix}");
+        assignment.job.image_ref = image_ref.to_string();
+        assignment.job.gpu_uuid = gpu_uuid.to_string();
+        assignment.lease.lease_id = format!("lease_{suffix}");
+        assignment.lease.job_id = assignment.job.job_id.clone();
+        assignment.lease.gpu_uuid = gpu_uuid.to_string();
+        assignment.data_plane.job_id = assignment.job.job_id.clone();
+        assignment.execution.job_id = assignment.job.job_id.clone();
+        assignment.execution.lease_id = assignment.lease.lease_id.clone();
+        assignment.execution.image_ref = image_ref.to_string();
+        assignment.execution.gpu_uuid = gpu_uuid.to_string();
+        assignment
+    }
+
+    fn physical_container_absent<B: DockerRuntimeBackend>(
+        backend: &B,
+        assignment: &ProviderJobAssignment,
+    ) -> bool {
+        let plan = build_container_plan(assignment, backend.runtime_backend());
+        backend
+            .existing_container(
+                &plan.name,
+                &DockerCommandControl::cleanup(Duration::from_secs(10)),
+            )
+            .expect("physical gate container lookup must succeed")
+            .is_none()
+    }
+
+    fn physical_multi_gpu_inventory<B: DockerRuntimeBackend>(
+        backend: &B,
+        selected_gpu_uuid: &str,
+    ) -> Vec<String> {
+        backend
+            .verify_platform(&DockerCommandControl::cleanup(Duration::from_secs(30)))
+            .expect("physical gate platform verification must succeed");
+        let environment = backend
+            .runtime_environment(&DockerCommandControl::cleanup(Duration::from_secs(30)))
+            .expect("physical gate runtime discovery must succeed");
+        assert!(
+            environment.gpu_uuids.len() >= 2,
+            "physical isolation gate requires at least two host GPUs"
+        );
+        assert!(
+            environment
+                .gpu_uuids
+                .iter()
+                .any(|uuid| uuid.eq_ignore_ascii_case(selected_gpu_uuid)),
+            "leased GPU must exist in the physical host inventory"
+        );
+        environment.gpu_uuids
+    }
+
+    fn run_physical_isolation_gate<B>(backend: B, image_ref: String, gpu_uuid: String)
+    where
+        B: DockerRuntimeBackend + Clone,
+    {
+        let host_gpus = physical_multi_gpu_inventory(&backend, &gpu_uuid);
+        let assignment = physical_assignment(&image_ref, &gpu_uuid, "isolation");
+        assert!(physical_container_absent(&backend, &assignment));
         let executor = DockerNvidiaProviderJobExecutor::new(
-            LinuxNativeDockerBackend::default(),
-            StaticProviderJobImagePolicy::new([("llm_inference", image_ref)]),
+            backend.clone(),
+            StaticProviderJobImagePolicy::new([("llm_inference", image_ref.clone())]),
         );
         let outcome = executor
-            .execute(assignment, JobCancellation::default())
-            .unwrap();
+            .execute(assignment.clone(), JobCancellation::default())
+            .expect("physical isolation workload must complete");
         let logs = format!(
             "{}\n{}",
             outcome.metrics["stdout_tail"].as_str().unwrap_or_default(),
             outcome.metrics["stderr_tail"].as_str().unwrap_or_default()
         );
-        assert!(logs.contains(&gpu_uuid));
-        assert_eq!(logs.matches("GPU-").count(), 1);
+        assert!(
+            logs.contains(&gpu_uuid),
+            "leased GPU must be visible inside the container"
+        );
+        assert_eq!(
+            logs.matches("GPU-").count(),
+            1,
+            "container must expose exactly one physical GPU"
+        );
+        for unleased_gpu in host_gpus
+            .iter()
+            .filter(|uuid| !uuid.eq_ignore_ascii_case(&gpu_uuid))
+        {
+            assert!(
+                !logs.contains(unleased_gpu),
+                "an unleased host GPU became visible inside the container"
+            );
+        }
+        assert!(physical_container_absent(&backend, &assignment));
+
+        let unavailable_gpu = "GPU-00000000-0000-0000-0000-000000000000";
+        assert!(
+            !host_gpus
+                .iter()
+                .any(|uuid| uuid.eq_ignore_ascii_case(unavailable_gpu)),
+            "reserved negative-test UUID unexpectedly exists on the host"
+        );
+        let unavailable = physical_assignment(&image_ref, unavailable_gpu, "unavailable");
+        let error = executor
+            .execute(unavailable.clone(), JobCancellation::default())
+            .err()
+            .expect("an unavailable GPU UUID must fail closed");
+        assert_eq!(error.code(), "gpu_uuid_unavailable");
+        assert!(physical_container_absent(&backend, &unavailable));
+    }
+
+    fn run_physical_lifecycle_gate<B>(backend: B, image_ref: String, gpu_uuid: String)
+    where
+        B: DockerRuntimeBackend + Clone,
+    {
+        physical_multi_gpu_inventory(&backend, &gpu_uuid);
+        let mut cancelled = physical_assignment(&image_ref, &gpu_uuid, "cancel");
+        cancelled.job.timeout_seconds = 60;
+        cancelled.execution.timeout_seconds = 60;
+        let container_name = build_container_plan(&cancelled, backend.runtime_backend()).name;
+        assert!(physical_container_absent(&backend, &cancelled));
+        let cancellation = JobCancellation::default();
+        let cancellation_probe = cancellation.clone();
+        let probe_backend = backend.clone();
+        let probe_name = container_name.clone();
+        let probe = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while Instant::now() < deadline {
+                let control = DockerCommandControl::cleanup(Duration::from_secs(2));
+                if probe_backend
+                    .existing_container(&probe_name, &control)
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    && probe_backend
+                        .inspect(&probe_name, &control)
+                        .is_ok_and(|state| state.running)
+                {
+                    let requested_at = Instant::now();
+                    cancellation_probe.cancel();
+                    return Some(requested_at);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            None
+        });
+        let executor = DockerNvidiaProviderJobExecutor::new(
+            backend.clone(),
+            StaticProviderJobImagePolicy::new([("llm_inference", image_ref.clone())]),
+        );
+        let cancellation_started_at = Instant::now();
+        let error = executor
+            .execute(cancelled.clone(), cancellation)
+            .err()
+            .expect("physical lifecycle workload must be cancelled");
+        let cancellation_requested_at = probe
+            .join()
+            .expect("cancellation probe must not panic")
+            .expect("physical workload never reached the running state");
+        assert_eq!(error.code(), "execution_cancelled");
+        assert!(
+            cancellation_requested_at.elapsed() >= Duration::from_secs(2),
+            "stubborn workload exited before the force-kill deadline"
+        );
+        assert!(
+            cancellation_started_at.elapsed() < Duration::from_secs(45),
+            "physical cancellation exceeded its bounded lifecycle"
+        );
+        assert!(physical_container_absent(&backend, &cancelled));
+
+        let mut timed_out = physical_assignment(&image_ref, &gpu_uuid, "timeout");
+        timed_out.job.timeout_seconds = 2;
+        timed_out.execution.timeout_seconds = 2;
+        assert!(physical_container_absent(&backend, &timed_out));
+        let error = executor
+            .execute(timed_out.clone(), JobCancellation::default())
+            .err()
+            .expect("physical lifecycle workload must time out");
+        assert_eq!(error.code(), "execution_timeout");
+        assert!(physical_container_absent(&backend, &timed_out));
     }
 
     #[test]
-    #[ignore = "requires Windows, WSL2, a Linux Docker engine, NVIDIA GPU-PV, and a digest-pinned image whose default command prints nvidia-smi -L"]
-    fn physical_windows_wsl2_nvidia_container_sees_only_leased_gpu() {
+    #[ignore = "requires Linux, Docker, NVIDIA runtime, at least two GPUs, and a digest-pinned image whose default command prints nvidia-smi -L"]
+    fn physical_linux_nvidia_isolation_gate() {
+        use crate::docker_runtime_backend::LinuxNativeDockerBackend;
+
+        run_physical_isolation_gate(
+            LinuxNativeDockerBackend::default(),
+            std::env::var("BURD_LINUX_NVIDIA_TEST_IMAGE")
+                .expect("BURD_LINUX_NVIDIA_TEST_IMAGE is required"),
+            std::env::var("BURD_LINUX_NVIDIA_TEST_GPU_UUID")
+                .expect("BURD_LINUX_NVIDIA_TEST_GPU_UUID is required"),
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Linux, Docker, NVIDIA runtime, at least two GPUs, and a digest-pinned image that remains running and ignores TERM"]
+    fn physical_linux_nvidia_lifecycle_gate() {
+        use crate::docker_runtime_backend::LinuxNativeDockerBackend;
+
+        run_physical_lifecycle_gate(
+            LinuxNativeDockerBackend::default(),
+            std::env::var("BURD_LINUX_NVIDIA_LIFECYCLE_TEST_IMAGE")
+                .expect("BURD_LINUX_NVIDIA_LIFECYCLE_TEST_IMAGE is required"),
+            std::env::var("BURD_LINUX_NVIDIA_TEST_GPU_UUID")
+                .expect("BURD_LINUX_NVIDIA_TEST_GPU_UUID is required"),
+        );
+    }
+
+    #[test]
+    #[ignore = "requires Windows, WSL2, Linux Docker, NVIDIA GPU-PV, at least two GPUs, and a digest-pinned image whose default command prints nvidia-smi -L"]
+    fn physical_windows_wsl2_nvidia_isolation_gate() {
         use crate::docker_runtime_backend::WindowsWsl2DockerBackend;
 
-        let image_ref = std::env::var("BURD_WINDOWS_WSL2_NVIDIA_TEST_IMAGE")
-            .expect("BURD_WINDOWS_WSL2_NVIDIA_TEST_IMAGE is required");
-        let gpu_uuid = std::env::var("BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID")
-            .expect("BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID is required");
-        let now = Utc::now();
-        let mut assignment = assignment_at(now);
-        assignment.job.image_ref = image_ref.clone();
-        assignment.execution.image_ref = image_ref.clone();
-        assignment.job.gpu_uuid = gpu_uuid.clone();
-        assignment.lease.gpu_uuid = gpu_uuid.clone();
-        assignment.execution.gpu_uuid = gpu_uuid.clone();
-        let executor = DockerNvidiaProviderJobExecutor::new(
+        run_physical_isolation_gate(
             WindowsWsl2DockerBackend::default(),
-            StaticProviderJobImagePolicy::new([("llm_inference", image_ref)]),
+            std::env::var("BURD_WINDOWS_WSL2_NVIDIA_TEST_IMAGE")
+                .expect("BURD_WINDOWS_WSL2_NVIDIA_TEST_IMAGE is required"),
+            std::env::var("BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID")
+                .expect("BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID is required"),
         );
-        let outcome = executor
-            .execute(assignment, JobCancellation::default())
-            .unwrap();
-        let logs = format!(
-            "{}\n{}",
-            outcome.metrics["stdout_tail"].as_str().unwrap_or_default(),
-            outcome.metrics["stderr_tail"].as_str().unwrap_or_default()
+    }
+
+    #[test]
+    #[ignore = "requires Windows, WSL2, Linux Docker, NVIDIA GPU-PV, at least two GPUs, and a digest-pinned image that remains running and ignores TERM"]
+    fn physical_windows_wsl2_nvidia_lifecycle_gate() {
+        use crate::docker_runtime_backend::WindowsWsl2DockerBackend;
+
+        run_physical_lifecycle_gate(
+            WindowsWsl2DockerBackend::default(),
+            std::env::var("BURD_WINDOWS_WSL2_NVIDIA_LIFECYCLE_TEST_IMAGE")
+                .expect("BURD_WINDOWS_WSL2_NVIDIA_LIFECYCLE_TEST_IMAGE is required"),
+            std::env::var("BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID")
+                .expect("BURD_WINDOWS_WSL2_NVIDIA_TEST_GPU_UUID is required"),
         );
-        assert!(logs.contains(&gpu_uuid));
-        assert_eq!(logs.matches("GPU-").count(), 1);
     }
 }
