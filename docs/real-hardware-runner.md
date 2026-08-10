@@ -26,6 +26,7 @@ The workflow:
 - disables persisted checkout credentials;
 - isolates generic detection state under `runner.temp`;
 - requires digest-pinned gate images already present on NVIDIA runners;
+- executes full-SHA-pinned Actions with Rust `1.96.0`;
 - uploads sanitized physical-gate evidence for the evaluated commit.
 
 In GitHub repository settings, configure the `real-hardware` environment with

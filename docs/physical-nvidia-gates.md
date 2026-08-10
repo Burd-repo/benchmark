@@ -87,6 +87,37 @@ contains the commit, platform, GPU count, SHA-256 of the normalized inventory
 and selected UUID, host/WSL kernel, Docker/driver/Rust versions, image digests,
 test logs, and `result=passed` only after every physical test succeeds.
 
+## Supply-chain Reproducibility
+
+Every third-party Action in the physical workflow is pinned by full commit SHA.
+The trailing `v4`, `v2`, or `stable action code` comments are review hints only;
+GitHub never resolves a mutable tag or branch at execution time. Rust is fixed
+to `1.96.0` instead of following the moving `stable` channel.
+
+An Action or Rust update requires a reviewed repository change and invalidates
+the previous execution environment for promotion purposes. Both platform gates
+used for one promotion must run from the same approved Burd commit with the
+same pinned workflow, Rust version, and configured image digests. The evidence
+also records the observed `rustc`, Docker, driver, host, and WSL versions.
+
+## Persistent Approval Record
+
+Workflow artifacts are retained for 30 days and are not the durable production
+authorization record. After both platform gates pass and before #97 begins, a
+separate reviewed change must add
+`docs/evidence/physical-nvidia-gate-approval.md` with non-sensitive fields:
+
+- the exact Burd commit tested by both platforms;
+- Linux and Windows workflow run IDs and artifact names;
+- SHA-256 of each downloaded evidence artifact;
+- result, execution timestamp, and runner class;
+- Docker, NVIDIA driver, host/WSL, and Rust versions;
+- isolation, lifecycle, and runtime-proof image digests;
+- reviewer identity and links to the accepted workflow runs.
+
+Do not create an empty approval file and do not record a platform as approved
+from an ignored, skipped, failed, expired, or unavailable artifact.
+
 ## Promotion Rule
 
 A passing artifact is review evidence, not an automatic policy override. Any
