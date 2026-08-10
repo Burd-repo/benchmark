@@ -173,6 +173,7 @@ The current worker revalidates the complete bundle before acceptance and reports
 transitions through the existing authenticated job endpoints. `POST /v1/jobs/{job_id}/cancel`
 remains administrative; the Agent discovers its terminal decision through authenticated polling,
 not a WebSocket push command. Cancellation is cooperative during artifact transfer: progress checks
-occur for each 64 KiB chunk, while a transport operation that makes no progress remains bounded by
-the existing 120-second HTTP timeout. A failed post-cancellation workspace cleanup stops the worker
-instead of accepting another assignment. Production worker activation remains disabled.
+occur for each 64 KiB chunk. DNS, connect, request send, body send, response receive, and body
+receive phases are each capped at 30 seconds, with a separate 120-second whole-call ceiling. A
+failed post-cancellation workspace cleanup stops the worker instead of accepting another
+assignment. Production worker activation remains disabled.

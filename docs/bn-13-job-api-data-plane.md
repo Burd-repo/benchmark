@@ -75,8 +75,9 @@ The Agent polls active execution control immediately after acceptance. Remote ca
 propagated through data-plane operations and the executor, always attempts workspace cleanup, and
 does not submit a contradictory `failed` result after the Control Plane has made `cancelled`
 authoritative. A failed cleanup stops the worker before it accepts another assignment. Transfer
-cancellation is cooperative per 64 KiB progress chunk; no-progress HTTP I/O is still bounded by the
-existing 120-second transport timeout.
+cancellation is cooperative per 64 KiB progress chunk. Each HTTP transport phase is capped at 30
+seconds and the complete call remains capped at 120 seconds, so blocked I/O cannot defer a
+cancellation checkpoint for the previous whole-call limit.
 
 The current transport is a Control Plane-owned filesystem object-store adapter.
 Customer input ingestion, externally signed object-store URLs, retention, and
