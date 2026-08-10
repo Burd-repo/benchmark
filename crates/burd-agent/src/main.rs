@@ -35,7 +35,8 @@ use burd_protocol::{
 use clap::Parser;
 use cli::{
     ApiTokenCommands, BenchCommands, ChallengeCommands, Cli, Commands, EnrollmentCommands,
-    HistoryCommands, IdentityCommands, RemoteSessionCommands, RuntimeCommands, UptimeCommands,
+    HistoryCommands, IdentityCommands, ProviderJobWorkerMode, RemoteSessionCommands,
+    RuntimeCommands, UptimeCommands,
 };
 use serde::Deserialize;
 use std::path::Path;
@@ -382,13 +383,44 @@ fn run() -> Result<()> {
                 telemetry,
                 telemetry_batch_samples,
                 proofs,
+                provider_job_worker_mode,
+                provider_job_images,
+                provider_job_artifact_helper_image,
             } => {
-                let result = remote_session::connect(
+                let provider_jobs = match provider_job_worker_mode {
+                    ProviderJobWorkerMode::Disabled => {
+                        if !provider_job_images.is_empty()
+                            || provider_job_artifact_helper_image.is_some()
+                        {
+                            return Err(AgentExitError::invalid_invocation(
+                                "provider_job_canary_config",
+                                "provider job image options require --provider-job-worker-mode canary",
+                            )
+                            .into());
+                        }
+                        remote_session::ProviderJobWorkerOptions::disabled()
+                    }
+                    ProviderJobWorkerMode::Canary => {
+                        let artifact_helper_image =
+                            provider_job_artifact_helper_image.ok_or_else(|| {
+                                AgentExitError::invalid_invocation(
+                                    "provider_job_canary_config",
+                                    "canary mode requires --provider-job-artifact-helper-image",
+                                )
+                            })?;
+                        remote_session::ProviderJobWorkerOptions::canary(
+                            provider_job_images,
+                            artifact_helper_image,
+                        )
+                    }
+                };
+                let result = remote_session::connect_with_provider_jobs(
                     AGENT_VERSION,
                     max_reconnect_delay_seconds,
                     telemetry,
                     telemetry_batch_samples,
                     proofs,
+                    provider_jobs,
                 )?;
                 if let Some(result) = result {
                     print_json(&result)?;
@@ -920,6 +952,60 @@ mod tests {
 
         let generic = anyhow::anyhow!("legacy command failure");
         assert_eq!(exit_code_for_error(&generic), 1);
+    }
+
+    #[test]
+    fn provider_job_worker_cli_is_disabled_by_default_and_explicit_for_canary() {
+        let disabled = Cli::try_parse_from(["burd-agent", "remote-session", "connect"]).unwrap();
+        let Commands::RemoteSession {
+            command:
+                RemoteSessionCommands::Connect {
+                    provider_job_worker_mode,
+                    provider_job_images,
+                    provider_job_artifact_helper_image,
+                    ..
+                },
+        } = disabled.command
+        else {
+            panic!("remote-session connect did not parse");
+        };
+        assert_eq!(provider_job_worker_mode, ProviderJobWorkerMode::Disabled);
+        assert!(provider_job_images.is_empty());
+        assert!(provider_job_artifact_helper_image.is_none());
+
+        let image = format!("ghcr.io/burd/canary@sha256:{}", "a".repeat(64));
+        let helper = format!("ghcr.io/burd/artifact-helper@sha256:{}", "b".repeat(64));
+        let image_pair = format!("llm_inference={image}");
+        let canary = Cli::try_parse_from([
+            "burd-agent",
+            "remote-session",
+            "connect",
+            "--provider-job-worker-mode",
+            "canary",
+            "--provider-job-image",
+            &image_pair,
+            "--provider-job-artifact-helper-image",
+            &helper,
+        ])
+        .unwrap();
+        let Commands::RemoteSession {
+            command:
+                RemoteSessionCommands::Connect {
+                    provider_job_worker_mode,
+                    provider_job_images,
+                    provider_job_artifact_helper_image,
+                    ..
+                },
+        } = canary.command
+        else {
+            panic!("canary remote-session connect did not parse");
+        };
+        assert_eq!(provider_job_worker_mode, ProviderJobWorkerMode::Canary);
+        assert_eq!(provider_job_images, [image_pair]);
+        assert_eq!(
+            provider_job_artifact_helper_image.as_deref(),
+            Some(&*helper)
+        );
     }
 
     #[test]

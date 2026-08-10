@@ -1,8 +1,20 @@
+use crate::docker_nvidia_executor::{
+    DockerNvidiaProviderJobExecutor, StaticProviderJobImagePolicy,
+};
+use crate::docker_runtime_backend::LinuxNativeDockerBackend;
 use crate::exit_status::AgentExitError;
 use crate::gpu_inventory_publisher::run_worker as run_gpu_inventory_publisher;
 use crate::lifecycle::{AgentLifecyclePhase, LifecycleReporter};
+#[cfg(any(test, feature = "integration-test-support"))]
+use crate::provider_job_data_plane::NoArtifactProviderJobDataPlane;
+use crate::provider_job_data_plane::{HttpProviderJobDataPlane, ProviderJobDataPlane};
 use crate::provider_job_executor::ProviderJobExecutor;
-use crate::provider_job_worker::{ProviderJobControlPlane, run_worker as run_provider_job_worker};
+#[cfg(any(test, feature = "integration-test-support"))]
+use crate::provider_job_worker::run_worker_with_data_plane_and_config as run_provider_job_worker;
+use crate::provider_job_worker::{
+    LocalProviderJobControlPlane, ProviderJobControlPlane, ProviderJobWorkerConfig,
+    run_canary_worker_with_data_plane_and_config as run_canary_provider_job_worker,
+};
 use crate::remote_enrollment::{
     ControlPlaneRequestError, join_url, post_json_checked, refresh_credential,
     refresh_credential_checked,
@@ -20,18 +32,19 @@ use burd_hardware::{
     NvidiaTelemetryCollection, collect_nvidia_gpu_inventory, collect_nvidia_telemetry,
 };
 use burd_protocol::{
-    ClientControlMessage, GpuTelemetrySample, HeartbeatPayload, RemoteEnrollmentState,
-    RemoteSessionRecord, RemoteSessionResume, RemoteSessionState, RemoteSessionStateStatus,
-    ServerControlMessage, SignedTelemetryBatch, StartRemoteSessionRequest,
-    StartRemoteSessionResponse, TELEMETRY_CANONICALIZATION_VERSION, TELEMETRY_SCHEMA_VERSION,
-    TelemetryBatchPayload, TelemetryBatchReceipt, clear_remote_session, load_identity,
-    load_private_key, load_remote_enrollment, load_remote_session, load_remote_session_optional,
-    save_remote_session, show_remote_session, sign_message, telemetry_batch_hash,
-    telemetry_batch_signature_message, update_remote_session_sequence,
-    update_remote_telemetry_sequence,
+    ClientControlMessage, GpuTelemetrySample, HeartbeatPayload, PROVIDER_JOB_APPROVED_TEMPLATES,
+    RemoteEnrollmentState, RemoteSessionRecord, RemoteSessionResume, RemoteSessionState,
+    RemoteSessionStateStatus, ServerControlMessage, SignedTelemetryBatch,
+    StartRemoteSessionRequest, StartRemoteSessionResponse, TELEMETRY_CANONICALIZATION_VERSION,
+    TELEMETRY_SCHEMA_VERSION, TelemetryBatchPayload, TelemetryBatchReceipt, clear_remote_session,
+    immutable_image_ref, load_identity, load_private_key, load_remote_enrollment,
+    load_remote_session, load_remote_session_optional, save_remote_session, show_remote_session,
+    sign_message, telemetry_batch_hash, telemetry_batch_signature_message,
+    update_remote_session_sequence, update_remote_telemetry_sequence,
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use futures_util::{SinkExt, StreamExt};
+use std::collections::BTreeSet;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -45,6 +58,31 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
 
 const SESSION_OPERATION_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+const PROVIDER_JOB_CANARY_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_PROVIDER_JOB_CANARY_IMAGES: usize = 32;
+
+#[derive(Debug, Clone, Default)]
+pub enum ProviderJobWorkerOptions {
+    #[default]
+    Disabled,
+    Canary {
+        allowed_images: Vec<String>,
+        artifact_helper_image: String,
+    },
+}
+
+impl ProviderJobWorkerOptions {
+    pub const fn disabled() -> Self {
+        Self::Disabled
+    }
+
+    pub fn canary(allowed_images: Vec<String>, artifact_helper_image: String) -> Self {
+        Self::Canary {
+            allowed_images,
+            artifact_helper_image,
+        }
+    }
+}
 
 pub fn connect(
     agent_version: &str,
@@ -52,6 +90,24 @@ pub fn connect(
     telemetry: bool,
     telemetry_batch_samples: usize,
     proofs: bool,
+) -> Result<Option<RemoteSessionStateStatus>, AgentExitError> {
+    connect_with_provider_jobs(
+        agent_version,
+        max_reconnect_delay_seconds,
+        telemetry,
+        telemetry_batch_samples,
+        proofs,
+        ProviderJobWorkerOptions::disabled(),
+    )
+}
+
+pub fn connect_with_provider_jobs(
+    agent_version: &str,
+    max_reconnect_delay_seconds: u64,
+    telemetry: bool,
+    telemetry_batch_samples: usize,
+    proofs: bool,
+    provider_jobs: ProviderJobWorkerOptions,
 ) -> Result<Option<RemoteSessionStateStatus>, AgentExitError> {
     validate_telemetry_batch_samples(telemetry_batch_samples)
         .map_err(|error| AgentExitError::invalid_invocation("telemetry_config", error))?;
@@ -63,6 +119,7 @@ pub fn connect(
         let identity =
             load_identity().map_err(|error| AgentExitError::local_state("local_state", error))?;
         let telemetry_enabled = proofs || telemetry || identity.telemetry_enabled;
+        let provider_job_runtime = prepare_provider_job_runtime(&provider_jobs, proofs)?;
         let proof_agent_version = proofs.then(|| agent_version.to_string());
         let retry_seed = stable_retry_seed(&identity.machine_id);
         let runtime = tokio::runtime::Runtime::new().map_err(|error| {
@@ -88,7 +145,7 @@ pub fn connect(
                 collect_nvidia_gpu_inventory,
                 proof_agent_version,
                 execute_remote_proof,
-                None,
+                provider_job_runtime,
                 prepare_connection,
                 runtime_lifecycle,
                 shutdown_rx,
@@ -106,6 +163,132 @@ pub fn connect(
     show_remote_session()
         .map(Some)
         .map_err(|error| AgentExitError::local_state("local_state", error))
+}
+
+#[derive(Debug)]
+struct ValidatedProviderJobCanary {
+    allowed_images: Vec<(String, String)>,
+    artifact_helper_image: String,
+}
+
+fn prepare_provider_job_runtime(
+    options: &ProviderJobWorkerOptions,
+    proofs: bool,
+) -> Result<Option<ProviderJobRuntime>, AgentExitError> {
+    let Some(config) = validate_provider_job_worker_options(options, proofs, std::env::consts::OS)?
+    else {
+        return Ok(None);
+    };
+    let enrollment = load_remote_enrollment()
+        .map_err(|error| AgentExitError::local_state("provider_job_canary_state", error))?;
+    let data_plane = HttpProviderJobDataPlane::for_control_plane(enrollment.control_plane_url)
+        .map_err(|error| {
+            AgentExitError::local_state("provider_job_canary_data_plane", error.to_string())
+        })?;
+    let backend =
+        LinuxNativeDockerBackend::with_artifact_helper_image(&config.artifact_helper_image)
+            .map_err(|error| {
+                AgentExitError::local_state("provider_job_canary_runtime", error.to_string())
+            })?;
+    let workload_images = config
+        .allowed_images
+        .iter()
+        .map(|(_, image_ref)| image_ref.clone())
+        .collect::<Vec<_>>();
+    let environment = backend
+        .preflight_canary(&workload_images, PROVIDER_JOB_CANARY_PREFLIGHT_TIMEOUT)
+        .map_err(|error| {
+            AgentExitError::local_state("provider_job_canary_runtime", error.to_string())
+        })?;
+    log_provider_job_canary_enabled(config.allowed_images.len(), environment.gpu_uuids.len());
+    let image_policy = StaticProviderJobImagePolicy::new(config.allowed_images);
+    Ok(Some(ProviderJobRuntime {
+        control_plane: Arc::new(LocalProviderJobControlPlane::default()),
+        executor: Arc::new(DockerNvidiaProviderJobExecutor::new(backend, image_policy)),
+        data_plane: Arc::new(data_plane),
+        config: ProviderJobWorkerConfig::default(),
+        mode: ProviderJobRuntimeMode::Canary,
+    }))
+}
+
+fn validate_provider_job_worker_options(
+    options: &ProviderJobWorkerOptions,
+    proofs: bool,
+    host_os: &str,
+) -> Result<Option<ValidatedProviderJobCanary>, AgentExitError> {
+    let ProviderJobWorkerOptions::Canary {
+        allowed_images,
+        artifact_helper_image,
+    } = options
+    else {
+        return Ok(None);
+    };
+    if host_os != "linux" {
+        return Err(canary_config_error(
+            "provider job canary mode requires a native Linux host",
+        ));
+    }
+    if !proofs {
+        return Err(canary_config_error(
+            "provider job canary mode requires --proofs",
+        ));
+    }
+    if allowed_images.is_empty() || allowed_images.len() > MAX_PROVIDER_JOB_CANARY_IMAGES {
+        return Err(canary_config_error(
+            "provider job canary mode requires 1 to 32 exact image allowlist entries",
+        ));
+    }
+    if !immutable_image_ref(artifact_helper_image) {
+        return Err(canary_config_error(
+            "provider job artifact-helper image must be digest-pinned",
+        ));
+    }
+
+    let mut unique = BTreeSet::new();
+    let mut parsed = Vec::with_capacity(allowed_images.len());
+    for entry in allowed_images {
+        let Some((template_id, image_ref)) = entry.split_once('=') else {
+            return Err(canary_config_error(
+                "provider job image entries must use TEMPLATE=IMAGE@sha256:DIGEST",
+            ));
+        };
+        if entry.trim() != entry
+            || !PROVIDER_JOB_APPROVED_TEMPLATES.contains(&template_id)
+            || !immutable_image_ref(image_ref)
+        {
+            return Err(canary_config_error(
+                "provider job image entry is not an approved template with a digest-pinned image",
+            ));
+        }
+        let pair = (template_id.to_string(), image_ref.to_string());
+        if !unique.insert(pair.clone()) {
+            return Err(canary_config_error(
+                "provider job image allowlist contains a duplicate entry",
+            ));
+        }
+        parsed.push(pair);
+    }
+    Ok(Some(ValidatedProviderJobCanary {
+        allowed_images: parsed,
+        artifact_helper_image: artifact_helper_image.clone(),
+    }))
+}
+
+fn canary_config_error(detail: &'static str) -> AgentExitError {
+    AgentExitError::invalid_invocation("provider_job_canary_config", detail)
+}
+
+fn log_provider_job_canary_enabled(allowed_image_count: usize, gpu_count: usize) {
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "schema_version": "burd.provider-job-worker.v1",
+            "event": "provider_job_worker_enabled",
+            "worker_mode": "canary",
+            "allowed_image_count": allowed_image_count,
+            "gpu_count": gpu_count,
+        })
+    );
 }
 
 fn complete_lifecycle(
@@ -376,6 +559,9 @@ pub async fn connect_until_shutdown_with_provider_job_runtime(
             Some(ProviderJobRuntime {
                 control_plane: job_control_plane,
                 executor: job_executor,
+                data_plane: Arc::new(NoArtifactProviderJobDataPlane),
+                config: ProviderJobWorkerConfig::default(),
+                mode: ProviderJobRuntimeMode::Standard,
             }),
             prepare_connection,
             lifecycle.clone(),
@@ -400,10 +586,54 @@ pub async fn connect_until_shutdown_with_provider_job_runtime(
 struct ProviderJobRuntime {
     control_plane: Arc<dyn ProviderJobControlPlane>,
     executor: Arc<dyn ProviderJobExecutor>,
+    data_plane: Arc<dyn ProviderJobDataPlane>,
+    config: ProviderJobWorkerConfig,
+    mode: ProviderJobRuntimeMode,
+}
+
+enum ProviderJobRuntimeMode {
+    #[cfg(any(test, feature = "integration-test-support"))]
+    Standard,
+    Canary,
 }
 
 type SessionWorkerResult = (&'static str, Result<(), String>);
 type SessionWorkerJoinResult = Option<Result<SessionWorkerResult, tokio::task::JoinError>>;
+
+fn spawn_provider_job_worker(
+    workers: &mut JoinSet<SessionWorkerResult>,
+    provider_jobs: Option<ProviderJobRuntime>,
+    shutdown: watch::Receiver<bool>,
+) {
+    if let Some(provider_jobs) = provider_jobs {
+        workers.spawn(async move {
+            let run = match provider_jobs.mode {
+                #[cfg(any(test, feature = "integration-test-support"))]
+                ProviderJobRuntimeMode::Standard => {
+                    run_provider_job_worker(
+                        provider_jobs.control_plane,
+                        provider_jobs.executor,
+                        provider_jobs.data_plane,
+                        shutdown,
+                        provider_jobs.config,
+                    )
+                    .await
+                }
+                ProviderJobRuntimeMode::Canary => {
+                    run_canary_provider_job_worker(
+                        provider_jobs.control_plane,
+                        provider_jobs.executor,
+                        provider_jobs.data_plane,
+                        shutdown,
+                        provider_jobs.config,
+                    )
+                    .await
+                }
+            };
+            ("provider_job_worker", run)
+        });
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 async fn run_session_supervisor(
@@ -479,20 +709,7 @@ async fn run_session_supervisor(
             )
         });
     }
-    if let Some(provider_jobs) = provider_jobs {
-        let job_shutdown = session_shutdown_rx.clone();
-        workers.spawn(async move {
-            (
-                "provider_job_worker",
-                run_provider_job_worker(
-                    provider_jobs.control_plane,
-                    provider_jobs.executor,
-                    job_shutdown,
-                )
-                .await,
-            )
-        });
-    }
+    spawn_provider_job_worker(&mut workers, provider_jobs, session_shutdown_rx.clone());
     let control = run_control_loop(
         ControlLoopRuntime {
             agent_version,
@@ -1800,6 +2017,18 @@ fn remote_error(value: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use crate::exit_status::AgentExitCategory;
+    use crate::provider_job_executor::{
+        JobCancellation, ProviderJobAssignment, ProviderJobExecutionError,
+        ProviderJobExecutionOutcome,
+    };
+    use crate::provider_job_worker::{
+        ProviderJobControlError, ProviderJobPoll, ProviderJobWorkerContext,
+    };
+    use burd_protocol::{
+        AcceptJobRequest, JobEventRequest, JobEventResponse, JobExecutionControlResponse,
+        JobResponse, SubmitJobResultRequest, SubmitJobResultResponse,
+    };
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn telemetry_batch_sample_limit_is_validated_before_connecting() {
@@ -1807,6 +2036,193 @@ mod tests {
         assert!(validate_telemetry_batch_samples(64).is_ok());
         assert!(validate_telemetry_batch_samples(0).is_err());
         assert!(validate_telemetry_batch_samples(65).is_err());
+    }
+
+    fn valid_canary_options() -> ProviderJobWorkerOptions {
+        ProviderJobWorkerOptions::canary(
+            vec![format!(
+                "llm_inference=ghcr.io/burd/canary@sha256:{}",
+                "a".repeat(64)
+            )],
+            format!("ghcr.io/burd/artifact-helper@sha256:{}", "b".repeat(64)),
+        )
+    }
+
+    #[test]
+    fn provider_job_worker_is_disabled_without_platform_or_proof_requirements() {
+        assert!(
+            validate_provider_job_worker_options(
+                &ProviderJobWorkerOptions::disabled(),
+                false,
+                "windows"
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn provider_job_canary_config_is_linux_proof_bound_and_exact() {
+        let validated =
+            validate_provider_job_worker_options(&valid_canary_options(), true, "linux")
+                .unwrap()
+                .unwrap();
+        assert_eq!(validated.allowed_images.len(), 1);
+        assert_eq!(validated.allowed_images[0].0, "llm_inference");
+
+        for (options, proofs, host_os) in [
+            (valid_canary_options(), false, "linux"),
+            (valid_canary_options(), true, "windows"),
+            (
+                ProviderJobWorkerOptions::canary(
+                    Vec::new(),
+                    format!("ghcr.io/burd/artifact-helper@sha256:{}", "b".repeat(64)),
+                ),
+                true,
+                "linux",
+            ),
+            (
+                ProviderJobWorkerOptions::canary(
+                    vec![format!(
+                        "llm_inference=ghcr.io/burd/canary@sha256:{}",
+                        "a".repeat(64)
+                    )],
+                    "ghcr.io/burd/artifact-helper:latest".to_string(),
+                ),
+                true,
+                "linux",
+            ),
+            (
+                ProviderJobWorkerOptions::canary(
+                    vec![format!(
+                        "shell=ghcr.io/burd/canary@sha256:{}",
+                        "a".repeat(64)
+                    )],
+                    format!("ghcr.io/burd/artifact-helper@sha256:{}", "b".repeat(64)),
+                ),
+                true,
+                "linux",
+            ),
+        ] {
+            let error =
+                validate_provider_job_worker_options(&options, proofs, host_os).unwrap_err();
+            assert_eq!(error.category(), AgentExitCategory::InvalidInvocation);
+            assert_eq!(error.failure_kind(), "provider_job_canary_config");
+        }
+
+        let pair = format!(
+            "llm_inference=ghcr.io/burd/canary@sha256:{}",
+            "a".repeat(64)
+        );
+        let duplicate = ProviderJobWorkerOptions::canary(
+            vec![pair.clone(), pair],
+            format!("ghcr.io/burd/artifact-helper@sha256:{}", "b".repeat(64)),
+        );
+        assert!(validate_provider_job_worker_options(&duplicate, true, "linux").is_err());
+    }
+
+    struct CountingJobControlPlane {
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl ProviderJobControlPlane for CountingJobControlPlane {
+        fn next_job(&self) -> Result<ProviderJobPoll, ProviderJobControlError> {
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            Err(ProviderJobControlError::new(
+                "server_error",
+                "test poll stopped before assignment",
+            ))
+        }
+
+        fn accept_job(
+            &self,
+            _context: &ProviderJobWorkerContext,
+            _job_id: &str,
+            _request: &AcceptJobRequest,
+        ) -> Result<JobResponse, ProviderJobControlError> {
+            panic!("test control plane must not accept a job")
+        }
+
+        fn execution_control(
+            &self,
+            _context: &ProviderJobWorkerContext,
+            _job_id: &str,
+            _lease_id: &str,
+            _timeout: Duration,
+        ) -> Result<JobExecutionControlResponse, ProviderJobControlError> {
+            panic!("test control plane must not control an execution")
+        }
+
+        fn record_event(
+            &self,
+            _context: &ProviderJobWorkerContext,
+            _job_id: &str,
+            _request: &JobEventRequest,
+        ) -> Result<JobEventResponse, ProviderJobControlError> {
+            panic!("test control plane must not record an event")
+        }
+
+        fn submit_result(
+            &self,
+            _context: &ProviderJobWorkerContext,
+            _job_id: &str,
+            _request: &SubmitJobResultRequest,
+        ) -> Result<SubmitJobResultResponse, ProviderJobControlError> {
+            panic!("test control plane must not submit a result")
+        }
+    }
+
+    struct UnusedJobExecutor;
+
+    impl ProviderJobExecutor for UnusedJobExecutor {
+        fn execute(
+            &self,
+            _assignment: ProviderJobAssignment,
+            _cancellation: JobCancellation,
+        ) -> Result<ProviderJobExecutionOutcome, ProviderJobExecutionError> {
+            panic!("test executor must not receive an assignment")
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_job_worker_polls_only_when_runtime_is_enabled() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut workers = JoinSet::new();
+
+        spawn_provider_job_worker(&mut workers, None, shutdown_rx.clone());
+        tokio::task::yield_now().await;
+        assert!(workers.is_empty());
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+
+        spawn_provider_job_worker(
+            &mut workers,
+            Some(ProviderJobRuntime {
+                control_plane: Arc::new(CountingJobControlPlane {
+                    polls: Arc::clone(&polls),
+                }),
+                executor: Arc::new(UnusedJobExecutor),
+                data_plane: Arc::new(NoArtifactProviderJobDataPlane),
+                config: ProviderJobWorkerConfig::default(),
+                mode: ProviderJobRuntimeMode::Standard,
+            }),
+            shutdown_rx,
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while polls.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("enabled provider job worker did not poll");
+        shutdown_tx.send(true).unwrap();
+        let joined = tokio::time::timeout(Duration::from_secs(1), workers.join_next())
+            .await
+            .expect("enabled provider job worker ignored shutdown")
+            .expect("enabled provider job worker was not spawned")
+            .expect("enabled provider job worker task panicked");
+        assert_eq!(joined.0, "provider_job_worker");
+        assert!(joined.1.is_ok());
     }
 
     #[tokio::test]

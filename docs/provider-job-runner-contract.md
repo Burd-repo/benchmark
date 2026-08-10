@@ -117,7 +117,8 @@ Implemented:
 - authenticated polling, local bundle/session/GPU/expiry validation, backend-authoritative acceptance revalidation, ordered `provisioning`, `running`, and `uploading` events, and terminal result submission;
 - one active execution at a time per worker, bounded in-memory replay rejection, authoritative deadline cancellation, and cooperative Agent shutdown;
 - deterministic fake-executor coverage for success, failure, invalid bundles, expiry, shutdown, and replay;
-- integration-only session-supervisor wiring for the provider job worker;
+- session-supervisor wiring for integration tests and an explicit Linux-only
+  provider-job canary that remains disabled by default;
 - exact-assignment active-job control polling, bounded Control Plane silence, and fail-closed local
   cancellation propagated through data-plane operations and the Docker executor;
 - remote administrative cancellation cleanup without submitting a contradictory `failed` result.
@@ -151,11 +152,13 @@ Implemented:
   authorization, bounded streaming, no redirects, atomic private-file writes,
   verified upload persistence, and terminal-result/upload consistency checks.
 
-The production `remote-session connect` command does not start the worker yet.
-Both platform backends and the artifact data plane remain intentionally
-disconnected until commit-bound physical gate evidence is reviewed and
-controlled activation is complete. Harness availability or an ignored test does
-not count as physical verification.
+`remote-session connect` starts no provider worker unless the operator selects
+`--provider-job-worker-mode canary` and supplies the required digest-pinned local
+image allowlist and artifact helper. Canary startup requires `--proofs`, a native
+Linux host, Docker's Linux server, the NVIDIA runtime, visible NVIDIA GPUs, and
+every configured image already present. Windows remains disconnected and denied
+by `windows_physical_gate_required`. Canary activation is not physical gate
+evidence or production approval.
 
 Not implemented:
 
@@ -165,7 +168,7 @@ Not implemented:
 - Control Plane persistence or verification of reported runtime capabilities;
 - direct scheduler trust in raw Agent-reported runtime capability remains intentionally absent;
   scheduler and assignment consume authoritative Runtime Admission instead;
-- production worker/executor wiring;
+- automatic/default worker activation and production promotion;
 - automatic WSL2, Docker, driver, or NVIDIA component installation;
 - paid workload execution.
 
@@ -176,4 +179,5 @@ not a WebSocket push command. Cancellation is cooperative during artifact transf
 occur for each 64 KiB chunk. DNS, connect, request send, body send, response receive, and body
 receive phases are each capped at 30 seconds, with a separate 120-second whole-call ceiling. A
 failed post-cancellation workspace cleanup stops the worker instead of accepting another
-assignment. Production worker activation remains disabled.
+assignment. Canary activation remains disabled by default and paid execution is
+not connected to this worker.

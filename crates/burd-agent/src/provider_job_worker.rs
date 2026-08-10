@@ -370,6 +370,12 @@ pub struct ProviderJobWorkerConfig {
     pub completed_assignment_memory: usize,
 }
 
+#[derive(Clone, Copy)]
+struct AssignmentRunConfig {
+    shutdown_grace: Duration,
+    acceptance_status_message: &'static str,
+}
+
 impl Default for ProviderJobWorkerConfig {
     fn default() -> Self {
         Self {
@@ -379,6 +385,9 @@ impl Default for ProviderJobWorkerConfig {
         }
     }
 }
+
+const STANDARD_ACCEPTANCE_STATUS_MESSAGE: &str = "provider worker accepted assignment";
+const CANARY_ACCEPTANCE_STATUS_MESSAGE: &str = "provider canary worker accepted assignment";
 
 pub async fn run_worker(
     control_plane: Arc<dyn ProviderJobControlPlane>,
@@ -414,8 +423,45 @@ pub async fn run_worker_with_data_plane_and_config(
     control_plane: Arc<dyn ProviderJobControlPlane>,
     executor: Arc<dyn ProviderJobExecutor>,
     data_plane: Arc<dyn ProviderJobDataPlane>,
+    shutdown: watch::Receiver<bool>,
+    config: ProviderJobWorkerConfig,
+) -> Result<(), String> {
+    run_worker_with_acceptance_status(
+        control_plane,
+        executor,
+        data_plane,
+        shutdown,
+        config,
+        STANDARD_ACCEPTANCE_STATUS_MESSAGE,
+    )
+    .await
+}
+
+pub async fn run_canary_worker_with_data_plane_and_config(
+    control_plane: Arc<dyn ProviderJobControlPlane>,
+    executor: Arc<dyn ProviderJobExecutor>,
+    data_plane: Arc<dyn ProviderJobDataPlane>,
+    shutdown: watch::Receiver<bool>,
+    config: ProviderJobWorkerConfig,
+) -> Result<(), String> {
+    run_worker_with_acceptance_status(
+        control_plane,
+        executor,
+        data_plane,
+        shutdown,
+        config,
+        CANARY_ACCEPTANCE_STATUS_MESSAGE,
+    )
+    .await
+}
+
+async fn run_worker_with_acceptance_status(
+    control_plane: Arc<dyn ProviderJobControlPlane>,
+    executor: Arc<dyn ProviderJobExecutor>,
+    data_plane: Arc<dyn ProviderJobDataPlane>,
     mut shutdown: watch::Receiver<bool>,
     config: ProviderJobWorkerConfig,
+    acceptance_status_message: &'static str,
 ) -> Result<(), String> {
     let mut completed = CompletedAssignments::new(config.completed_assignment_memory);
     loop {
@@ -480,7 +526,10 @@ pub async fn run_worker_with_data_plane_and_config(
             poll.context,
             assignment,
             &mut shutdown,
-            config.shutdown_grace,
+            AssignmentRunConfig {
+                shutdown_grace: config.shutdown_grace,
+                acceptance_status_message,
+            },
         )
         .await?;
         completed.insert(assignment_key);
@@ -585,8 +634,10 @@ async fn run_assignment(
     context: ProviderJobWorkerContext,
     assignment: ProviderJobAssignment,
     shutdown: &mut watch::Receiver<bool>,
-    shutdown_grace: Duration,
+    config: AssignmentRunConfig,
 ) -> Result<AssignmentDisposition, String> {
+    let shutdown_grace = config.shutdown_grace;
+    let acceptance_status_message = config.acceptance_status_message;
     let deadline =
         match assignment_deadline(&assignment.job, &assignment.lease, &assignment.data_plane) {
             Ok(deadline) => deadline,
@@ -606,7 +657,7 @@ async fn run_assignment(
                     &job_id,
                     &AcceptJobRequest {
                         lease_id,
-                        status_message: Some("provider worker accepted assignment".to_string()),
+                        status_message: Some(acceptance_status_message.to_string()),
                     },
                 )
             }
@@ -2136,6 +2187,18 @@ mod tests {
             shutdown_grace: Duration::from_millis(250),
             completed_assignment_memory: 8,
         }
+    }
+
+    #[test]
+    fn canary_worker_marks_the_persisted_acceptance_message() {
+        assert_eq!(
+            CANARY_ACCEPTANCE_STATUS_MESSAGE,
+            "provider canary worker accepted assignment"
+        );
+        assert_eq!(
+            STANDARD_ACCEPTANCE_STATUS_MESSAGE,
+            "provider worker accepted assignment"
+        );
     }
 
     async fn wait_until(mut predicate: impl FnMut() -> bool) {

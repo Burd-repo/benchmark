@@ -919,13 +919,24 @@ impl DockerCliRuntime {
             return Err(DockerRuntimeError::new("gpu_uuid_unavailable"));
         }
 
+        self.verify_container_image(&plan.image_ref, control)
+    }
+
+    fn verify_container_image(
+        &self,
+        image_ref: &str,
+        control: &DockerCommandControl,
+    ) -> Result<(), DockerRuntimeError> {
+        if !is_immutable_image_ref(image_ref) {
+            return Err(DockerRuntimeError::new("container_image_invalid"));
+        }
         let image = self.successful_docker(
             &[
                 "image".into(),
                 "inspect".into(),
                 "--format".into(),
                 "{{.Id}}".into(),
-                plan.image_ref.clone(),
+                image_ref.to_string(),
             ],
             "container_image_unavailable",
             control,
@@ -1307,6 +1318,28 @@ impl LinuxNativeDockerBackend {
             cli: DockerCliRuntime::default(),
             artifact_helper_image_ref: Some(image_ref),
         })
+    }
+
+    /// Read-only startup gate for the explicitly enabled provider-job canary.
+    pub fn preflight_canary(
+        &self,
+        workload_image_refs: &[String],
+        operation_timeout: Duration,
+    ) -> Result<DockerRuntimeEnvironment, DockerRuntimeError> {
+        self.verify_platform(&DockerCommandControl::cleanup(operation_timeout))?;
+        let environment =
+            self.runtime_environment(&DockerCommandControl::cleanup(operation_timeout))?;
+        self.cli.verify_artifact_helper_image(
+            self.artifact_helper_image()?,
+            &DockerCommandControl::cleanup(operation_timeout),
+        )?;
+        for image_ref in workload_image_refs {
+            self.cli.verify_container_image(
+                image_ref,
+                &DockerCommandControl::cleanup(operation_timeout),
+            )?;
+        }
+        Ok(environment)
     }
 
     fn artifact_helper_image(&self) -> Result<&str, DockerRuntimeError> {

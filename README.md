@@ -204,6 +204,12 @@ burd-agent remote-session status --json
 burd-agent remote-session lifecycle --json
 ```
 
+O Provider Job Worker permanece desligado por padrao. Em um host Linux/NVIDIA
+controlado, o canario pode ser habilitado explicitamente com `--proofs`, uma
+allowlist local de pares template/imagem e o helper de artefatos, todos pinados
+por digest. Veja
+[`docs/provider-job-canary-activation.md`](docs/provider-job-canary-activation.md).
+
 O agente mantem uma conexao WebSocket de saida autenticada, com heartbeat
 sequenciado, retomada e backoff. Um lock exclusivo por diretorio de estado
 serializa `remote-session connect` e mudancas criticas de identity, enrollment e
@@ -700,9 +706,11 @@ Esses contratos sao locais e nao criam jobs, leases, scheduler assignment, marke
 ## Runtime seguro
 
 O BN-12 iniciou o planejamento local de runtime seguro. O estado atual tambem
-inclui executores Docker/NVIDIA desconectados para Linux nativo e Windows/WSL2,
-data plane, Runtime Admission e gates de autoridade ate o cancelamento ativo.
-Nada disso habilita execucao produtiva em `remote-session connect`.
+inclui executores Docker/NVIDIA para Linux nativo e Windows/WSL2, data plane,
+Runtime Admission e gates de autoridade ate o cancelamento ativo. Somente o
+backend Linux pode ser ligado ao `remote-session connect`, em modo canario local
+explicito, desligado por padrao e sem execucao paga. Isso nao representa
+aprovacao fisica NVIDIA nem disponibilidade de producao.
 
 Comandos:
 
