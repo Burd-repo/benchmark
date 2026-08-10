@@ -73,8 +73,9 @@ cancellation clears the job credential hash and expiry.
 - 64 KiB streaming buffers rather than whole-artifact buffering;
 - HTTPS only, except loopback HTTP for local tests;
 - redirects disabled;
-- one global connection/read/operation timeout plus the authoritative job,
-  lease, credential, and shutdown deadline;
+- 30-second DNS, connect, request, upload, response, and download phase
+  timeouts plus a separate 120-second whole-call ceiling and the authoritative
+  job, lease, credential, and shutdown deadline;
 - relative grant URLs only, without query strings, fragments, or embedded
   credentials;
 - helper and workload images must be immutable/digest-pinned and already local;

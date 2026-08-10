@@ -14,7 +14,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const DATA_PLANE_TIMEOUT: Duration = Duration::from_secs(120);
+const DATA_PLANE_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
+const DATA_PLANE_PHASE_TIMEOUT: Duration = Duration::from_secs(30);
 const TRANSFER_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_ARTIFACTS: usize = 32;
 const MAX_ARTIFACT_BYTES: u64 = 10 * 1024 * 1024 * 1024;
@@ -83,7 +84,8 @@ impl ProviderJobDataPlane for NoArtifactProviderJobDataPlane {
 pub struct HttpProviderJobDataPlane {
     control_plane_url: String,
     workspace_root: PathBuf,
-    timeout: Duration,
+    total_timeout: Duration,
+    phase_timeout: Duration,
 }
 
 struct OutputUpload<'a> {
@@ -114,7 +116,8 @@ impl HttpProviderJobDataPlane {
         Ok(Self {
             control_plane_url: control_plane_url.trim_end_matches('/').to_string(),
             workspace_root: workspace_root.into(),
-            timeout: DATA_PLANE_TIMEOUT,
+            total_timeout: DATA_PLANE_TOTAL_TIMEOUT,
+            phase_timeout: DATA_PLANE_PHASE_TIMEOUT,
         })
     }
 
@@ -138,14 +141,19 @@ impl HttpProviderJobDataPlane {
         let url = self.scoped_url(grant_url)?;
         let request = ureq::get(&url)
             .config()
-            .timeout_global(Some(self.timeout))
+            .timeout_global(Some(self.total_timeout))
+            .timeout_resolve(Some(self.phase_timeout))
+            .timeout_connect(Some(self.phase_timeout))
+            .timeout_send_request(Some(self.phase_timeout))
+            .timeout_recv_response(Some(self.phase_timeout))
+            .timeout_recv_body(Some(self.phase_timeout))
             .max_redirects(0)
             .http_status_as_error(false)
             .build();
         let mut response = request
             .header("Authorization", &format!("Bearer {credential}"))
             .call()
-            .map_err(|_| data_plane_error("artifact_download_transport"))?;
+            .map_err(|_| transfer_error(cancellation, "artifact_download_transport"))?;
         if !response.status().is_success() {
             return Err(data_plane_error("artifact_download_rejected"));
         }
@@ -175,7 +183,7 @@ impl HttpProviderJobDataPlane {
                 cancellation.ensure_not_cancelled()?;
                 let read = reader
                     .read(&mut buffer)
-                    .map_err(|_| data_plane_error("artifact_download_read_failed"))?;
+                    .map_err(|_| transfer_error(cancellation, "artifact_download_read_failed"))?;
                 if read == 0 {
                     break;
                 }
@@ -287,10 +295,17 @@ impl HttpProviderJobDataPlane {
         reader: R,
         cancellation: &JobCancellation,
     ) -> Result<JobArtifact, ProviderJobExecutionError> {
+        cancellation.ensure_not_cancelled()?;
         let url = self.scoped_url(upload.grant_url)?;
         let request = ureq::put(&url)
             .config()
-            .timeout_global(Some(self.timeout))
+            .timeout_global(Some(self.total_timeout))
+            .timeout_resolve(Some(self.phase_timeout))
+            .timeout_connect(Some(self.phase_timeout))
+            .timeout_send_request(Some(self.phase_timeout))
+            .timeout_send_body(Some(self.phase_timeout))
+            .timeout_recv_response(Some(self.phase_timeout))
+            .timeout_recv_body(Some(self.phase_timeout))
             .max_redirects(0)
             .http_status_as_error(false)
             .build();
@@ -311,14 +326,14 @@ impl HttpProviderJobDataPlane {
                     .unwrap_or("application/octet-stream"),
             )
             .send(ureq::SendBody::from_reader(&mut reader))
-            .map_err(|_| data_plane_error("artifact_upload_transport"))?;
+            .map_err(|_| transfer_error(cancellation, "artifact_upload_transport"))?;
         if !response.status().is_success() {
             return Err(data_plane_error("artifact_upload_rejected"));
         }
         let receipt = response
             .body_mut()
             .read_json::<JobArtifactUploadResponse>()
-            .map_err(|_| data_plane_error("artifact_upload_receipt_invalid"))?;
+            .map_err(|_| transfer_error(cancellation, "artifact_upload_receipt_invalid"))?;
         if receipt.job_id != upload.job_id
             || receipt.artifact.artifact_id != upload.expected.artifact_id
             || receipt.artifact.object_key != upload.expected.object_key
@@ -328,6 +343,16 @@ impl HttpProviderJobDataPlane {
             return Err(data_plane_error("artifact_upload_receipt_mismatch"));
         }
         Ok(receipt.artifact)
+    }
+}
+
+fn transfer_error(
+    cancellation: &JobCancellation,
+    fallback_code: &'static str,
+) -> ProviderJobExecutionError {
+    match cancellation.ensure_not_cancelled() {
+        Ok(()) => data_plane_error(fallback_code),
+        Err(error) => error,
     }
 }
 
@@ -749,7 +774,7 @@ mod tests {
         });
         let mut client =
             HttpProviderJobDataPlane::new(format!("http://{address}"), root.clone()).unwrap();
-        client.timeout = Duration::from_secs(5);
+        client.total_timeout = Duration::from_secs(5);
         let grant_url = JobDataPlaneUrl {
             artifact_id: artifact.artifact_id.clone(),
             method: "GET".to_string(),
@@ -771,6 +796,80 @@ mod tests {
         canceller.join().unwrap();
         server.join().unwrap();
         assert!(!workspace.inputs_dir.join(".input.bin.partial").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stalled_http_download_fails_within_phase_timeout() {
+        let mut digest = Sha256Accumulator::new();
+        digest.update(b"x");
+        let artifact = JobArtifact {
+            artifact_id: "stalled.bin".to_string(),
+            role: "input".to_string(),
+            object_key: "jobs/job_1/stalled.bin".to_string(),
+            sha256: Some(format!("sha256:{}", digest.finish_hex())),
+            size_bytes: Some(1),
+            content_type: Some("application/octet-stream".to_string()),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 1\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            stream.flush().unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+        });
+
+        let root = std::env::temp_dir().join(format!(
+            "burd-stalled-download-{}-{}",
+            std::process::id(),
+            random_token("test").unwrap()
+        ));
+        let workspace = ProviderJobExecutionWorkspace {
+            inputs_dir: root.join("inputs"),
+            outputs_dir: root.join("outputs"),
+            root: root.clone(),
+        };
+        fs::create_dir_all(&workspace.inputs_dir).unwrap();
+        fs::create_dir_all(&workspace.outputs_dir).unwrap();
+        let mut client =
+            HttpProviderJobDataPlane::new(format!("http://{address}"), root.clone()).unwrap();
+        client.total_timeout = Duration::from_secs(2);
+        client.phase_timeout = Duration::from_millis(100);
+        let grant_url = JobDataPlaneUrl {
+            artifact_id: artifact.artifact_id.clone(),
+            method: "GET".to_string(),
+            url: "/download".to_string(),
+            expires_at: "2026-08-08T00:00:00Z".to_string(),
+        };
+
+        let started = std::time::Instant::now();
+        let error = client
+            .download_input(
+                "jobcred_test_only",
+                &artifact,
+                &grant_url,
+                &workspace,
+                &JobCancellation::default(),
+            )
+            .unwrap_err();
+        release_tx.send(()).unwrap();
+        assert_eq!(error.code(), "artifact_download_read_failed");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(!workspace.inputs_dir.join(".stalled.bin.partial").exists());
+        server.join().unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -832,7 +931,7 @@ mod tests {
         };
         let mut client =
             HttpProviderJobDataPlane::new(format!("http://{address}"), "work").unwrap();
-        client.timeout = Duration::from_secs(5);
+        client.total_timeout = Duration::from_secs(5);
         let grant_url = JobDataPlaneUrl {
             artifact_id: expected.artifact_id.clone(),
             method: "PUT".to_string(),
@@ -854,7 +953,7 @@ mod tests {
                 &cancellation,
             )
             .unwrap_err();
-        assert_eq!(error.code(), "artifact_upload_transport");
+        assert_eq!(error.code(), "execution_cancelled");
         assert!(started.elapsed() < Duration::from_secs(5));
         server.join().unwrap();
     }
