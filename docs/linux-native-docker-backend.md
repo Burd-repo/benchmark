@@ -3,8 +3,8 @@
 ## Status
 
 This document records the isolated Linux-native executor boundary introduced
-after Runtime Platform Model v2. The implementation is intentionally not wired
-to production `remote-session connect`.
+after Runtime Platform Model v2. The implementation is wired only to the
+explicit, disabled-by-default provider-job canary in `remote-session connect`.
 
 ```text
 ProviderJobExecutor
@@ -136,8 +136,8 @@ timeout, and cleanup against a running container. See
 
 This Linux-specific slice does not describe the separate Windows WSL2 backend;
 see `windows-wsl2-docker-backend.md`. Neither backend implements secret
-injection, Control Plane runtime proof, scheduler admission, production worker
-wiring, or paid execution. Exact-assignment active-job cancellation is coordinated
-by the disconnected provider worker and propagated through this backend's existing
-cancellation token. Customer
-input ingress and external object-storage adapters are also deferred.
+injection, automatic worker activation, physical NVIDIA approval, or paid
+execution. Exact-assignment active-job cancellation is coordinated by the
+canary provider worker and propagated through this backend's existing
+cancellation token. Customer input ingress and external object-storage adapters
+are also deferred.

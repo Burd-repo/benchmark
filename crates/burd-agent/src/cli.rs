@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -345,6 +345,15 @@ pub enum RemoteSessionCommands {
         /// Execute backend-issued Proof of Capability challenges.
         #[arg(long)]
         proofs: bool,
+        /// Provider job worker activation mode. Canary remains opt-in and Linux-only.
+        #[arg(long, value_enum, default_value_t = ProviderJobWorkerMode::Disabled)]
+        provider_job_worker_mode: ProviderJobWorkerMode,
+        /// Exact TEMPLATE=IMAGE@sha256:DIGEST pair accepted by the canary worker.
+        #[arg(long = "provider-job-image", value_name = "TEMPLATE=IMAGE", action = clap::ArgAction::Append)]
+        provider_job_images: Vec<String>,
+        /// Digest-pinned Burd artifact-helper image required by the canary data plane.
+        #[arg(long, value_name = "IMAGE@sha256:DIGEST")]
+        provider_job_artifact_helper_image: Option<String>,
     },
     /// Read the backend-authoritative state of the persisted remote session.
     Status {
@@ -356,6 +365,13 @@ pub enum RemoteSessionCommands {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum ProviderJobWorkerMode {
+    #[default]
+    Disabled,
+    Canary,
 }
 #[derive(Debug, Subcommand)]
 pub enum ChallengeCommands {

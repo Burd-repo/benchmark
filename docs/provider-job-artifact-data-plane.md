@@ -2,9 +2,10 @@
 
 ## Status
 
-The provider artifact data plane is implemented but deliberately disconnected
-from production `remote-session connect`. It transfers declared job bytes while
-keeping the workload container offline and unaware of transport credentials.
+The provider artifact data plane is implemented and connected only to the
+explicit Linux provider-job canary. Default `remote-session connect` remains
+disconnected. It transfers declared job bytes while keeping the workload
+container offline and unaware of transport credentials.
 
 ```text
 Control Plane object storage
@@ -94,7 +95,6 @@ exported byte-for-byte, and containers/volumes are removed.
 
 This slice does not provide customer input upload, external S3-compatible or
 signed-URL adapters, retention/garbage collection, malware scanning, runtime
-proof, scheduler admission by verified capability, active-job remote
-cancellation push, production worker wiring, or paid execution. The disconnected
-provider worker now discovers cancellation through authenticated polling and
-propagates it to this data plane.
+proof, active-job remote cancellation push, automatic/default worker activation,
+customer-paid execution, or production promotion. The canary worker discovers
+cancellation through authenticated polling and propagates it to this data plane.

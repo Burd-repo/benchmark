@@ -14,8 +14,8 @@ Windows NVIDIA result was produced on the AMD development host used to add the
 harness.
 
 Windows therefore remains denied by Runtime Admission with
-`windows_physical_gate_required`, and `remote-session connect` still does not
-start the production Provider Job Worker.
+`windows_physical_gate_required`. The Linux-only provider-job canary does not
+alter that policy and does not count as a physical gate pass.
 
 ## Gate Contract
 
@@ -126,5 +126,6 @@ code change that references accepted Windows evidence and keeps the remaining
 Runtime Admission checks intact. No environment variable or administrative
 override bypasses this rule.
 
-Production worker activation remains a separate change after both required
-platform evidence and the active-job I/O-stall bound are accepted.
+The provider-job canary is a reversible validation path, not production
+promotion. General production approval and any Windows activation remain
+separate changes after the required platform evidence is accepted.

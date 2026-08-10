@@ -25,6 +25,26 @@ fn invalid_remote_session_invocation_uses_exit_code_two() {
 }
 
 #[test]
+fn disabled_provider_job_worker_rejects_canary_configuration() {
+    let (output, root) = run_agent(
+        "disabled-provider-job-worker",
+        &[
+            "remote-session",
+            "connect",
+            "--provider-job-image",
+            "llm_inference=ghcr.io/burd/canary@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let event = exit_event(&output);
+    assert_eq!(event["category"], "invalid_invocation");
+    assert_eq!(event["exit_code"], 2);
+    assert_eq!(event["failure_kind"], "provider_job_canary_config");
+    assert_redacted(&output);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn missing_local_identity_uses_local_state_exit_and_lifecycle() {
     let (output, root) = run_agent("missing-identity", &["remote-session", "connect"]);
     assert_eq!(output.status.code(), Some(10));
