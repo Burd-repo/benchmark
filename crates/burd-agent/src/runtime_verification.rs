@@ -677,6 +677,10 @@ mod tests {
             cancellation: JobCancellation::default(),
         })
         .expect("runtime proof must complete");
-        assert_eq!(evidence.observed_gpu_uuids, [gpu_uuid]);
+        assert!(
+            evidence.observed_gpu_uuids.len() == 1
+                && evidence.observed_gpu_uuids[0].eq_ignore_ascii_case(&gpu_uuid),
+            "runtime proof must bind only the selected physical GPU"
+        );
     }
 }

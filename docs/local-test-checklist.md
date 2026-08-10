@@ -20,8 +20,8 @@ provider fixtures instead of real hardware detection. Persistent tests set
 temporary `BURD_AGENT_HOME` and `BURD_AGENT_CONFIG` values and must not touch
 the real `~/.burd` state.
 
-The single real-hardware integration test is slower and ignored by default.
-Run it explicitly only when validating detection on the current machine:
+Real-hardware tests are slower and ignored by default. Run the generic test
+explicitly only when validating detection on the current machine:
 
 ```powershell
 cargo test -p burd-bench real_hardware_detection_integration_is_available -- --ignored
@@ -38,10 +38,13 @@ The suite also compares sanitized JSON snapshots for provider details, raw data,
 and registration payloads. For intentional updates, follow
 `docs/json-contract-snapshots.md`.
 
-Real-hardware CI is intentionally separate and manually dispatched. It requires
-a self-hosted GitHub Actions runner labeled `burd-hardware`.
+Real-hardware CI is intentionally separate and manually dispatched. Generic
+detection requires `burd-hardware`; physical NVIDIA gates require dedicated
+`burd-nvidia-linux` or `burd-nvidia-windows` runners with at least two GPUs and
+pre-pulled digest-pinned test images. Do not run those ignored tests on an
+unsupported host and do not treat a skipped test as evidence.
 See `docs/real-hardware-runner.md` for the isolated runner setup and security
-requirements.
+requirements and `docs/physical-nvidia-gates.md` for the gate contract.
 
 ## Fast Local Commands
 

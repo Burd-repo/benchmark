@@ -60,8 +60,9 @@ contract does not bind Burd to Docker Desktop.
 Windows is not globally unsupported. In this slice, a detected
 `docker_wsl2` backend remains `not_ready` with
 `runtime_backend_verification_required`. The isolated Agent backend now exists,
-but the physical NVIDIA isolation test and Control Plane verification have not
-been completed.
+and later BNs add Control Plane runtime verification plus a reproducible
+physical-gate harness. No accepted Windows/WSL2 NVIDIA workflow evidence exists
+yet, so Runtime Admission still returns `windows_physical_gate_required`.
 
 ## Reported Versus Verified
 
@@ -167,17 +168,12 @@ also contains an isolated Linux-native Docker/NVIDIA executor which:
 - stops, kills when necessary, and removes containers on success, failure,
   timeout, or cancellation.
 
-The Linux executor is not connected to production session execution. The
-remaining boundary does not:
+The Linux and Windows/WSL2 executors remain disconnected from production
+session execution. Later BNs added the data plane, Control Plane runtime
+verification, Runtime Admission and scheduler/assignment/acceptance gates. The
+remaining boundary still lacks accepted physical NVIDIA workflow evidence,
+customer production artifact ingress/object storage, and controlled production
+worker activation.
 
-- implement the Windows WSL2 executor backend;
-- prove GPU UUID isolation through WSL2;
-- upload capability reports to the Control Plane;
-- persist a verified runtime state;
-- filter scheduler candidates by runtime capability;
-- transfer customer artifacts or results;
-- activate production provider jobs.
-
-The production worker remains disabled until the Windows backend, data plane,
-runtime verification, physical isolation tests, and controlled activation
-boundaries are complete.
+The production worker remains disabled until the physical gates and controlled
+activation boundaries are complete.

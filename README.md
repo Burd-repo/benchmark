@@ -699,7 +699,10 @@ Esses contratos sao locais e nao criam jobs, leases, scheduler assignment, marke
 
 ## Runtime seguro
 
-O BN-12 adiciona planejamento local de runtime seguro para o futuro data plane de jobs. Ele inspeciona Docker/NVIDIA, valida template aprovado, imagem `@sha256`, allowlist, GPU UUID e perfil de isolamento. Ele nao executa job de cliente.
+O BN-12 iniciou o planejamento local de runtime seguro. O estado atual tambem
+inclui executores Docker/NVIDIA desconectados para Linux nativo e Windows/WSL2,
+data plane, Runtime Admission e gates de autoridade ate o cancelamento ativo.
+Nada disso habilita execucao produtiva em `remote-session connect`.
 
 Comandos:
 
@@ -708,7 +711,12 @@ burd-agent runtime check --json
 burd-agent runtime plan --image-ref ghcr.io/burd/runtime/llm@sha256:<digest> --allow-image-ref ghcr.io/burd/runtime/llm@sha256:<digest> --gpu-uuid GPU-... --json
 ```
 
-`docker_args` so aparece quando o plano esta `ready`. Em Windows/macOS, o esperado para readiness e `unsupported_host`, porque o runtime seguro com GPU comeca em Linux.
+`docker_args` so aparece quando o plano local esta `ready`. macOS continua sem
+backend seguro. Windows possui backend `docker_wsl2`, mas permanece fail-closed
+ate existir evidencia aceita do gate fisico multi-GPU NVIDIA/WSL2. O harness e o
+workflow manual estao em
+[`docs/physical-nvidia-gates.md`](docs/physical-nvidia-gates.md); testes ignored
+ou nao executados nao contam como aprovacao.
 
 Documento: [`docs/bn-12-secure-provider-runtime.md`](docs/bn-12-secure-provider-runtime.md).
 
