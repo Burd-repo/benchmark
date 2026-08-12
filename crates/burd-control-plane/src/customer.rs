@@ -30,6 +30,8 @@ const DEFAULT_CUSTOMER_SCOPES: &[&str] = &[
     "reservations:read",
     "reservations:write",
     "usage:read",
+    "workloads:read",
+    "workloads:write",
 ];
 const ALLOWED_CUSTOMER_SCOPES: &[&str] = &[
     "billing:read",
@@ -37,6 +39,8 @@ const ALLOWED_CUSTOMER_SCOPES: &[&str] = &[
     "reservations:read",
     "reservations:write",
     "usage:read",
+    "workloads:read",
+    "workloads:write",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1652,6 +1656,8 @@ mod tests {
                 "reservations:read".to_string(),
                 "reservations:write".to_string(),
                 "usage:read".to_string(),
+                "workloads:read".to_string(),
+                "workloads:write".to_string(),
             ]
         );
         let scopes = normalized_scopes(&[
@@ -1675,6 +1681,14 @@ mod tests {
         let auth = test_auth(vec!["reservations:read"]);
         assert!(require_customer_scope(&auth, "reservations:read").is_ok());
         assert!(require_customer_scope(&auth, "reservations:write").is_err());
+    }
+
+    #[test]
+    fn customer_workload_scopes_are_allowed_by_default() {
+        for scope in ["workloads:read", "workloads:write"] {
+            assert!(DEFAULT_CUSTOMER_SCOPES.contains(&scope));
+            assert!(ALLOWED_CUSTOMER_SCOPES.contains(&scope));
+        }
     }
 
     #[test]

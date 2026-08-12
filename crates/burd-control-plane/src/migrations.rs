@@ -156,6 +156,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "compute_job_assignment_lease_binding",
         sql: include_str!("../migrations/0030_compute_job_assignment_lease_binding.sql"),
     },
+    Migration {
+        version: "0031",
+        name: "customer_workloads_placement",
+        sql: include_str!("../migrations/0031_customer_workloads_placement.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -479,6 +484,23 @@ mod tests {
             "compute_jobs_active_assignment_lease_check",
             "compute_jobs_queued_assignment_lease_check",
             "idx_compute_jobs_assignment_lease",
+        ] {
+            assert!(sql.contains(needle));
+        }
+    }
+
+    #[test]
+    fn customer_workload_migration_separates_intent_placement_and_job() {
+        let sql = MIGRATIONS[30].sql;
+        for needle in [
+            "CREATE TABLE IF NOT EXISTS customer_workloads",
+            "CREATE TABLE IF NOT EXISTS workload_execution_profiles",
+            "CREATE TABLE IF NOT EXISTS compute_placements",
+            "UNIQUE(project_id, idempotency_key)",
+            "ADD COLUMN IF NOT EXISTS workload_id TEXT UNIQUE",
+            "ADD COLUMN IF NOT EXISTS placement_id TEXT UNIQUE",
+            "compute_jobs_workload_placement_pair_check",
+            "idx_compute_placements_active_supply",
         ] {
             assert!(sql.contains(needle));
         }

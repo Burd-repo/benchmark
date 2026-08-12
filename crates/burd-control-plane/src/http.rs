@@ -4,6 +4,7 @@ use crate::customer::{
     CreateReservationCommand, CreateReservationOutcome, CustomerApiKeyAuth,
     GrantCustomerCreditsCommand, GrantCustomerCreditsOutcome,
 };
+use crate::customer_compute::{CreateCustomerWorkloadCommand, CreateCustomerWorkloadOutcome};
 use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};
 use crate::enrollment::EnrollmentError;
 use crate::error::{ApiError, ErrorCode};
@@ -36,15 +37,16 @@ use axum::{Json, Router};
 use burd_protocol::{
     AcceptJobRequest, CancelJobRequest, CancelReservationRequest, ClientControlMessage,
     ConfirmPixPaymentIntentRequest, CreateCustomerApiKeyRequest, CreateCustomerUserRequest,
-    CreateJobRequest, CreateOrganizationRequest, CreatePixPaymentIntentRequest,
-    CreateProjectRequest, CreateProviderPayoutRequest, CreateReservationRequest,
-    EnrollmentProofRequest, GrantCustomerCreditsRequest, IssueProofChallengeRequest,
-    IssueRuntimeVerificationChallengeRequest, JOB_ARTIFACT_UPLOAD_VERSION,
-    JobArtifactUploadResponse, JobEventRequest, KeyRotationProofRequest, RevokeEvidenceRequest,
-    RunMarketplaceListingSweepRequest, RunSchedulerRequest, RunTrustSweepRequest,
-    RunVerificationSweepRequest, RunWorkloadEligibilityRequest, ServerControlMessage,
-    SettleReservationBillingRequest, Sha256Accumulator, SignedBenchmarkResult,
-    SignedDeviceGpuInventory, SignedProofCapabilityResponse, SignedProviderRuntimeObservation,
+    CreateCustomerWorkloadRequest, CreateJobRequest, CreateOrganizationRequest,
+    CreatePixPaymentIntentRequest, CreateProjectRequest, CreateProviderPayoutRequest,
+    CreateReservationRequest, EnrollmentProofRequest, GrantCustomerCreditsRequest,
+    IssueProofChallengeRequest, IssueRuntimeVerificationChallengeRequest,
+    JOB_ARTIFACT_UPLOAD_VERSION, JobArtifactUploadResponse, JobEventRequest,
+    KeyRotationProofRequest, RevokeEvidenceRequest, RunMarketplaceListingSweepRequest,
+    RunSchedulerRequest, RunTrustSweepRequest, RunVerificationSweepRequest,
+    RunWorkloadEligibilityRequest, ServerControlMessage, SettleReservationBillingRequest,
+    Sha256Accumulator, SignedBenchmarkResult, SignedDeviceGpuInventory,
+    SignedProofCapabilityResponse, SignedProviderRuntimeObservation,
     SignedRuntimeVerificationResponse, SignedSecurityPosture, StartEnrollmentRequest,
     StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
     SubmitJobResultRequest, SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
@@ -395,6 +397,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/customer/projects/{project_id}/reservations",
             get(list_project_reservations).post(create_marketplace_reservation),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/workloads",
+            post(create_customer_workload),
         )
         .route(
             "/v1/customer/projects/{project_id}/usage",
@@ -1654,6 +1660,45 @@ async fn create_marketplace_reservation(
             Ok((status, Json(value)).into_response())
         }
         CreateReservationOutcome::Conflict => Err(ApiError::idempotency_conflict(request_id)),
+    }
+}
+
+async fn create_customer_workload(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateCustomerWorkloadRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    let idempotency_key = required_idempotency_key(&headers, &request_id)?;
+    let request_hash = hash_canonical(&payload)
+        .map_err(|error| ApiError::invalid_request(error, request_id.clone()))?;
+    let outcome = state
+        .db
+        .create_customer_workload_idempotently(
+            CreateCustomerWorkloadCommand {
+                request_id: request_id.clone(),
+                scope: format!("POST /v1/customer/projects/{project_id}/workloads"),
+                idempotency_key,
+                request_hash,
+                auth,
+                project_id,
+                request: payload,
+            },
+            &runtime_admission_policy(&state.config),
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    match outcome {
+        CreateCustomerWorkloadOutcome::Response(record) => {
+            let value = serde_json::from_str::<serde_json::Value>(&record.response_json).map_err(
+                |error| ApiError::invalid_request(error.to_string(), request_id.clone()),
+            )?;
+            let status = StatusCode::from_u16(record.status_code).unwrap_or(StatusCode::OK);
+            Ok((status, Json(value)).into_response())
+        }
+        CreateCustomerWorkloadOutcome::Conflict => Err(ApiError::idempotency_conflict(request_id)),
     }
 }
 

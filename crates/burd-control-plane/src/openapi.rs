@@ -789,6 +789,20 @@ pub fn document() -> serde_json::Value {
                     "responses": { "201": { "description": "reservation created" }, "409": { "description": "quota exceeded, listing unavailable, or idempotency conflict" } }
                 }
             },
+            "/v1/customer/projects/{project_id}/workloads": {
+                "post": {
+                    "summary": "Create and place one single-GPU customer workload",
+                    "description": "The customer declares abstract requirements. Provider, device, session, GPU, listing, placement, and job IDs are selected by the Control Plane.",
+                    "security": [{ "customerBearer": [] }],
+                    "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$" } }],
+                    "responses": {
+                        "201": { "description": "workload placed and backend-directed job queued" },
+                        "400": { "description": "invalid or unsupported single-GPU requirements" },
+                        "401": { "description": "customer API key invalid or workloads:write scope missing" },
+                        "409": { "description": "idempotency conflict or no eligible runtime-admitted supply" }
+                    }
+                }
+            },
             "/v1/customer/projects/{project_id}/usage": {
                 "get": {
                     "summary": "Read project reservation usage and credit balance view",
@@ -2892,6 +2906,71 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
         .as_object_mut()
         .expect("OpenAPI schemas object");
     schemas.insert(
+        "ComputeRequirements".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["gpu_count", "backend"],
+            "properties": {
+                "gpu_count": { "type": "integer", "const": 1 },
+                "backend": { "type": "string", "const": "cuda" },
+                "minimum_vram_mib": { "type": ["integer", "null"], "minimum": 1 },
+                "region": { "type": ["string", "null"] },
+                "minimum_trust_score": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                "maximum_risk_score": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                "minimum_reliability_score": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                "maximum_price_per_hour_micros": { "type": ["integer", "null"], "minimum": 1 }
+            }
+        }),
+    );
+    schemas.insert(
+        "CreateCustomerWorkloadRequest".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["workload_type", "requirements"],
+            "properties": {
+                "client_workload_id": { "type": ["string", "null"] },
+                "workload_type": { "type": "string" },
+                "requirements": { "$ref": "#/components/schemas/ComputeRequirements" },
+                "parameters": { "type": "object", "additionalProperties": true },
+                "timeout_seconds": { "type": ["integer", "null"], "minimum": 1, "maximum": 86400 }
+            }
+        }),
+    );
+    schemas.insert(
+        "CustomerWorkloadRecord".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["workload_id", "organization_id", "project_id", "schema_version", "workload_type", "requirements", "status", "created_at", "updated_at"],
+            "properties": {
+                "workload_id": { "type": "string" },
+                "organization_id": { "type": "string" },
+                "project_id": { "type": "string" },
+                "schema_version": { "type": "string", "const": "burd-customer-workload-v1" },
+                "client_workload_id": { "type": ["string", "null"] },
+                "workload_type": { "type": "string" },
+                "requirements": { "$ref": "#/components/schemas/ComputeRequirements" },
+                "status": { "type": "string", "enum": ["queued", "placed", "placement_failed", "cancelled"] },
+                "job_id": { "type": ["string", "null"] },
+                "created_at": { "type": "string", "format": "date-time" },
+                "updated_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "CustomerWorkloadResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "workload", "duplicate"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "workload": { "$ref": "#/components/schemas/CustomerWorkloadRecord" },
+                "duplicate": { "type": "boolean" }
+            }
+        }),
+    );
+    schemas.insert(
         "JobArtifact".to_string(),
         serde_json::json!({
             "type": "object",
@@ -3590,6 +3669,19 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
     );
     set_json_response(
         document,
+        "/v1/customer/projects/{project_id}/workloads",
+        "post",
+        "201",
+        "CustomerWorkloadResponse",
+    );
+    set_request_body(
+        document,
+        "/v1/customer/projects/{project_id}/workloads",
+        "post",
+        "CreateCustomerWorkloadRequest",
+    );
+    set_json_response(
+        document,
         "/v1/customer/projects/{project_id}/reservations",
         "get",
         "200",
@@ -3797,6 +3889,7 @@ mod tests {
             "/v1/customer/projects/{project_id}/api-keys",
             "/v1/customer/projects/{project_id}/credits",
             "/v1/customer/projects/{project_id}/reservations",
+            "/v1/customer/projects/{project_id}/workloads",
             "/v1/customer/projects/{project_id}/usage",
             "/v1/customer/reservations/{reservation_id}/cancel",
             "/v1/jobs",
@@ -3924,6 +4017,11 @@ mod tests {
                 "customerBearer",
             ),
             (
+                "/v1/customer/projects/{project_id}/workloads",
+                "post",
+                "customerBearer",
+            ),
+            (
                 "/v1/billing/projects/{project_id}/balance",
                 "get",
                 "customerBearer",
@@ -3950,6 +4048,7 @@ mod tests {
                 "post",
             ),
             ("/v1/customer/projects/{project_id}/reservations", "post"),
+            ("/v1/customer/projects/{project_id}/workloads", "post"),
             ("/v1/jobs", "post"),
         ] {
             let operation = paths.get(path).unwrap().get(method).unwrap();
@@ -4710,6 +4809,10 @@ mod tests {
         let document = document();
         let schemas = document["components"]["schemas"].as_object().unwrap();
         for schema in [
+            "ComputeRequirements",
+            "CreateCustomerWorkloadRequest",
+            "CustomerWorkloadRecord",
+            "CustomerWorkloadResponse",
             "JobArtifact",
             "CreateJobRequest",
             "JobRecord",
@@ -4789,6 +4892,37 @@ mod tests {
         );
 
         let paths = document["paths"].as_object().unwrap();
+        assert_eq!(
+            request_schema_ref(
+                paths,
+                "/v1/customer/projects/{project_id}/workloads",
+                "post"
+            ),
+            "#/components/schemas/CreateCustomerWorkloadRequest"
+        );
+        assert_eq!(
+            response_schema_ref(
+                paths,
+                "/v1/customer/projects/{project_id}/workloads",
+                "post",
+                "201"
+            ),
+            "#/components/schemas/CustomerWorkloadResponse"
+        );
+        for physical in [
+            "provider_id",
+            "device_id",
+            "session_id",
+            "gpu_uuid",
+            "lease_id",
+        ] {
+            assert!(
+                schemas["CreateCustomerWorkloadRequest"]["properties"]
+                    .get(physical)
+                    .is_none(),
+                "customer workload must not accept {physical}"
+            );
+        }
         assert_eq!(
             request_schema_ref(paths, "/v1/jobs", "post"),
             "#/components/schemas/CreateJobRequest"

@@ -605,6 +605,29 @@ starting the API server or depending on host state:
 - Customer credits are non-settlement accounting entries in BN-17. Admin credit grants are idempotency-key protected. Reservation hold/release entries use zero credit movement because listing pricing and billing are BN-18 work.
 - BN-17 does not implement checkout, job submission from reservations, provider-side execution, provider-set pricing, billing, Pix, payouts, invoices, refunds, disputes, taxes, or financial settlement.
 
+## BN-CUSTOMER-COMPUTE-01 - Customer Workload And Placement
+
+- `burd-protocol` defines a strict customer workload request and single-GPU
+  compute requirements. Unknown fields are rejected; the request cannot carry
+  `provider_id`, `device_id`, `session_id`, `gpu_uuid`, or `lease_id`.
+- Migration `0031_customer_workloads_placement` adds customer workloads,
+  backend-selected placements, backend-owned workload execution profiles, and
+  exact workload/placement links on `compute_jobs`.
+- `POST /v1/customer/projects/{project_id}/workloads` requires a customer API
+  key with `workloads:write` and `Idempotency-Key`. The same key and canonical
+  payload replays the stored response; a different payload conflicts.
+- Placement is transactional and backend-authoritative. It chooses one available,
+  backend-verified marketplace listing that satisfies CUDA, VRAM, region,
+  trust, risk, reliability, and price-ceiling requirements, then re-evaluates
+  exact Runtime Admission before creating the directed `ComputeJob` consumed by
+  the existing scheduler.
+- The backend selects the approved template/image pair through
+  `workload_execution_profiles`; customer parameters cannot select a physical
+  target, image, command, credential, or secret-like field.
+- This first vertical does not bind reservations or pricing snapshots, ingest
+  customer artifacts, expose customer job status/cancellation, automate the
+  scheduler, or make execution billable/payable. Those remain later contracts.
+
 ## BN-18 - Billing, Pix And Payouts
 
 - `burd-protocol` defines marketplace price records, Pix payment intents, financial ledger lines, billing invoices, balances, payout accounts, payouts, refunds, disputes, and reconciliation event contracts.
