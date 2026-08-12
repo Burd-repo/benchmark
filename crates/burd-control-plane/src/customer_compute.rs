@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 const DEFAULT_WORKLOAD_TIMEOUT_SECONDS: u32 = 3_600;
 const MAX_WORKLOAD_TIMEOUT_SECONDS: u32 = 24 * 60 * 60;
+const PLACEMENT_CANDIDATE_LIMIT: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct CreateCustomerWorkloadCommand {
@@ -96,38 +97,43 @@ impl Database {
 
         let project =
             authorize_project_access(&transaction, &command.auth, &command.project_id).await?;
-        let candidate = select_placement_candidate(
+        let mut selected = None;
+        let candidates = select_placement_candidates(
             &transaction,
             &command.request.workload_type,
             &command.request.requirements,
         )
         .await?;
-        let admission = evaluate_runtime_admission_for_gpu_in_transaction(
-            &transaction,
-            &candidate.provider_id,
-            &candidate.device_id,
-            &candidate.gpu_uuid,
-            runtime_admission_policy,
-            now,
-        )
-        .await?;
-        if admission.status != "admitted" {
-            return Err(SessionError::Conflict(
+        for candidate in candidates {
+            if gpu_has_selected_placement(
+                &transaction,
+                &candidate.provider_id,
+                &candidate.device_id,
+                &candidate.gpu_uuid,
+            )
+            .await?
+            {
+                continue;
+            }
+            let admission = evaluate_runtime_admission_for_gpu_in_transaction(
+                &transaction,
+                &candidate.provider_id,
+                &candidate.device_id,
+                &candidate.gpu_uuid,
+                runtime_admission_policy,
+                now,
+            )
+            .await?;
+            if admission.status == "admitted" {
+                selected = Some((candidate, admission));
+                break;
+            }
+        }
+        let (candidate, admission) = selected.ok_or_else(|| {
+            SessionError::Conflict(
                 "no runtime-admitted marketplace supply satisfies the workload".to_string(),
-            ));
-        }
-        if gpu_has_selected_placement(
-            &transaction,
-            &candidate.provider_id,
-            &candidate.device_id,
-            &candidate.gpu_uuid,
-        )
-        .await?
-        {
-            return Err(SessionError::Conflict(
-                "marketplace supply is already placed".to_string(),
-            ));
-        }
+            )
+        })?;
 
         let workload_id = format!("workload_{}", Uuid::new_v4());
         let placement_id = format!("placement_{}", Uuid::new_v4());
@@ -290,19 +296,19 @@ async fn authorize_project_access(
     })
 }
 
-async fn select_placement_candidate(
+async fn select_placement_candidates(
     transaction: &Transaction<'_>,
     workload_type: &str,
     requirements: &ComputeRequirements,
-) -> Result<PlacementCandidate, SessionError> {
+) -> Result<Vec<PlacementCandidate>, SessionError> {
     let minimum_vram_mib = requirements.minimum_vram_mib.map(to_i64).transpose()?;
     let maximum_price = requirements
         .maximum_price_per_hour_micros
         .map(to_i64)
         .transpose()?;
-    let row = transaction
-        .query_opt(
-            "SELECT l.listing_id, l.provider_id, l.device_id, l.session_id, l.gpu_uuid, l.policy_id, l.policy_version FROM marketplace_listings l WHERE l.workload_type = $1 AND l.status IN ('published', 'limited') AND l.current_status = 'available' AND l.gpu_verified = TRUE AND l.vram_verified = TRUE AND l.session_id IS NOT NULL AND l.gpu_uuid IS NOT NULL AND ($2::BIGINT IS NULL OR l.vram_total_mib >= $2) AND ($3::TEXT IS NULL OR l.region = $3) AND ($4::DOUBLE PRECISION IS NULL OR l.trust_score >= $4) AND ($5::DOUBLE PRECISION IS NULL OR l.risk_score <= $5) AND ($6::DOUBLE PRECISION IS NULL OR l.reliability_score >= $6) AND ($7::BIGINT IS NULL OR (l.price_per_hour_micros IS NOT NULL AND l.price_per_hour_micros <= $7)) AND NOT EXISTS (SELECT 1 FROM job_leases jl WHERE jl.provider_id = l.provider_id AND jl.device_id = l.device_id AND lower(jl.gpu_uuid) = lower(l.gpu_uuid) AND jl.status IN ('offered', 'accepted', 'provisioning', 'active')) ORDER BY l.price_per_hour_micros ASC NULLS LAST, l.trust_score DESC NULLS LAST, l.reliability_score DESC NULLS LAST, l.updated_at DESC, l.listing_id FOR UPDATE OF l SKIP LOCKED LIMIT 1",
+    let rows = transaction
+        .query(
+            "SELECT l.listing_id, l.provider_id, l.device_id, l.session_id, l.gpu_uuid, l.policy_id, l.policy_version FROM marketplace_listings l WHERE l.workload_type = $1 AND l.status IN ('published', 'limited') AND l.current_status = 'available' AND l.gpu_verified = TRUE AND l.vram_verified = TRUE AND l.session_id IS NOT NULL AND l.gpu_uuid IS NOT NULL AND ($2::BIGINT IS NULL OR l.vram_total_mib >= $2) AND ($3::TEXT IS NULL OR l.region = $3) AND ($4::DOUBLE PRECISION IS NULL OR l.trust_score >= $4) AND ($5::DOUBLE PRECISION IS NULL OR l.risk_score <= $5) AND ($6::DOUBLE PRECISION IS NULL OR l.reliability_score >= $6) AND ($7::BIGINT IS NULL OR (l.price_per_hour_micros IS NOT NULL AND l.price_per_hour_micros <= $7)) AND NOT EXISTS (SELECT 1 FROM job_leases jl WHERE jl.provider_id = l.provider_id AND jl.device_id = l.device_id AND lower(jl.gpu_uuid) = lower(l.gpu_uuid) AND jl.status IN ('offered', 'accepted', 'provisioning', 'active')) AND NOT EXISTS (SELECT 1 FROM compute_placements cp WHERE cp.provider_id = l.provider_id AND cp.device_id = l.device_id AND lower(cp.gpu_uuid) = lower(l.gpu_uuid) AND cp.status = 'selected') ORDER BY l.price_per_hour_micros ASC NULLS LAST, l.trust_score DESC NULLS LAST, l.reliability_score DESC NULLS LAST, l.updated_at DESC, l.listing_id FOR UPDATE OF l SKIP LOCKED LIMIT 16",
             &[
                 &workload_type,
                 &minimum_vram_mib,
@@ -313,17 +319,20 @@ async fn select_placement_candidate(
                 &maximum_price,
             ],
         )
-        .await?
-        .ok_or_else(|| SessionError::Conflict("no marketplace supply satisfies the workload".to_string()))?;
-    Ok(PlacementCandidate {
-        listing_id: row.get("listing_id"),
-        provider_id: row.get("provider_id"),
-        device_id: row.get("device_id"),
-        session_id: row.get("session_id"),
-        gpu_uuid: row.get("gpu_uuid"),
-        policy_id: row.get("policy_id"),
-        policy_version: row.get("policy_version"),
-    })
+        .await?;
+    debug_assert!(rows.len() <= PLACEMENT_CANDIDATE_LIMIT);
+    Ok(rows
+        .into_iter()
+        .map(|row| PlacementCandidate {
+            listing_id: row.get("listing_id"),
+            provider_id: row.get("provider_id"),
+            device_id: row.get("device_id"),
+            session_id: row.get("session_id"),
+            gpu_uuid: row.get("gpu_uuid"),
+            policy_id: row.get("policy_id"),
+            policy_version: row.get("policy_version"),
+        })
+        .collect())
 }
 
 async fn load_backend_execution_contract(
@@ -557,6 +566,145 @@ mod tests {
             parameters: serde_json::json!({}),
             timeout_seconds: Some(900),
         }
+    }
+
+    async fn seed_customer_context(client: &tokio_postgres::Client, suffix: &str, now: &str) {
+        let organization_id = format!("org_{suffix}");
+        let project_id = format!("project_{suffix}");
+        client
+            .execute(
+                "INSERT INTO workload_policies (policy_id, policy_version, schema_version, workload_type, display_name, requirements_json, status, created_at, updated_at) VALUES ('llm_realtime_api_cuda', '2026.07.0', 'burd-workload-policy-v1', 'llm_realtime_api', 'LLM realtime CUDA', '{}', 'active', $1, $1)",
+                &[&now],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO organizations (organization_id, schema_version, display_name, status, created_at, updated_at) VALUES ($1, 'burd-customer-organization-v1', 'Org', 'active', $2, $2)",
+                &[&organization_id, &now],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO projects (project_id, organization_id, schema_version, display_name, status, created_at, updated_at) VALUES ($1, $2, 'burd-customer-project-v1', 'Project', 'active', $3, $3)",
+                &[&project_id, &organization_id, &now],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO workload_execution_profiles (workload_type, template_id, image_ref, status, created_at, updated_at) VALUES ('llm_realtime_api', 'llm_inference', $1, 'active', $2, $2)",
+                &[
+                    &format!("ghcr.io/burd/runtime/llm@sha256:{}", "c".repeat(64)),
+                    &now,
+                ],
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn seed_marketplace_supply(
+        client: &tokio_postgres::Client,
+        suffix: &str,
+        now: chrono::DateTime<Utc>,
+        price_per_hour_micros: i64,
+        runtime_admitted: bool,
+    ) {
+        let now_text = now.to_rfc3339();
+        let expires_at = (now + chrono::Duration::hours(1)).to_rfc3339();
+        let provider_id = format!("provider_{suffix}");
+        let device_id = format!("device_{suffix}");
+        let session_id = format!("session_{suffix}");
+        let gpu_uuid = format!("GPU-{suffix}");
+        let listing_id = format!("listing_{suffix}");
+        client
+            .execute(
+                "INSERT INTO providers (provider_id, status, created_at, updated_at) VALUES ($1, 'available', $2, $2)",
+                &[&provider_id, &now_text],
+            )
+            .await
+            .unwrap();
+        crate::scheduler::tests::seed_device(
+            client,
+            &provider_id,
+            &device_id,
+            &session_id,
+            &now_text,
+            &expires_at,
+        )
+        .await;
+        if runtime_admitted {
+            crate::scheduler::tests::seed_admitted_runtime(
+                client,
+                &provider_id,
+                &device_id,
+                &session_id,
+                std::slice::from_ref(&gpu_uuid),
+                &gpu_uuid,
+                now,
+            )
+            .await;
+        }
+        client
+            .execute(
+                "INSERT INTO marketplace_listings (listing_id, provider_id, device_id, session_id, schema_version, engine_version, status, current_status, workload_type, policy_id, policy_version, gpu_uuid, gpu_verified, gpu_verification_source, vram_total_mib, vram_verified, vram_verification_source, region, region_source, trust_score, risk_score, reliability_score, proof_freshness_status, price_currency, price_per_hour_micros, price_source, availability_window_json, active_lease_count, reason_codes_json, source_hash, published_at, updated_at) VALUES ($1, $2, $3, $4, 'burd-marketplace-listing-v1', 'burd-marketplace-engine-v1', 'published', 'available', 'llm_realtime_api', 'llm_realtime_api_cuda', '2026.07.0', $5, TRUE, 'backend_proof_and_benchmark', 24576, TRUE, 'backend_telemetry_bound_to_verified_gpu', 'br-southeast', 'regional_probe', 90, 10, 99, 'freshness_backend_timestamp_present', 'BRL', $6, 'configured', '{}', 0, '[]', $7, $8, $8)",
+                &[
+                    &listing_id,
+                    &provider_id,
+                    &device_id,
+                    &session_id,
+                    &gpu_uuid,
+                    &price_per_hour_micros,
+                    &format!("source_{suffix}"),
+                    &now_text,
+                ],
+            )
+            .await
+            .unwrap();
+    }
+
+    fn workload_command(
+        suffix: &str,
+        idempotency_key: &str,
+        client_workload_id: &str,
+    ) -> CreateCustomerWorkloadCommand {
+        let mut workload_request = request();
+        workload_request.client_workload_id = Some(client_workload_id.to_string());
+        let request_hash = burd_protocol::hash_canonical(&workload_request).unwrap();
+        CreateCustomerWorkloadCommand {
+            request_id: format!("req_{client_workload_id}"),
+            scope: format!("POST /v1/customer/projects/project_{suffix}/workloads"),
+            idempotency_key: idempotency_key.to_string(),
+            request_hash,
+            auth: crate::customer::CustomerApiKeyAuth {
+                api_key_id: format!("api_key_{suffix}"),
+                organization_id: format!("org_{suffix}"),
+                project_id: Some(format!("project_{suffix}")),
+                scopes: vec!["workloads:write".to_string()],
+            },
+            project_id: format!("project_{suffix}"),
+            request: workload_request,
+        }
+    }
+
+    async fn placed_provider(
+        client: &tokio_postgres::Client,
+        outcome: CreateCustomerWorkloadOutcome,
+    ) -> String {
+        let CreateCustomerWorkloadOutcome::Response(record) = outcome else {
+            panic!("expected workload response");
+        };
+        let response: CustomerWorkloadResponse =
+            serde_json::from_str(&record.response_json).unwrap();
+        client
+            .query_one(
+                "SELECT provider_id FROM compute_jobs WHERE job_id = $1",
+                &[&response.workload.job_id.unwrap()],
+            )
+            .await
+            .unwrap()
+            .get("provider_id")
     }
 
     #[test]
@@ -812,5 +960,134 @@ mod tests {
             .unwrap()
             .get("count");
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_placement_skips_denied_candidate_for_admitted_supply() {
+        let db =
+            crate::scheduler::tests::postgres_test_database("burd_customer_compute_fallback").await;
+        let now = Utc::now();
+        let client = db.connect().await.unwrap();
+        seed_customer_context(&client, "fallback", &now.to_rfc3339()).await;
+        seed_marketplace_supply(&client, "fallback_denied", now, 100, false).await;
+        seed_marketplace_supply(&client, "fallback_admitted", now, 200, true).await;
+
+        let outcome = db
+            .create_customer_workload_idempotently(
+                workload_command("fallback", "fallback-key", "fallback-request"),
+                &crate::scheduler::tests::runtime_policy(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            placed_provider(&client, outcome).await,
+            "provider_fallback_admitted"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_placement_skips_selected_gpu_for_free_supply() {
+        let db = crate::scheduler::tests::postgres_test_database(
+            "burd_customer_compute_selected_fallback",
+        )
+        .await;
+        let now = Utc::now();
+        let client = db.connect().await.unwrap();
+        seed_customer_context(&client, "selected", &now.to_rfc3339()).await;
+        seed_marketplace_supply(&client, "selected_first", now, 100, true).await;
+        seed_marketplace_supply(&client, "selected_second", now, 200, true).await;
+        let policy = crate::scheduler::tests::runtime_policy();
+
+        let first = db
+            .create_customer_workload_idempotently(
+                workload_command("selected", "selected-key-1", "selected-request-1"),
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            placed_provider(&client, first).await,
+            "provider_selected_first"
+        );
+
+        let second = db
+            .create_customer_workload_idempotently(
+                workload_command("selected", "selected-key-2", "selected-request-2"),
+                &policy,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            placed_provider(&client, second).await,
+            "provider_selected_second"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_concurrent_placement_allows_only_one_selected_gpu() {
+        let db = crate::scheduler::tests::postgres_test_database(
+            "burd_customer_compute_concurrent_placement",
+        )
+        .await;
+        let now = Utc::now();
+        let client = db.connect().await.unwrap();
+        seed_customer_context(&client, "concurrent", &now.to_rfc3339()).await;
+        seed_marketplace_supply(&client, "concurrent_only", now, 100, true).await;
+        client
+            .execute(
+                "INSERT INTO projects (project_id, organization_id, schema_version, display_name, status, created_at, updated_at) VALUES ('project_concurrent_other', 'org_concurrent', 'burd-customer-project-v1', 'Other project', 'active', $1, $1)",
+                &[&now.to_rfc3339()],
+            )
+            .await
+            .unwrap();
+        let policy = crate::scheduler::tests::runtime_policy();
+        let mut second_command =
+            workload_command("concurrent", "concurrent-key-2", "concurrent-request-2");
+        second_command.scope =
+            "POST /v1/customer/projects/project_concurrent_other/workloads".to_string();
+        second_command.project_id = "project_concurrent_other".to_string();
+        second_command.auth.project_id = Some("project_concurrent_other".to_string());
+
+        let (first, second) = tokio::join!(
+            db.create_customer_workload_idempotently(
+                workload_command("concurrent", "concurrent-key-1", "concurrent-request-1"),
+                &policy,
+            ),
+            db.create_customer_workload_idempotently(second_command, &policy),
+        );
+        let results = [first, second];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Ok(CreateCustomerWorkloadOutcome::Response(_))))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(SessionError::Conflict(_))))
+                .count(),
+            1
+        );
+        let selected_count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) AS count FROM compute_placements WHERE status = 'selected'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get("count");
+        let job_count: i64 = client
+            .query_one("SELECT COUNT(*) AS count FROM compute_jobs", &[])
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(selected_count, 1);
+        assert_eq!(job_count, 1);
     }
 }
