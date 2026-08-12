@@ -640,6 +640,7 @@ impl Database {
                 ],
             )
             .await?;
+        release_customer_placement(&transaction, &job.job_id).await?;
         let updated = load_job_in_transaction(&transaction, &job.job_id).await?;
         mark_lease_terminal_for_job(
             &transaction,
@@ -699,6 +700,7 @@ impl Database {
                 &[&request.reason, &now, &job.job_id],
             )
             .await?;
+        release_customer_placement(&transaction, &job.job_id).await?;
         let updated = load_job_in_transaction(&transaction, &job.job_id).await?;
         mark_lease_terminal_for_job(
             &transaction,
@@ -1452,6 +1454,19 @@ fn validate_timestamp(value: &str) -> Result<(), SessionError> {
 
 fn is_terminal_status(status: &str) -> bool {
     matches!(status, "succeeded" | "failed" | "cancelled")
+}
+
+async fn release_customer_placement(
+    transaction: &Transaction<'_>,
+    job_id: &str,
+) -> Result<(), SessionError> {
+    transaction
+        .execute(
+            "UPDATE compute_placements SET status = 'released' WHERE placement_id = (SELECT placement_id FROM compute_jobs WHERE job_id = $1) AND status = 'selected'",
+            &[&job_id],
+        )
+        .await?;
+    Ok(())
 }
 fn validate_id(label: &str, value: &str, maximum_len: usize) -> Result<(), SessionError> {
     let valid = !value.trim().is_empty()

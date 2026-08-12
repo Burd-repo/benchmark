@@ -2,6 +2,7 @@ pub mod benchmark_profile;
 pub mod billing;
 pub mod challenge;
 pub mod customer;
+pub mod customer_compute;
 pub mod enrollment;
 pub mod evidence;
 pub mod gpu_inventory;
@@ -78,6 +79,11 @@ pub use customer::{
     MarketplaceReservationResponse, OrganizationMembershipRecord, OrganizationRecord,
     OrganizationResponse, ProjectQuotaRecord, ProjectQuotaResponse, ProjectRecord, ProjectResponse,
     UpsertProjectQuotaRequest,
+};
+pub use customer_compute::{
+    COMPUTE_REQUIREMENTS_SCHEMA_VERSION, CUSTOMER_WORKLOAD_SCHEMA_VERSION, ComputeRequirements,
+    CreateCustomerWorkloadRequest, CustomerWorkloadRecord, CustomerWorkloadResponse,
+    PLACEMENT_SCHEMA_VERSION,
 };
 pub use enrollment::{
     DeviceCredentialResponse, DeviceRecord, DeviceRevocationResponse, ENROLLMENT_PROOF_DOMAIN,

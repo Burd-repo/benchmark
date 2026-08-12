@@ -87,6 +87,14 @@ Non-goals:
 | OpenAPI | Manual API document | PARTIAL | `crates/burd-control-plane/src/openapi.rs` | Needs serde/OpenAPI parity and golden fixture gates | BN-CONTRACTS-07 |
 | Version negotiation | Schema constants on payloads | PARTIAL | `*_SCHEMA_VERSION` constants in `crates/burd-protocol/src` | Need `/v1` capability negotiation and deprecation policy | BN-CONTRACTS-07 |
 
+Implementation update: BN-CUSTOMER-COMPUTE-01 now implements the first
+customer workload, abstract single-GPU requirements, transactional placement,
+and workload/placement-to-directed-job bridge in
+`crates/burd-protocol/src/customer_compute.rs`,
+`crates/burd-control-plane/src/customer_compute.rs`, and migration `0031`.
+Reservation binding, customer artifacts/status, immutable pricing, and job
+attempts remain follow-up work.
+
 ## Resource Model
 
 ### Identity and Human
