@@ -4,6 +4,7 @@ pub mod benchmark_profile;
 pub mod billing;
 pub mod config;
 pub mod customer;
+pub mod customer_artifact;
 pub mod customer_compute;
 pub mod db;
 pub mod enrollment;

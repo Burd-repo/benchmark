@@ -25,6 +25,8 @@ const MAX_RESERVATION_TTL_SECONDS: u32 = 24 * 60 * 60;
 const MAX_RESERVATION_LIST_LIMIT: u32 = 200;
 const MAX_CUSTOMER_AUDIT_LIMIT: u32 = 200;
 const DEFAULT_CUSTOMER_SCOPES: &[&str] = &[
+    "artifacts:read",
+    "artifacts:write",
     "billing:read",
     "billing:write",
     "reservations:read",
@@ -34,6 +36,8 @@ const DEFAULT_CUSTOMER_SCOPES: &[&str] = &[
     "workloads:write",
 ];
 const ALLOWED_CUSTOMER_SCOPES: &[&str] = &[
+    "artifacts:read",
+    "artifacts:write",
     "billing:read",
     "billing:write",
     "reservations:read",
@@ -1656,6 +1660,8 @@ mod tests {
         assert_eq!(
             normalized_scopes(&[]).unwrap(),
             vec![
+                "artifacts:read".to_string(),
+                "artifacts:write".to_string(),
                 "billing:read".to_string(),
                 "billing:write".to_string(),
                 "reservations:read".to_string(),
@@ -1690,7 +1696,12 @@ mod tests {
 
     #[test]
     fn customer_workload_scopes_are_allowed_by_default() {
-        for scope in ["workloads:read", "workloads:write"] {
+        for scope in [
+            "artifacts:read",
+            "artifacts:write",
+            "workloads:read",
+            "workloads:write",
+        ] {
             assert!(DEFAULT_CUSTOMER_SCOPES.contains(&scope));
             assert!(ALLOWED_CUSTOMER_SCOPES.contains(&scope));
         }

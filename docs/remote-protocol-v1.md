@@ -818,7 +818,7 @@ Device-session endpoint. Accepts final `succeeded` or `failed` result metadata, 
   invalidates its data-plane credential and becomes discoverable by the exact-assignment control
   endpoint. The Agent cleans up and does not submit a contradictory failed result.
 
-BN-16 adds backend-owned marketplace listing snapshots. The disconnected provider executor and byte-level artifact plane now exist, but customer artifact ingress, external object-storage signing/adapters, controlled production activation, customer reservations, billing, Pix, payouts, multi-GPU jobs, and multi-provider jobs remain unimplemented.
+BN-16 adds backend-owned marketplace listing snapshots. The disconnected provider executor and byte-level provider artifact plane exist. Customer input artifact ingress now validates project ownership, exact size/SHA-256, expiry, and workload binding through the private filesystem adapter. External object-storage signing/adapters, fully controlled production promotion, billable execution, real Pix/payout settlement, multi-GPU jobs, and multi-provider jobs remain unimplemented.
 
 ## Scheduler And Leases
 

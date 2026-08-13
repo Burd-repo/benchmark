@@ -2,9 +2,9 @@
 
 This threat model covers the first Burd Network control-plane phase: provider
 enrollment, remote sessions, signed evidence, challenge response, telemetry,
-trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control and provider artifact transfer, BN-14 scheduler leases, BN-15 usage ledger receipts, BN-16 marketplace listing registry snapshots, BN-17 customer accounts/reservations, BN-18 billing/Pix/payout settlement primitives, BN-19 observability/SRE primitives, and BN-20 security posture/attestation registry primitives, and BN-21 multi-GPU inventory registry primitives.
+trust policy, audit logs, BN-12 secure runtime planning, BN-13 job control and provider artifact transfer, BN-14 scheduler leases, BN-15 usage ledger receipts, BN-16 marketplace listing registry snapshots, BN-17 customer accounts/reservations, BN-18 billing/Pix/payout settlement primitives, BN-19 observability/SRE primitives, BN-20 security posture/attestation registry primitives, BN-21 multi-GPU inventory registry primitives, and project-owned customer input artifact ingress through the private filesystem adapter.
 
-It does not cover paid job execution, customer artifact ingress, external object-storage adapters, real Pix gateway integration, signed payment webhooks, executed bank payouts, completed KYC/tax/legal workflows, Kubernetes, distributed training, or
+It does not cover paid job execution, external customer object-storage adapters, malware/content scanning, real Pix gateway integration, signed payment webhooks, executed bank payouts, completed KYC/tax/legal workflows, Kubernetes, distributed training, or
 marketplace UI beyond backend listing/reservation/billing registry, vendor-specific telemetry export, alert routing, automated backup/restore tooling, production TPM/HSM/OS keychain migration, TPM quote verification, signed updater infrastructure, SBOM generation, vulnerability scanner execution, or external supply-chain scanning.
 
 ## Security Goals

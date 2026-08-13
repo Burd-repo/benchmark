@@ -160,7 +160,7 @@ attempts remain follow-up work.
 | Resource/field | Classification | Current source | Public rule |
 | --- | --- | --- | --- |
 | Customer workload prompt/parameters | customer-claimed | PROPOSED `Workload` | Validated, stored, and redacted by backend policy |
-| Customer artifact manifest | customer-claimed | PROPOSED artifact ingress | Backend hashes, scans, stores, and signs grants |
+| Customer artifact manifest | customer-claimed then backend-verified | `customer_artifacts` plus private object store | Backend verifies exact size/SHA-256 and owns the provider manifest; content scanning and external grants remain future work |
 | Customer organization/project ids | backend-authoritative | `organizations`, `projects` | Customer token scopes constrain access |
 | Customer API key token | never public after creation | `CreateCustomerApiKeyResponse.token` | Return once; store only hash/prefix |
 | Provider registration payload | provider-claimed | enrollment payload | Not trusted until proof of possession and backend enrollment |
@@ -234,16 +234,21 @@ Current job artifacts are internal job artifact manifests:
   optional `size_bytes`, and optional `content_type`;
 - data-plane grants and upload/download URLs are provider/job credential bound.
 
-Target customer artifact ingress:
+Implemented customer artifact ingress:
 
-- customer uploads to backend-issued object-storage grants scoped to project,
-  workload, artifact id, size, content type, hash, and expiry;
+- customer creates a project-scoped upload intent and uploads through the
+  customer-authenticated Control Plane; the initial adapter is the existing
+  private filesystem object store;
 - backend stores artifact metadata before placement;
-- backend redacts customer secrets and never exposes raw customer upload grants to
-  provider beyond the job-specific data-plane grant;
-- artifact state is projected as public status: `pending_upload`, `uploaded`,
-  `validated`, `rejected`, `bound_to_workload`, `available_to_provider`,
-  `result_uploaded`, `expired`, or `deleted`.
+- exact size and SHA-256 are verified on upload and rechecked from storage during
+  idempotent finalize before status becomes `ready`;
+- workload input references are restricted to ready, unexpired artifacts owned
+  by the same project and are converted to backend-owned internal job manifests;
+- backend never exposes object keys or provider data-plane credentials to the
+  customer. Provider access remains job-credential scoped;
+- current public statuses are `pending_upload`, `uploaded`, `ready`, `expired`,
+  and `rejected`. Content scanning, explicit deletion, output download, and
+  external object-storage grants remain future work.
 
 ## Customer Job Status and Events Projection
 
@@ -410,7 +415,7 @@ duration and pruning policy must be frozen before public API launch.
 | ComputeJob | IMPLEMENTED: `queued -> assigned -> accepted -> provisioning -> running -> uploading -> succeeded/failed/cancelled`; authority loss can requeue/withhold and clear credentials, while lease expiry is tracked on `Lease`; PROPOSED customer projection may expose `expired` | Admin/backend/provider session | Physical provider/device/session/GPU, runtime admission, lease authority | Job credential, events, artifacts, usage | current job terminals: `succeeded`, `failed`, `cancelled`; projected `expired` is PROPOSED |
 | JobAttempt | PROPOSED: `pending -> offered -> assigned -> accepted -> provisioning -> running -> uploading -> succeeded/failed/cancelled/expired` | Backend/provider session | Placement selected, retry budget available | One lease and one physical execution try | `succeeded`, `failed`, `cancelled`, `expired` |
 | Lease | IMPLEMENTED: `offered -> accepted -> provisioning -> active -> completed/expired/failed` | Scheduler/provider session/backend | Queued physical job, admission, no active GPU lease | Binds execution authority and `assignment_lease_id` | `completed`, `expired`, `failed` |
-| Artifact | PROPOSED public, PARTIAL internal: `declared -> upload_granted -> uploaded -> validated -> bound -> provider_available -> result_uploaded -> expired/rejected/deleted` | Customer/backend/provider | Workload ownership, size/hash/content policy | Object storage writes, hashes, scan metadata | `result_uploaded`, `expired`, `rejected`, `deleted` |
+| Artifact | IMPLEMENTED customer input: `pending_upload -> uploaded -> ready`; `expired/rejected` reserved terminal states. Provider result artifacts remain internal. | Customer/backend/provider | Project ownership, exact size/hash, upload and retention expiry | Private object-store write, finalize recheck, workload binding | `expired`, `rejected` |
 | Payment | PARTIAL: `requires_confirmation -> confirmed`; PROPOSED: `requires_confirmation -> pending_provider -> confirmed -> expired/failed/refunded` | Customer/admin/adapter | Project, amount, currency, external reference policy | Ledger lines only after backend confirmation policy | current terminal: `confirmed`; proposed terminals: `confirmed`, `expired`, `failed`, `refunded` |
 | Invoice | IMPLEMENTED: `issued`; PROPOSED: `draft -> issued -> paid/void/disputed/refunded` | Backend/admin | Usage ledger, reservation, pricing snapshot, sufficient balance | Financial ledger transaction | `paid`, `void`, `refunded` |
 | Payout | PARTIAL: `held/approved` creation; PROPOSED: `requested -> held -> approved -> submitted -> paid/failed/cancelled` | Admin/backend/adapter | Provider payable balance, KYC/tax, hold policy, payout account | Payout clearing ledger lines, external adapter call | `paid`, `failed`, `cancelled` |
@@ -486,7 +491,7 @@ Required parity gate:
   `session_id`, or `gpu_uuid`.
 - Customer can declare compute requirements without selecting raw provider
   hardware.
-- Customer artifact ingress exists with backend-owned object grants, validation,
+- Customer artifact ingress exists with backend-owned upload targets, validation,
   hashes, size limits, redaction, and expiry.
 - Backend creates an immutable pricing snapshot before billable placement or
   reservation consumption.

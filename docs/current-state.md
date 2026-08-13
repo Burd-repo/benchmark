@@ -183,7 +183,7 @@ after the June 2026 reliability pass.
 
 - Production operating-system service packaging, automatic Agent restart/update policy, backend benchmark profile runners/submission automation, background verification scheduler automation, and production regional probe workers.
 - Production antifraud operations, case review, admin resolution, and automated enforcement.
-- Marketplace checkout/orchestration beyond single-listing reservation, autonomous/background scheduling, paid job container execution, customer artifact ingress, external object-storage adapters, billing-grade metering enforcement, and external financial settlement.
+- Marketplace checkout/orchestration beyond single-listing reservation, autonomous/background scheduling, paid job container execution, external customer object-storage adapters, billing-grade metering enforcement, and external financial settlement. Customer input artifact ingress now uses the private local filesystem adapter.
 - Real Pix gateway capture, bank payout execution, earnings settlement, refunds, disputes, tax workflows, and production financial reconciliation.
 - Production cloud deployment, external observability export, dashboards-as-code, alerting, automated backup/restore, and complete remote backend operations.
 - Reputation and provider marketplace ranking.
@@ -625,9 +625,43 @@ starting the API server or depending on host state:
 - The backend selects the approved template/image pair through
   `workload_execution_profiles`; customer parameters cannot select a physical
   target, image, command, credential, or secret-like field.
-- This first vertical does not bind reservations or pricing snapshots, ingest
-  customer artifacts, expose customer job status/cancellation, automate the
-  scheduler, or make execution billable/payable. Those remain later contracts.
+- This first vertical originally omitted reservations and artifact ingress;
+  both are implemented by the following customer-compute verticals. Pricing
+  snapshots, customer job status/cancellation, autonomous scheduling, and
+  billable/payable execution remain later contracts.
+
+## BN-CUSTOMER-COMPUTE-02 - Reservation Workload Binding
+
+- Customer workloads may reference one customer-owned reservation without
+  selecting provider, device, session, or GPU fields directly.
+- Reservation ownership, lifecycle, workload type, listing supply, workload
+  requirements, and Runtime Admission are checked in the same transaction that
+  creates the workload, placement, and `ComputeJob`.
+- One reservation can be consumed by only one workload. Terminal jobs release
+  the reservation for audit-preserving commercial lifecycle handling.
+
+## BN-CUSTOMER-COMPUTE-03 - Customer Artifact Ingress
+
+- `customer_artifacts` are first-class project-owned records with declared
+  SHA-256, exact size, metadata-only content type, upload-intent expiry, and
+  retention expiry.
+- `POST /v1/customer/projects/{project_id}/artifacts` creates an idempotent
+  Control Plane upload intent. The response never exposes an object key,
+  provider credential, or provider data-plane URL.
+- Bytes are uploaded through the customer-authenticated Control Plane route and
+  streamed to the existing private filesystem object store. Exact
+  `Content-Length` and `X-Burd-Content-Sha256` are verified before the record
+  becomes `uploaded`.
+- Finalize rechecks the stored object's size and SHA-256 and is idempotent. Only
+  then does the artifact become `ready`.
+- Workload creation accepts abstract `input_artifact_ids`, requires every input
+  to be `ready`, unexpired, and owned by the same project, then creates the
+  internal backend-owned `JobArtifact` manifest consumed through the existing
+  provider job-scoped data plane.
+- Customer artifacts use the initial local filesystem object-store adapter.
+  External S3/R2 adapters, malware/content scanning, customer output download,
+  customer job status/events/cancel, and pricing snapshots remain outside this
+  vertical.
 
 ## BN-18 - Billing, Pix And Payouts
 

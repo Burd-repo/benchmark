@@ -803,6 +803,33 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
+            "/v1/customer/projects/{project_id}/artifacts": {
+                "post": {
+                    "summary": "Create a project-owned customer artifact upload intent",
+                    "description": "The upload target remains on the authenticated Control Plane. Object keys and provider data-plane credentials are never returned to the customer.",
+                    "security": [{ "customerBearer": [] }],
+                    "parameters": [{ "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[!-~]+$" } }],
+                    "responses": { "201": { "description": "upload intent created" }, "409": { "description": "idempotency conflict" } }
+                }
+            },
+            "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/content": {
+                "put": {
+                    "summary": "Upload customer artifact bytes through the authenticated Control Plane",
+                    "security": [{ "customerBearer": [] }],
+                    "parameters": [
+                        { "name": "Content-Length", "in": "header", "required": true, "schema": { "type": "integer", "minimum": 0 } },
+                        { "name": "X-Burd-Content-Sha256", "in": "header", "required": true, "schema": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" } }
+                    ],
+                    "responses": { "200": { "description": "artifact bytes stored and integrity verified" }, "409": { "description": "artifact state does not permit upload" } }
+                }
+            },
+            "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/finalize": {
+                "post": {
+                    "summary": "Finalize a verified customer artifact",
+                    "security": [{ "customerBearer": [] }],
+                    "responses": { "200": { "description": "artifact is ready or was already finalized" }, "409": { "description": "artifact has not been uploaded" } }
+                }
+            },
             "/v1/customer/projects/{project_id}/usage": {
                 "get": {
                     "summary": "Read project reservation usage and credit balance view",
@@ -2932,10 +2959,86 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
             "properties": {
                 "client_workload_id": { "type": ["string", "null"] },
                 "reservation_id": { "type": ["string", "null"], "description": "Optional customer-owned commercial reservation. The Control Plane still selects and verifies physical execution fields from the reservation binding." },
+                "input_artifact_ids": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string" } },
                 "workload_type": { "type": "string" },
                 "requirements": { "$ref": "#/components/schemas/ComputeRequirements" },
                 "parameters": { "type": "object", "additionalProperties": true },
                 "timeout_seconds": { "type": ["integer", "null"], "minimum": 1, "maximum": 86400 }
+            }
+        }),
+    );
+    schemas.insert(
+        "CreateCustomerArtifactRequest".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sha256", "size_bytes"],
+            "properties": {
+                "client_artifact_id": { "type": ["string", "null"] },
+                "sha256": { "type": "string", "pattern": "^sha256:[a-fA-F0-9]{64}$" },
+                "size_bytes": { "type": "integer", "minimum": 0, "maximum": 10_737_418_240_i64 },
+                "content_type": { "type": ["string", "null"], "maxLength": 255 },
+                "retention_seconds": { "type": ["integer", "null"], "minimum": 1, "maximum": 2592000 }
+            }
+        }),
+    );
+    schemas.insert(
+        "CustomerArtifactRecord".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["artifact_id", "organization_id", "project_id", "schema_version", "status", "sha256", "size_bytes", "upload_expires_at", "expires_at", "created_at", "updated_at"],
+            "properties": {
+                "artifact_id": { "type": "string" },
+                "organization_id": { "type": "string" },
+                "project_id": { "type": "string" },
+                "schema_version": { "type": "string", "const": "burd-customer-artifact-v1" },
+                "client_artifact_id": { "type": ["string", "null"] },
+                "status": { "type": "string", "enum": ["pending_upload", "uploaded", "ready", "expired", "rejected"] },
+                "sha256": { "type": "string" },
+                "size_bytes": { "type": "integer", "minimum": 0 },
+                "content_type": { "type": ["string", "null"] },
+                "upload_expires_at": { "type": "string", "format": "date-time" },
+                "expires_at": { "type": "string", "format": "date-time" },
+                "uploaded_at": { "type": ["string", "null"], "format": "date-time" },
+                "ready_at": { "type": ["string", "null"], "format": "date-time" },
+                "created_at": { "type": "string", "format": "date-time" },
+                "updated_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "CustomerArtifactUploadIntentResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["schema_version", "request_id", "artifact", "upload", "duplicate"],
+            "properties": {
+                "schema_version": { "type": "string", "const": "burd-customer-artifact-upload-intent-v1" },
+                "request_id": { "type": "string" },
+                "artifact": { "$ref": "#/components/schemas/CustomerArtifactRecord" },
+                "upload": {
+                    "type": "object",
+                    "required": ["method", "url", "expires_at", "content_length", "sha256"],
+                    "properties": {
+                        "method": { "type": "string", "const": "PUT" },
+                        "url": { "type": "string" },
+                        "expires_at": { "type": "string", "format": "date-time" },
+                        "content_length": { "type": "integer", "minimum": 0 },
+                        "sha256": { "type": "string" }
+                    }
+                },
+                "duplicate": { "type": "boolean" }
+            }
+        }),
+    );
+    schemas.insert(
+        "CustomerArtifactResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "artifact", "duplicate"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "artifact": { "$ref": "#/components/schemas/CustomerArtifactRecord" },
+                "duplicate": { "type": "boolean" }
             }
         }),
     );
@@ -3682,6 +3785,33 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
         "post",
         "CreateCustomerWorkloadRequest",
     );
+    set_request_body(
+        document,
+        "/v1/customer/projects/{project_id}/artifacts",
+        "post",
+        "CreateCustomerArtifactRequest",
+    );
+    set_json_response(
+        document,
+        "/v1/customer/projects/{project_id}/artifacts",
+        "post",
+        "201",
+        "CustomerArtifactUploadIntentResponse",
+    );
+    set_json_response(
+        document,
+        "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/content",
+        "put",
+        "200",
+        "CustomerArtifactResponse",
+    );
+    set_json_response(
+        document,
+        "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/finalize",
+        "post",
+        "200",
+        "CustomerArtifactResponse",
+    );
     set_json_response(
         document,
         "/v1/customer/projects/{project_id}/reservations",
@@ -3892,6 +4022,9 @@ mod tests {
             "/v1/customer/projects/{project_id}/credits",
             "/v1/customer/projects/{project_id}/reservations",
             "/v1/customer/projects/{project_id}/workloads",
+            "/v1/customer/projects/{project_id}/artifacts",
+            "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/content",
+            "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/finalize",
             "/v1/customer/projects/{project_id}/usage",
             "/v1/customer/reservations/{reservation_id}/cancel",
             "/v1/jobs",
@@ -4024,6 +4157,21 @@ mod tests {
                 "customerBearer",
             ),
             (
+                "/v1/customer/projects/{project_id}/artifacts",
+                "post",
+                "customerBearer",
+            ),
+            (
+                "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/content",
+                "put",
+                "customerBearer",
+            ),
+            (
+                "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/finalize",
+                "post",
+                "customerBearer",
+            ),
+            (
                 "/v1/billing/projects/{project_id}/balance",
                 "get",
                 "customerBearer",
@@ -4051,6 +4199,7 @@ mod tests {
             ),
             ("/v1/customer/projects/{project_id}/reservations", "post"),
             ("/v1/customer/projects/{project_id}/workloads", "post"),
+            ("/v1/customer/projects/{project_id}/artifacts", "post"),
             ("/v1/jobs", "post"),
         ] {
             let operation = paths.get(path).unwrap().get(method).unwrap();
@@ -4815,6 +4964,10 @@ mod tests {
             "CreateCustomerWorkloadRequest",
             "CustomerWorkloadRecord",
             "CustomerWorkloadResponse",
+            "CreateCustomerArtifactRequest",
+            "CustomerArtifactRecord",
+            "CustomerArtifactUploadIntentResponse",
+            "CustomerArtifactResponse",
             "JobArtifact",
             "CreateJobRequest",
             "JobRecord",
@@ -4898,6 +5051,11 @@ mod tests {
                 .is_some()
         );
         assert!(
+            schemas["CreateCustomerWorkloadRequest"]["properties"]
+                .get("input_artifact_ids")
+                .is_some()
+        );
+        assert!(
             schemas["CustomerWorkloadRecord"]["properties"]
                 .get("reservation_id")
                 .is_some()
@@ -4920,6 +5078,33 @@ mod tests {
                 "201"
             ),
             "#/components/schemas/CustomerWorkloadResponse"
+        );
+        assert_eq!(
+            request_schema_ref(
+                paths,
+                "/v1/customer/projects/{project_id}/artifacts",
+                "post"
+            ),
+            "#/components/schemas/CreateCustomerArtifactRequest"
+        );
+        assert_eq!(
+            response_schema_ref(
+                paths,
+                "/v1/customer/projects/{project_id}/artifacts",
+                "post",
+                "201"
+            ),
+            "#/components/schemas/CustomerArtifactUploadIntentResponse"
+        );
+        assert!(
+            schemas["CustomerArtifactRecord"]["properties"]
+                .get("object_key")
+                .is_none()
+        );
+        assert!(
+            schemas["CustomerArtifactUploadIntentResponse"]["properties"]
+                .get("credential")
+                .is_none()
         );
         for physical in [
             "provider_id",

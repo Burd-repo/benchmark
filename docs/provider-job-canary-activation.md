@@ -79,8 +79,9 @@ authority. The canary does not change those contracts. Usage metering may record
 technical execution facts, but it does not make a canary job billable or
 payable.
 
-Customer artifact ingress, external object storage, paid scheduling, billing,
-payouts, and production promotion remain separate work.
+Customer input artifact ingress now feeds backend-owned provider manifests, but
+external object storage, paid scheduling, billing, payouts, and production
+promotion remain separate work.
 
 ## Verification boundary
 
