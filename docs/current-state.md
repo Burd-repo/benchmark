@@ -660,7 +660,25 @@ starting the API server or depending on host state:
   provider job-scoped data plane.
 - Customer artifacts use the initial local filesystem object-store adapter.
   External S3/R2 adapters, malware/content scanning, customer output download,
-  customer job status/events/cancel, and pricing snapshots remain outside this
+  and pricing snapshots remain outside this vertical.
+
+## BN-CUSTOMER-COMPUTE-04 - Customer Job Status, Events And Cancel
+
+- Customer API keys with `workloads:read` can read a workload/job projection and
+  a bounded event history only inside their organization/project.
+- Public job states collapse internal `assigned` and `accepted` into `queued`.
+  Public responses omit provider, device, session, GPU, lease, credentials,
+  fingerprints, raw status/event/cancellation messages, internal event metadata,
+  object keys, image refs, and policies.
+- Public result metadata includes only artifact id, role, SHA-256, size, and
+  content type. Output download remains a later customer data-plane contract.
+- Customer cancellation requires `workloads:write`, is idempotent after the job
+  becomes `cancelled`, and atomically cancels the job/workload, clears the job
+  credential, terminalizes any active lease, releases placement/reservation,
+  finalizes usage, and records a customer audit event.
+- The existing active-job control watcher propagates the authoritative
+  `cancelled` state to an executing Agent. Completed jobs remain immutable.
+- Immutable pricing snapshots and new billing behavior remain outside this
   vertical.
 
 ## BN-18 - Billing, Pix And Payouts

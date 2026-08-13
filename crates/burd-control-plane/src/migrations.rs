@@ -171,6 +171,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "customer_artifact_ingress",
         sql: include_str!("../migrations/0033_customer_artifact_ingress.sql"),
     },
+    Migration {
+        version: "0034",
+        name: "customer_job_control",
+        sql: include_str!("../migrations/0034_customer_job_control.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -200,11 +205,22 @@ mod tests {
 
     #[test]
     fn customer_artifact_ingress_migration_binds_project_artifacts_to_workloads() {
-        let sql = MIGRATIONS.last().unwrap().sql;
+        let sql = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == "0033")
+            .unwrap()
+            .sql;
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS customer_artifacts"));
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS customer_workload_input_artifacts"));
         assert!(sql.contains("customer_artifacts_sha256_format"));
         assert!(sql.contains("customer_artifacts_ready_state"));
+    }
+
+    #[test]
+    fn customer_job_control_migration_indexes_owned_status_and_events() {
+        let sql = MIGRATIONS.last().unwrap().sql;
+        assert!(sql.contains("idx_customer_workloads_project_job"));
+        assert!(sql.contains("idx_job_events_customer_projection"));
     }
 
     #[test]

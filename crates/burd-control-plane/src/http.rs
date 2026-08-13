@@ -36,12 +36,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use burd_protocol::{
-    AcceptJobRequest, CancelJobRequest, CancelReservationRequest, ClientControlMessage,
-    ConfirmPixPaymentIntentRequest, CreateCustomerApiKeyRequest, CreateCustomerArtifactRequest,
-    CreateCustomerUserRequest, CreateCustomerWorkloadRequest, CreateJobRequest,
-    CreateOrganizationRequest, CreatePixPaymentIntentRequest, CreateProjectRequest,
-    CreateProviderPayoutRequest, CreateReservationRequest, EnrollmentProofRequest,
-    GrantCustomerCreditsRequest, IssueProofChallengeRequest,
+    AcceptJobRequest, CancelCustomerWorkloadRequest, CancelJobRequest, CancelReservationRequest,
+    ClientControlMessage, ConfirmPixPaymentIntentRequest, CreateCustomerApiKeyRequest,
+    CreateCustomerArtifactRequest, CreateCustomerUserRequest, CreateCustomerWorkloadRequest,
+    CreateJobRequest, CreateOrganizationRequest, CreatePixPaymentIntentRequest,
+    CreateProjectRequest, CreateProviderPayoutRequest, CreateReservationRequest,
+    EnrollmentProofRequest, GrantCustomerCreditsRequest, IssueProofChallengeRequest,
     IssueRuntimeVerificationChallengeRequest, JOB_ARTIFACT_UPLOAD_VERSION,
     JobArtifactUploadResponse, JobEventRequest, KeyRotationProofRequest, RevokeEvidenceRequest,
     RunMarketplaceListingSweepRequest, RunSchedulerRequest, RunTrustSweepRequest,
@@ -402,6 +402,18 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/customer/projects/{project_id}/workloads",
             post(create_customer_workload),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/workloads/{workload_id}",
+            get(get_customer_job),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/workloads/{workload_id}/events",
+            get(list_customer_job_events),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/workloads/{workload_id}/cancel",
+            post(cancel_customer_job),
         )
         .route(
             "/v1/customer/projects/{project_id}/artifacts",
@@ -1713,6 +1725,59 @@ async fn create_customer_workload(
         }
         CreateCustomerWorkloadOutcome::Conflict => Err(ApiError::idempotency_conflict(request_id)),
     }
+}
+
+async fn get_customer_job(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, workload_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::CustomerJobResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    state
+        .db
+        .get_customer_job(&request_id, &auth, &project_id, &workload_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn list_customer_job_events(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, workload_id)): Path<(String, String)>,
+    Query(query): Query<CustomerListQuery>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListCustomerJobEventsResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    state
+        .db
+        .list_customer_job_events(
+            &request_id,
+            &auth,
+            &project_id,
+            &workload_id,
+            query.limit.unwrap_or(100),
+        )
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn cancel_customer_job(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, workload_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<CancelCustomerWorkloadRequest>,
+) -> Result<Json<burd_protocol::CustomerJobResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    state
+        .db
+        .cancel_customer_job(&request_id, &auth, &project_id, &workload_id, &payload)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
 }
 
 async fn create_customer_artifact(

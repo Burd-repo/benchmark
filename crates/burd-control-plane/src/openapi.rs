@@ -803,6 +803,29 @@ pub fn document() -> serde_json::Value {
                     }
                 }
             },
+            "/v1/customer/projects/{project_id}/workloads/{workload_id}": {
+                "get": {
+                    "summary": "Read the public customer projection of a workload and job",
+                    "description": "Physical provider, device, session, GPU, credentials, object keys, fingerprints, and internal metadata are omitted.",
+                    "security": [{ "customerBearer": [] }],
+                    "responses": { "200": { "description": "customer workload and job returned" }, "404": { "description": "workload not found in the authenticated project" } }
+                }
+            },
+            "/v1/customer/projects/{project_id}/workloads/{workload_id}/events": {
+                "get": {
+                    "summary": "List sanitized customer-visible job events",
+                    "security": [{ "customerBearer": [] }],
+                    "responses": { "200": { "description": "sanitized job events returned" } }
+                }
+            },
+            "/v1/customer/projects/{project_id}/workloads/{workload_id}/cancel": {
+                "post": {
+                    "summary": "Cancel one customer-owned workload and its active execution",
+                    "description": "Cancellation is idempotent for an already-cancelled job and propagates to lease and Agent execution control.",
+                    "security": [{ "customerBearer": [] }],
+                    "responses": { "200": { "description": "job cancelled or already cancelled" }, "409": { "description": "completed job cannot be cancelled" } }
+                }
+            },
             "/v1/customer/projects/{project_id}/artifacts": {
                 "post": {
                     "summary": "Create a project-owned customer artifact upload intent",
@@ -3056,7 +3079,7 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
                 "reservation_id": { "type": ["string", "null"] },
                 "workload_type": { "type": "string" },
                 "requirements": { "$ref": "#/components/schemas/ComputeRequirements" },
-                "status": { "type": "string", "enum": ["queued", "placed", "placement_failed", "cancelled"] },
+                "status": { "type": "string", "enum": ["queued", "placed", "placement_failed", "succeeded", "failed", "cancelled"] },
                 "job_id": { "type": ["string", "null"] },
                 "created_at": { "type": "string", "format": "date-time" },
                 "updated_at": { "type": "string", "format": "date-time" }
@@ -3072,6 +3095,89 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
                 "request_id": { "type": "string" },
                 "workload": { "$ref": "#/components/schemas/CustomerWorkloadRecord" },
                 "duplicate": { "type": "boolean" }
+            }
+        }),
+    );
+    schemas.insert(
+        "CancelCustomerWorkloadRequest".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": { "reason": { "type": ["string", "null"], "maxLength": 512 } }
+        }),
+    );
+    schemas.insert(
+        "CustomerResultArtifact".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["artifact_id", "role"],
+            "properties": {
+                "artifact_id": { "type": "string" },
+                "role": { "type": "string" },
+                "sha256": { "type": ["string", "null"] },
+                "size_bytes": { "type": ["integer", "null"], "minimum": 0 },
+                "content_type": { "type": ["string", "null"] }
+            }
+        }),
+    );
+    schemas.insert(
+        "CustomerJobRecord".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["schema_version", "workload_id", "job_id", "workload_type", "status", "result_artifacts", "created_at", "updated_at"],
+            "properties": {
+                "schema_version": { "type": "string", "const": "burd-customer-job-v1" },
+                "workload_id": { "type": "string" },
+                "job_id": { "type": "string" },
+                "workload_type": { "type": "string" },
+                "status": { "type": "string", "enum": ["queued", "provisioning", "running", "uploading", "succeeded", "failed", "cancelled"] },
+                "progress_percent": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                "error_code": { "type": ["string", "null"] },
+                "result_artifacts": { "type": "array", "items": { "$ref": "#/components/schemas/CustomerResultArtifact" } },
+                "created_at": { "type": "string", "format": "date-time" },
+                "started_at": { "type": ["string", "null"], "format": "date-time" },
+                "completed_at": { "type": ["string", "null"], "format": "date-time" },
+                "updated_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "CustomerJobEventRecord".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["schema_version", "event_id", "job_id", "sequence", "event_type", "occurred_at"],
+            "properties": {
+                "schema_version": { "type": "string", "const": "burd-customer-job-event-v1" },
+                "event_id": { "type": "string" },
+                "job_id": { "type": "string" },
+                "sequence": { "type": "integer", "minimum": 1 },
+                "event_type": { "type": "string", "enum": ["provisioning", "running", "uploading", "progress", "cleanup_completed", "update"] },
+                "progress_percent": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                "occurred_at": { "type": "string", "format": "date-time" }
+            }
+        }),
+    );
+    schemas.insert(
+        "CustomerJobResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "workload", "job", "duplicate"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "workload": { "$ref": "#/components/schemas/CustomerWorkloadRecord" },
+                "job": { "$ref": "#/components/schemas/CustomerJobRecord" },
+                "duplicate": { "type": "boolean" }
+            }
+        }),
+    );
+    schemas.insert(
+        "ListCustomerJobEventsResponse".to_string(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["request_id", "events"],
+            "properties": {
+                "request_id": { "type": "string" },
+                "events": { "type": "array", "items": { "$ref": "#/components/schemas/CustomerJobEventRecord" } }
             }
         }),
     );
@@ -3785,6 +3891,33 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
         "post",
         "CreateCustomerWorkloadRequest",
     );
+    set_json_response(
+        document,
+        "/v1/customer/projects/{project_id}/workloads/{workload_id}",
+        "get",
+        "200",
+        "CustomerJobResponse",
+    );
+    set_json_response(
+        document,
+        "/v1/customer/projects/{project_id}/workloads/{workload_id}/events",
+        "get",
+        "200",
+        "ListCustomerJobEventsResponse",
+    );
+    set_request_body(
+        document,
+        "/v1/customer/projects/{project_id}/workloads/{workload_id}/cancel",
+        "post",
+        "CancelCustomerWorkloadRequest",
+    );
+    set_json_response(
+        document,
+        "/v1/customer/projects/{project_id}/workloads/{workload_id}/cancel",
+        "post",
+        "200",
+        "CustomerJobResponse",
+    );
     set_request_body(
         document,
         "/v1/customer/projects/{project_id}/artifacts",
@@ -4022,6 +4155,9 @@ mod tests {
             "/v1/customer/projects/{project_id}/credits",
             "/v1/customer/projects/{project_id}/reservations",
             "/v1/customer/projects/{project_id}/workloads",
+            "/v1/customer/projects/{project_id}/workloads/{workload_id}",
+            "/v1/customer/projects/{project_id}/workloads/{workload_id}/events",
+            "/v1/customer/projects/{project_id}/workloads/{workload_id}/cancel",
             "/v1/customer/projects/{project_id}/artifacts",
             "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/content",
             "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/finalize",
@@ -4153,6 +4289,21 @@ mod tests {
             ),
             (
                 "/v1/customer/projects/{project_id}/workloads",
+                "post",
+                "customerBearer",
+            ),
+            (
+                "/v1/customer/projects/{project_id}/workloads/{workload_id}",
+                "get",
+                "customerBearer",
+            ),
+            (
+                "/v1/customer/projects/{project_id}/workloads/{workload_id}/events",
+                "get",
+                "customerBearer",
+            ),
+            (
+                "/v1/customer/projects/{project_id}/workloads/{workload_id}/cancel",
                 "post",
                 "customerBearer",
             ),
@@ -4964,6 +5115,12 @@ mod tests {
             "CreateCustomerWorkloadRequest",
             "CustomerWorkloadRecord",
             "CustomerWorkloadResponse",
+            "CancelCustomerWorkloadRequest",
+            "CustomerResultArtifact",
+            "CustomerJobRecord",
+            "CustomerJobEventRecord",
+            "CustomerJobResponse",
+            "ListCustomerJobEventsResponse",
             "CreateCustomerArtifactRequest",
             "CustomerArtifactRecord",
             "CustomerArtifactUploadIntentResponse",
@@ -5105,6 +5262,58 @@ mod tests {
             schemas["CustomerArtifactUploadIntentResponse"]["properties"]
                 .get("credential")
                 .is_none()
+        );
+        for private in [
+            "provider_id",
+            "device_id",
+            "session_id",
+            "gpu_uuid",
+            "object_key",
+            "credential",
+            "fingerprint",
+            "metadata",
+            "status_message",
+            "cancellation_reason",
+            "message",
+        ] {
+            assert!(
+                schemas["CustomerJobRecord"]["properties"]
+                    .get(private)
+                    .is_none(),
+                "customer job must not expose {private}"
+            );
+            assert!(
+                schemas["CustomerJobEventRecord"]["properties"]
+                    .get(private)
+                    .is_none(),
+                "customer event must not expose {private}"
+            );
+        }
+        assert_eq!(
+            response_schema_ref(
+                paths,
+                "/v1/customer/projects/{project_id}/workloads/{workload_id}",
+                "get",
+                "200"
+            ),
+            "#/components/schemas/CustomerJobResponse"
+        );
+        assert_eq!(
+            response_schema_ref(
+                paths,
+                "/v1/customer/projects/{project_id}/workloads/{workload_id}/events",
+                "get",
+                "200"
+            ),
+            "#/components/schemas/ListCustomerJobEventsResponse"
+        );
+        assert_eq!(
+            request_schema_ref(
+                paths,
+                "/v1/customer/projects/{project_id}/workloads/{workload_id}/cancel",
+                "post"
+            ),
+            "#/components/schemas/CancelCustomerWorkloadRequest"
         );
         for physical in [
             "provider_id",

@@ -6,6 +6,7 @@ pub mod config;
 pub mod customer;
 pub mod customer_artifact;
 pub mod customer_compute;
+pub mod customer_job;
 pub mod db;
 pub mod enrollment;
 pub mod error;

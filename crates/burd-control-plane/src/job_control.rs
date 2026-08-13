@@ -1456,10 +1456,16 @@ fn is_terminal_status(status: &str) -> bool {
     matches!(status, "succeeded" | "failed" | "cancelled")
 }
 
-async fn release_customer_placement(
+pub(crate) async fn release_customer_placement(
     transaction: &Transaction<'_>,
     job_id: &str,
 ) -> Result<(), SessionError> {
+    transaction
+        .execute(
+            "UPDATE customer_workloads AS workload SET status = job.status, updated_at = job.updated_at FROM compute_jobs AS job WHERE job.job_id = $1 AND workload.workload_id = job.workload_id AND workload.status = 'placed' AND job.status IN ('succeeded', 'failed', 'cancelled')",
+            &[&job_id],
+        )
+        .await?;
     transaction
         .execute(
             "UPDATE compute_placements SET status = 'released' WHERE placement_id = (SELECT placement_id FROM compute_jobs WHERE job_id = $1) AND status = 'selected'",

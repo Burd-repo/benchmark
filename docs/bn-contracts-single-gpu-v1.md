@@ -172,7 +172,7 @@ attempts remain follow-up work.
 | Placement decision | backend-authoritative | PROPOSED `Placement` | Customer supplies requirements; backend chooses provider/device/GPU |
 | `provider_id`/`device_id`/`session_id`/`gpu_uuid` for execution | backend-authoritative | current `compute_jobs` and `job_leases` | Never accepted from future public customer compute API |
 | Job credential | never public to customer | `JobDataPlaneGrant.credential` | Provider-side only; hash-only at rest |
-| Job events | provider-claimed then backend-attested | `job_events` | Customer sees projected, sanitized status/events |
+| Job events | provider-claimed then backend-attested | `job_events` plus customer workload event projection | Customer sees bounded, sanitized events without physical bindings or internal metadata |
 | Usage receipt | backend-derived/backend-attested | `usage_ledger_entries` | Billing consumes append-only usage |
 | Active listing price | backend-authoritative | `marketplace_listing_prices` | Must be snapshotted before invoice in target contract |
 | Invoice totals | backend-derived | `billing_invoices` | Customer/provider cannot submit totals |
@@ -251,6 +251,13 @@ Implemented customer artifact ingress:
   external object-storage grants remain future work.
 
 ## Customer Job Status and Events Projection
+
+Implemented customer routes expose one project-owned workload/job projection,
+bounded sanitized events, and idempotent cancellation. Internal assignment
+states are collapsed, and provider/device/session/GPU/lease credentials,
+fingerprints, object keys, policies, image refs, and raw event metadata are not
+part of the customer contract. Result artifact metadata is public, but customer
+output download remains future work.
 
 Current provider job events are physical `job_events` with provider/device/session
 fields and sequence numbers. Target public projection:
@@ -400,18 +407,21 @@ duration and pruning policy must be frozen before public API launch.
 | `POST /v1/runtime-verifications/challenges` | IMPLEMENTED | admin bearer | not applicable | N/A | issues runtime challenge | N/A | no idempotent replay |
 | `POST /v1/sessions/{session_id}/runtime-observations` | IMPLEMENTED | session headers | optional by observation hash behavior | signed observation hash | duplicate response | binding/hash conflict rejected | domain storage |
 | `POST /v1/sessions/{session_id}/runtime-verifications/{challenge_id}/response` | IMPLEMENTED | session headers | challenge-bound | one response per challenge | repeated terminal state rejected or reported by domain policy | conflicting response rejected | domain state |
-| `POST /v1/workloads` | PROPOSED | customer bearer `workloads:write` | required | project + idempotency key | replays stored workload | `409 idempotency_conflict` | stored response; retention must be frozen |
-| `POST /v1/workloads/{workload_id}/artifacts` | PROPOSED | customer bearer `artifacts:write` | required | workload + artifact client id + key | replays grant/metadata | `409 idempotency_conflict` | stored response; retention must be frozen |
-| `POST /v1/workloads/{workload_id}/submit` | PROPOSED | customer bearer `workloads:write` | required | workload + submit key | replays submit result | `409 idempotency_conflict` | stored response; retention must be frozen |
-| `POST /v1/workloads/{workload_id}/cancel` | PROPOSED | customer bearer `workloads:write` | optional or required to freeze | workload + cancel key | replay cancellation projection | conflicting reason/payload returns conflict | retention must be frozen |
+| `POST /v1/customer/projects/{project_id}/workloads` | IMPLEMENTED | customer bearer `workloads:write` | required | project + idempotency key | replays stored workload/placement/job response | `409 idempotency_conflict` | stored response; retention not frozen |
+| `GET /v1/customer/projects/{project_id}/workloads/{workload_id}` | IMPLEMENTED | customer bearer `workloads:read` | not applicable | exact organization/project/workload ownership | returns the current sanitized workload/job projection | N/A | no provider/device/session/GPU, credential, object key, fingerprint, raw status message, or internal metadata |
+| `GET /v1/customer/projects/{project_id}/workloads/{workload_id}/events` | IMPLEMENTED | customer bearer `workloads:read` | not applicable | exact organization/project/workload ownership | returns bounded sanitized event projections ordered by sequence | N/A | raw messages and event metadata are omitted |
+| `POST /v1/customer/projects/{project_id}/workloads/{workload_id}/cancel` | IMPLEMENTED | customer bearer `workloads:write` | no `Idempotency-Key` | exact organization/project/workload ownership and locked job state | an already-cancelled job returns the current projection with `duplicate=true` | terminal `succeeded/failed` jobs return conflict; repeated reasons are not compared | state-based idempotency; clears job credential, terminalizes lease, releases placement/reservation, finalizes usage, and leaves history intact |
+| `POST /v1/customer/projects/{project_id}/artifacts` | IMPLEMENTED | customer bearer `artifacts:write` | required | project + idempotency key | replays stored upload intent | `409 idempotency_conflict` | stored response; retention not frozen |
+| `PUT /v1/customer/projects/{project_id}/artifacts/{artifact_id}/content` | IMPLEMENTED | customer bearer `artifacts:write` | not applicable | exact project-owned pending artifact | repeated complete upload is rejected by lifecycle | size/lifecycle conflict | private storage path is backend-owned |
+| `POST /v1/customer/projects/{project_id}/artifacts/{artifact_id}/finalize` | IMPLEMENTED | customer bearer `artifacts:write` | not applicable | exact project-owned uploaded artifact | ready artifact returns `duplicate=true` | stored size/hash mismatch fails closed | finalize recomputes bytes from private storage |
 
 ## Public State Machines
 
 | Resource | State | Actor | Preconditions | Side effects | Terminal |
 | --- | --- | --- | --- | --- | --- |
 | Reservation | IMPLEMENTED current: `reserved -> cancelled/expired`; PROPOSED: `quoted -> reserved -> bound_to_workload -> consumed -> released/cancelled/expired` | Customer/admin/backend | Active project, quota, listing, pricing snapshot in target | Listing hold, credit/ledger marker, audit | `consumed`, `released`, `cancelled`, `expired` |
-| Workload | PROPOSED: `draft -> artifacts_pending -> ready -> submitted -> placing -> assigned -> running -> uploading -> succeeded/failed/cancelled/expired` | Customer/backend | Valid project, API key scope, requirements, artifacts | Creates placement request and projected events | `succeeded`, `failed`, `cancelled`, `expired` |
-| Placement | PROPOSED: `pending -> evaluating -> placed -> rejected -> expired -> superseded` | Backend | Workload ready, reservation/pricing valid, supply eligible | Chooses listing/provider/device/GPU internally | `placed`, `rejected`, `expired`, `superseded` |
+| Workload | IMPLEMENTED: `queued -> placed -> succeeded/failed/cancelled`; placement failure is `placement_failed` before a job exists | Customer/backend | Valid project, API key scope, requirements, ready project-owned artifacts, optional compatible reservation | Creates a backend-owned placement and ComputeJob; terminal job state is projected back to the workload | `placement_failed`, `succeeded`, `failed`, `cancelled` |
+| Placement | IMPLEMENTED: `selected -> released`; failed selection creates no placement | Backend | Workload request, optional reservation, compatible listing and current Runtime Admission | Chooses listing/provider/device/session/GPU internally and prevents concurrent selected placement per GPU | `released` |
 | ComputeJob | IMPLEMENTED: `queued -> assigned -> accepted -> provisioning -> running -> uploading -> succeeded/failed/cancelled`; authority loss can requeue/withhold and clear credentials, while lease expiry is tracked on `Lease`; PROPOSED customer projection may expose `expired` | Admin/backend/provider session | Physical provider/device/session/GPU, runtime admission, lease authority | Job credential, events, artifacts, usage | current job terminals: `succeeded`, `failed`, `cancelled`; projected `expired` is PROPOSED |
 | JobAttempt | PROPOSED: `pending -> offered -> assigned -> accepted -> provisioning -> running -> uploading -> succeeded/failed/cancelled/expired` | Backend/provider session | Placement selected, retry budget available | One lease and one physical execution try | `succeeded`, `failed`, `cancelled`, `expired` |
 | Lease | IMPLEMENTED: `offered -> accepted -> provisioning -> active -> completed/expired/failed` | Scheduler/provider session/backend | Queued physical job, admission, no active GPU lease | Binds execution authority and `assignment_lease_id` | `completed`, `expired`, `failed` |

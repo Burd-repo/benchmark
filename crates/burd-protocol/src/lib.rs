@@ -87,9 +87,11 @@ pub use customer_artifact::{
     CustomerArtifactUploadIntentResponse, CustomerArtifactUploadTarget,
 };
 pub use customer_compute::{
-    COMPUTE_REQUIREMENTS_SCHEMA_VERSION, CUSTOMER_WORKLOAD_SCHEMA_VERSION, ComputeRequirements,
-    CreateCustomerWorkloadRequest, CustomerWorkloadRecord, CustomerWorkloadResponse,
-    PLACEMENT_SCHEMA_VERSION,
+    COMPUTE_REQUIREMENTS_SCHEMA_VERSION, CUSTOMER_JOB_EVENT_SCHEMA_VERSION,
+    CUSTOMER_JOB_SCHEMA_VERSION, CUSTOMER_WORKLOAD_SCHEMA_VERSION, CancelCustomerWorkloadRequest,
+    ComputeRequirements, CreateCustomerWorkloadRequest, CustomerJobEventRecord, CustomerJobRecord,
+    CustomerJobResponse, CustomerResultArtifact, CustomerWorkloadRecord, CustomerWorkloadResponse,
+    ListCustomerJobEventsResponse, PLACEMENT_SCHEMA_VERSION,
 };
 pub use enrollment::{
     DeviceCredentialResponse, DeviceRecord, DeviceRevocationResponse, ENROLLMENT_PROOF_DOMAIN,

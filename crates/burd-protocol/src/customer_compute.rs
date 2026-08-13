@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 pub const CUSTOMER_WORKLOAD_SCHEMA_VERSION: &str = "burd-customer-workload-v1";
+pub const CUSTOMER_JOB_SCHEMA_VERSION: &str = "burd-customer-job-v1";
+pub const CUSTOMER_JOB_EVENT_SCHEMA_VERSION: &str = "burd-customer-job-event-v1";
 pub const COMPUTE_REQUIREMENTS_SCHEMA_VERSION: &str = "burd-compute-requirements-v1";
 pub const PLACEMENT_SCHEMA_VERSION: &str = "burd-placement-v1";
 
@@ -66,6 +68,72 @@ pub struct CustomerWorkloadResponse {
     pub duplicate: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelCustomerWorkloadRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomerResultArtifact {
+    pub artifact_id: String,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomerJobRecord {
+    pub schema_version: String,
+    pub workload_id: String,
+    pub job_id: String,
+    pub workload_type: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(default)]
+    pub result_artifacts: Vec<CustomerResultArtifact>,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomerJobEventRecord {
+    pub schema_version: String,
+    pub event_id: String,
+    pub job_id: String,
+    pub sequence: u64,
+    pub event_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_percent: Option<f64>,
+    pub occurred_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomerJobResponse {
+    pub request_id: String,
+    pub workload: CustomerWorkloadRecord,
+    pub job: CustomerJobRecord,
+    pub duplicate: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListCustomerJobEventsResponse {
+    pub request_id: String,
+    pub events: Vec<CustomerJobEventRecord>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +190,45 @@ mod tests {
         let mut value = serde_json::to_value(request().requirements).unwrap();
         value["gpu_uuid"] = serde_json::json!("GPU-untrusted");
         assert!(serde_json::from_value::<ComputeRequirements>(value).is_err());
+    }
+
+    #[test]
+    fn customer_job_projection_contains_no_physical_or_storage_authority() {
+        let job = CustomerJobRecord {
+            schema_version: CUSTOMER_JOB_SCHEMA_VERSION.to_string(),
+            workload_id: "workload_1".to_string(),
+            job_id: "job_1".to_string(),
+            workload_type: "llm_realtime_api".to_string(),
+            status: "running".to_string(),
+            progress_percent: Some(25.0),
+            error_code: None,
+            result_artifacts: vec![CustomerResultArtifact {
+                artifact_id: "result_1".to_string(),
+                role: "output".to_string(),
+                sha256: Some(format!("sha256:{}", "a".repeat(64))),
+                size_bytes: Some(12),
+                content_type: Some("application/json".to_string()),
+            }],
+            created_at: "2026-08-12T12:00:00Z".to_string(),
+            started_at: Some("2026-08-12T12:01:00Z".to_string()),
+            completed_at: None,
+            updated_at: "2026-08-12T12:01:00Z".to_string(),
+        };
+        let serialized = serde_json::to_string(&job).unwrap();
+        for private in [
+            "provider_id",
+            "device_id",
+            "session_id",
+            "gpu_uuid",
+            "object_key",
+            "credential",
+            "fingerprint",
+            "metadata",
+            "status_message",
+            "cancellation_reason",
+            "message",
+        ] {
+            assert!(!serialized.contains(private), "leaked {private}");
+        }
     }
 }
