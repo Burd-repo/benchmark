@@ -141,7 +141,7 @@ evidence, and backend observations.
 | Double reservation of one listing | BN-17 enforces a unique active reservation per marketplace listing and checks listing current status transactionally. |
 | Reservation quota bypass | BN-17 locks project quota and active reservation state before accepting a reservation. |
 | Customer credit ledger tampering | BN-17 customer credit ledger entries are append-only; updates/deletes are rejected by trigger. |
-| Provider or customer-submitted billing total | BN-18 derives invoice totals from BN-15 usage, BN-17 reservation binding, and the active admin price book. |
+| Provider or customer-submitted billing total | BN-18 derives invoice totals from BN-15 usage, BN-17 reservation binding, and the immutable pricing snapshot captured by the backend at reservation time. Legacy reservations without a snapshot fail closed. |
 | Financial ledger tampering | BN-18 financial ledger lines are append-only; updates/deletes are rejected by trigger and corrections require compensating entries. |
 | Unbalanced financial transaction | BN-18 appends every financial transaction through a balance check before writing ledger lines. |
 | Pix payment replay or fake confirmation | Payment-intent creation is idempotent, and balance changes occur only when backend/admin adapter confirmation appends balanced ledger lines. |

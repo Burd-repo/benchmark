@@ -678,8 +678,28 @@ starting the API server or depending on host state:
   finalizes usage, and records a customer audit event.
 - The existing active-job control watcher propagates the authoritative
   `cancelled` state to an executing Agent. Completed jobs remain immutable.
-- Immutable pricing snapshots and new billing behavior remain outside this
-  vertical.
+
+## BN-CUSTOMER-COMPUTE-05 - Pricing Snapshot And Financial Binding
+
+- Reservation creation now freezes an immutable backend-owned pricing snapshot
+  from the active marketplace price book record. The snapshot includes source
+  price provenance, listing, currency, pricing model, hourly price, fee policy
+  version, platform fee bps, and chargeback reserve bps.
+- Existing legacy reservations without a `pricing_snapshot_id` are not
+  backfilled from the current listing price. Billing settlement fails closed for
+  them instead of fabricating historical commercial terms.
+- Customer-backed usage ledger entries carry `reservation_id` and
+  `pricing_snapshot_id` when finalized. Admin/canary technical jobs may keep
+  those fields null.
+- Reservation billing settlement uses the immutable pricing snapshot plus BN-15
+  usage. It no longer reads the current active listing price for invoice math;
+  optional legacy fee override fields must exactly match the snapshot or are
+  rejected.
+- Billing invoices store the `pricing_snapshot_id`, and the invoice source hash
+  binds reservation, pricing snapshot, source price, fee policy, usage hashes,
+  billable seconds, and settlement outputs. The existing append-only financial
+  ledger remains the source of customer balance, provider payable, platform
+  revenue, and chargeback reserve movements.
 
 ## BN-18 - Billing, Pix And Payouts
 
@@ -688,7 +708,7 @@ starting the API server or depending on host state:
 - The control plane exposes admin endpoints for listing price, billing settlement, invoice reads, provider balances/ledger, payout account upsert, and payout creation.
 - Customer API keys now support `billing:read` and `billing:write`; customer endpoints can create Pix payment intents and read project balances/ledger. BN-18 OpenAPI tests keep customer billing endpoints on `customerBearer` and admin billing/provider/payout endpoints on `adminBearer`.
 - Pix payment intents do not move money until confirmed by admin/adapter; first confirmation appends balanced ledger lines, exact duplicate confirmation is idempotent, and conflicting confirmation references are rejected.
-- Reservation billing settlement requires BN-15 usage, BN-17 reservation, matching provider/device/GPU binding, an active BN-18 listing price, and sufficient confirmed project balance. A usage ledger entry can back only one billing invoice; same-reservation retries return the existing invoice and cross-reservation rebilling conflicts.
+- Reservation billing settlement requires BN-15 usage, BN-17 reservation, matching provider/device/GPU binding, an immutable pricing snapshot, and sufficient confirmed project balance. A usage ledger entry can back only one billing invoice; same-reservation retries return the existing invoice and cross-reservation rebilling conflicts.
 - Provider payouts require verified KYC/tax state, minimum payout, payable balance, and hold policy. The OpenAPI document now explicitly covers BN-18 error envelopes, idempotency conflicts, billing settlement conflicts, Pix confirmation conflicts, payout policy conflicts, and provider payout status vocabulary without claiming bank execution or paid/failed/cancelled transition endpoints.
 - BN-18 does not call a real Pix gateway, verify webhook signatures, execute bank payouts, provide checkout UI, or complete legal/KYC/tax workflows.
 

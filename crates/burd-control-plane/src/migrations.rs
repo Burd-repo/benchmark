@@ -176,6 +176,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "customer_job_control",
         sql: include_str!("../migrations/0034_customer_job_control.sql"),
     },
+    Migration {
+        version: "0035",
+        name: "pricing_snapshots_financial_binding",
+        sql: include_str!("../migrations/0035_pricing_snapshots_financial_binding.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -218,9 +223,35 @@ mod tests {
 
     #[test]
     fn customer_job_control_migration_indexes_owned_status_and_events() {
-        let sql = MIGRATIONS.last().unwrap().sql;
+        let sql = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == "0034")
+            .unwrap()
+            .sql;
         assert!(sql.contains("idx_customer_workloads_project_job"));
         assert!(sql.contains("idx_job_events_customer_projection"));
+    }
+
+    #[test]
+    fn pricing_snapshot_migration_binds_financial_authority_fail_closed() {
+        let sql = MIGRATIONS.last().unwrap().sql;
+        for needle in [
+            "CREATE TABLE IF NOT EXISTS pricing_snapshots",
+            "source_price_id TEXT NOT NULL REFERENCES marketplace_listing_prices(price_id)",
+            "platform_fee_bps INTEGER NOT NULL",
+            "chargeback_reserve_bps INTEGER NOT NULL",
+            "ADD COLUMN IF NOT EXISTS pricing_snapshot_id TEXT",
+            "ADD COLUMN IF NOT EXISTS reservation_id TEXT",
+            "idx_marketplace_reservations_pricing_snapshot",
+            "idx_marketplace_reservations_snapshot_binding",
+            "usage_ledger_reservation_snapshot_binding_fk",
+            "billing_invoices_reservation_snapshot_binding_fk",
+            "marketplace_reservations_v2_requires_pricing_snapshot",
+            "prevent_pricing_snapshot_mutation",
+            "pricing_snapshots is immutable",
+        ] {
+            assert!(sql.contains(needle));
+        }
     }
 
     #[test]

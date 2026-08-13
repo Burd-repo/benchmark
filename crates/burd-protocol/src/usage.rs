@@ -9,6 +9,10 @@ pub struct JobUsageReceipt {
     pub job_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_snapshot_id: Option<String>,
     pub provider_id: String,
     pub device_id: String,
     pub session_id: String,
