@@ -1199,6 +1199,16 @@ mod tests {
             .unwrap()
             .get::<_, i64>("count");
         assert_eq!(binding_count, 1);
+        assert!(
+            client
+                .execute(
+                    "DELETE FROM customer_artifacts WHERE artifact_id = 'artifact_ready'",
+                    &[],
+                )
+                .await
+                .is_err(),
+            "a workload-bound artifact must remain protected by its foreign key"
+        );
         db.drop_schema_for_test().await.unwrap();
     }
 

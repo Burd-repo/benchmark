@@ -680,27 +680,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(uploaded.status, "uploaded");
-        let finalized = db
-            .finalize_customer_artifact(
+        let owner_auth = auth("artifact");
+        let artifact_id = created.artifact.artifact_id.as_str();
+        let (first_finalize, concurrent_finalize) = tokio::join!(
+            db.finalize_customer_artifact(
                 "req_finalize",
-                &auth("artifact"),
+                &owner_auth,
                 "project_artifact",
-                &created.artifact.artifact_id,
-            )
-            .await
-            .unwrap();
+                artifact_id,
+            ),
+            db.finalize_customer_artifact(
+                "req_finalize_concurrent",
+                &owner_auth,
+                "project_artifact",
+                artifact_id,
+            ),
+        );
+        let finalized = first_finalize.unwrap();
+        let concurrent = concurrent_finalize.unwrap();
         assert_eq!(finalized.artifact.status, "ready");
-        assert!(!finalized.duplicate);
-        let duplicate = db
-            .finalize_customer_artifact(
-                "req_finalize_again",
-                &auth("artifact"),
-                "project_artifact",
-                &created.artifact.artifact_id,
-            )
-            .await
-            .unwrap();
-        assert!(duplicate.duplicate);
+        assert_eq!(concurrent.artifact.status, "ready");
+        assert_ne!(finalized.duplicate, concurrent.duplicate);
         let audit_count = client
             .query_one(
                 "SELECT COUNT(*) AS count FROM customer_audit_events WHERE entity_id = $1",

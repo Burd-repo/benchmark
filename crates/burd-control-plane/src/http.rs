@@ -6109,4 +6109,45 @@ mod tests {
         assert_eq!(fs::read(&temporary).unwrap(), payload);
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn upload_writer_rejects_oversized_and_digest_mismatched_streams() {
+        let root = FilePath::new("target/test-control-objects").join(format!(
+            "burd-artifact-invalid-upload-test-{}",
+            Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        for (name, declared_size, declared_digest) in [
+            (
+                "oversized.tmp",
+                3,
+                format!("sha256:{}", sha256_hex(b"four")),
+            ),
+            (
+                "digest-mismatch.tmp",
+                4,
+                format!("sha256:{}", "0".repeat(64)),
+            ),
+        ] {
+            let temporary = root.join(name);
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            sender.try_send(Bytes::from_static(b"four")).unwrap();
+            drop(sender);
+
+            assert!(
+                write_upload_stream(
+                    &temporary,
+                    receiver,
+                    declared_size,
+                    declared_size,
+                    &declared_digest,
+                )
+                .is_err()
+            );
+            assert!(!temporary.exists());
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
 }
