@@ -7,12 +7,14 @@ use burd_protocol::{
     CreateCustomerApiKeyResponse, CreateCustomerUserRequest, CreateOrganizationRequest,
     CreateProjectRequest, CreateReservationRequest, CustomerApiKeyRecord, CustomerAuditEventRecord,
     CustomerCreditLedgerEntry, CustomerCreditLedgerResponse, CustomerUsageResponse,
-    CustomerUsageSummary, CustomerUserRecord, CustomerUserResponse, GrantCustomerCreditsRequest,
-    ListCustomerAuditEventsResponse, ListMarketplaceReservationsResponse,
+    CustomerUsageSummary, CustomerUserRecord, CustomerUserResponse, DEFAULT_CHARGEBACK_RESERVE_BPS,
+    DEFAULT_PLATFORM_FEE_BPS, GrantCustomerCreditsRequest, ListCustomerAuditEventsResponse,
+    ListMarketplaceReservationsResponse, MARKETPLACE_FEE_POLICY_VERSION,
     MARKETPLACE_RESERVATION_SCHEMA_VERSION, MarketplaceReservationRecord,
     MarketplaceReservationResponse, OrganizationMembershipRecord, OrganizationRecord,
-    OrganizationResponse, ProjectQuotaRecord, ProjectQuotaResponse, ProjectRecord, ProjectResponse,
-    UpsertProjectQuotaRequest, random_token, sha256_hex,
+    OrganizationResponse, PRICING_SNAPSHOT_SCHEMA_VERSION, ProjectQuotaRecord,
+    ProjectQuotaResponse, ProjectRecord, ProjectResponse, UpsertProjectQuotaRequest, random_token,
+    sha256_hex,
 };
 use chrono::{DateTime, Duration, Utc};
 use tokio_postgres::{Row, Transaction};
@@ -107,6 +109,14 @@ struct ListingReservationSource {
     current_status: String,
     workload_type: String,
     gpu_uuid: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ReservationPriceSource {
+    price_id: String,
+    currency: String,
+    price_per_hour_micros: u64,
+    pricing_model: String,
 }
 
 #[derive(Debug, Clone)]
@@ -677,11 +687,32 @@ impl Database {
         )
         .await?;
 
+        let price = load_active_price_for_reservation(&transaction, &listing.listing_id).await?;
         let starts_at = reservation_start_time(command.request.starts_at.as_deref(), now)?;
         let expires_at = starts_at + Duration::seconds(i64::from(command.request.duration_seconds));
         let reservation_id = format!("reservation_{}", Uuid::new_v4());
+        let pricing_snapshot_id = format!("pricing_snapshot_{}", Uuid::new_v4());
+        transaction
+            .execute(
+                "INSERT INTO pricing_snapshots (pricing_snapshot_id, source_price_id, listing_id, schema_version, currency, pricing_model, price_per_hour_micros, platform_fee_bps, chargeback_reserve_bps, fee_policy_version, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                &[
+                    &pricing_snapshot_id,
+                    &price.price_id,
+                    &listing.listing_id,
+                    &PRICING_SNAPSHOT_SCHEMA_VERSION,
+                    &price.currency,
+                    &price.pricing_model,
+                    &to_i64(price.price_per_hour_micros)?,
+                    &(DEFAULT_PLATFORM_FEE_BPS as i32),
+                    &(DEFAULT_CHARGEBACK_RESERVE_BPS as i32),
+                    &MARKETPLACE_FEE_POLICY_VERSION,
+                    &now_text,
+                ],
+            )
+            .await?;
         let reason_codes = vec![
             "marketplace_listing_backend_published".to_string(),
+            "pricing_snapshot_created".to_string(),
             "customer_project_quota_satisfied".to_string(),
             "customer_api_key_authorized".to_string(),
         ];
@@ -689,12 +720,13 @@ impl Database {
             .map_err(|error| SessionError::Database(DbError::new(error.to_string())))?;
         transaction
             .execute(
-                "INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'reserved', $11, $12, $13, $14, $15, $16, $17, $17)",
+                "INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, pricing_snapshot_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'reserved', $12, $13, $14, $15, $16, $17, $18, $18)",
                 &[
                     &reservation_id,
                     &project.organization_id,
                     &project.project_id,
                     &listing.listing_id,
+                    &pricing_snapshot_id,
                     &listing.provider_id,
                     &listing.device_id,
                     &listing.session_id,
@@ -1108,6 +1140,25 @@ async fn load_listing_for_reservation(
     })
 }
 
+async fn load_active_price_for_reservation(
+    transaction: &Transaction<'_>,
+    listing_id: &str,
+) -> Result<ReservationPriceSource, SessionError> {
+    let row = transaction
+        .query_opt(
+            "SELECT price_id, currency, price_per_hour_micros, pricing_model FROM marketplace_listing_prices WHERE listing_id = $1 AND status = 'active' ORDER BY updated_at DESC LIMIT 1 FOR UPDATE",
+            &[&listing_id],
+        )
+        .await?
+        .ok_or_else(|| SessionError::Conflict("listing has no active billing price".to_string()))?;
+    Ok(ReservationPriceSource {
+        price_id: row.get("price_id"),
+        currency: row.get("currency"),
+        price_per_hour_micros: from_i64_to_u64(row.get("price_per_hour_micros"))?,
+        pricing_model: row.get("pricing_model"),
+    })
+}
+
 fn assert_listing_reservable(listing: &ListingReservationSource) -> Result<(), SessionError> {
     if !matches!(listing.status.as_str(), "published" | "limited") {
         return Err(SessionError::Conflict(
@@ -1377,6 +1428,7 @@ fn reservation_from_row(row: Row) -> Result<MarketplaceReservationRecord, Sessio
         organization_id: row.get("organization_id"),
         project_id: row.get("project_id"),
         listing_id: row.get("listing_id"),
+        pricing_snapshot_id: row.get("pricing_snapshot_id"),
         provider_id: row.get("provider_id"),
         device_id: row.get("device_id"),
         session_id: row.get("session_id"),
@@ -1427,7 +1479,7 @@ fn organization_select_columns() -> &'static str {
 }
 
 fn reservation_select_columns() -> &'static str {
-    "SELECT reservation_id, organization_id, project_id, listing_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, starts_at, expires_at, cancelled_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at FROM marketplace_reservations"
+    "SELECT reservation_id, organization_id, project_id, listing_id, pricing_snapshot_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, starts_at, expires_at, cancelled_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at FROM marketplace_reservations"
 }
 
 fn customer_audit_select_columns() -> &'static str {
@@ -2045,7 +2097,8 @@ mod tests {
                  INSERT INTO devices (device_id, provider_id, machine_id, status, created_at, updated_at) VALUES ('device_customer_flow', 'provider_customer_flow', 'machine_customer_flow', 'active', '{now}', '{now}');
                  INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, last_seen_at, expires_at, hardware_fingerprint, updated_at) VALUES ('session_customer_flow', 'provider_customer_flow', 'device_customer_flow', 'online', 1, '{now}', '{now}', '{expires_at}', 'fp_customer_flow', '{now}');
                  INSERT INTO workload_policies (policy_id, policy_version, schema_version, workload_type, display_name, requirements_json, status, created_at, updated_at) VALUES ('policy_customer_flow', 'v1', 'burd-workload-policy-v1', 'llm_batch_inference', 'Customer Flow Policy', '{{}}', 'active', '{now}', '{now}');
-                 INSERT INTO marketplace_listings (listing_id, provider_id, provider_display_name, device_id, session_id, schema_version, engine_version, status, current_status, workload_type, policy_id, policy_version, gpu_uuid, gpu_verified, gpu_verification_source, vram_total_mib, vram_verified, vram_verification_source, region, region_source, trust_score, risk_score, reliability_score, verification_status, proof_freshness_status, last_verified_at, remote_network_score, effective_network_score, regional_reachability_json, benchmark_profile_id, benchmark_profile_version, benchmark_status, benchmark_completed_at, price_source, availability_window_json, active_lease_count, reason_codes_json, source_hash, published_at, updated_at) VALUES ('listing_customer_flow', 'provider_customer_flow', 'Provider Customer Flow', 'device_customer_flow', 'session_customer_flow', 'burd-marketplace-listing-v1', 'burd-marketplace-engine-v1', 'published', 'available', 'llm_batch_inference', 'policy_customer_flow', 'v1', 'GPU-customer-flow', TRUE, 'backend_proof_and_benchmark', 24576, TRUE, 'backend_telemetry_bound_to_verified_gpu', 'us-east', 'regional_probe', 91.0, 3.0, 96.0, 'verified', 'freshness_backend_timestamp_present', '{now}', 92.0, 93.0, '[]', 'bench_profile_customer_flow', 'v1', 'succeeded', '{now}', 'not_configured_bn16', '{{\"reservations_enabled\":true}}', 0, '[]', 'source_hash_customer_flow', '{now}', '{now}');"
+                 INSERT INTO marketplace_listings (listing_id, provider_id, provider_display_name, device_id, session_id, schema_version, engine_version, status, current_status, workload_type, policy_id, policy_version, gpu_uuid, gpu_verified, gpu_verification_source, vram_total_mib, vram_verified, vram_verification_source, region, region_source, trust_score, risk_score, reliability_score, verification_status, proof_freshness_status, last_verified_at, remote_network_score, effective_network_score, regional_reachability_json, benchmark_profile_id, benchmark_profile_version, benchmark_status, benchmark_completed_at, price_source, availability_window_json, active_lease_count, reason_codes_json, source_hash, published_at, updated_at) VALUES ('listing_customer_flow', 'provider_customer_flow', 'Provider Customer Flow', 'device_customer_flow', 'session_customer_flow', 'burd-marketplace-listing-v1', 'burd-marketplace-engine-v1', 'published', 'available', 'llm_batch_inference', 'policy_customer_flow', 'v1', 'GPU-customer-flow', TRUE, 'backend_proof_and_benchmark', 24576, TRUE, 'backend_telemetry_bound_to_verified_gpu', 'us-east', 'regional_probe', 91.0, 3.0, 96.0, 'verified', 'freshness_backend_timestamp_present', '{now}', 92.0, 93.0, '[]', 'bench_profile_customer_flow', 'v1', 'succeeded', '{now}', 'not_configured_bn16', '{{\"reservations_enabled\":true}}', 0, '[]', 'source_hash_customer_flow', '{now}', '{now}');
+                 INSERT INTO marketplace_listing_prices (price_id, listing_id, schema_version, currency, price_per_hour_micros, pricing_model, status, created_at, updated_at) VALUES ('price_customer_flow', 'listing_customer_flow', 'burd-marketplace-price-v1', 'BRL', 1000000, 'gpu_hour', 'active', '{now}', '{now}');"
             ))
             .await
             .unwrap();

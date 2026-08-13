@@ -8,16 +8,15 @@ use burd_protocol::{
     FinancialLedgerResponse, MARKETPLACE_PRICE_SCHEMA_VERSION, MarketplacePriceRecord,
     MarketplacePriceResponse, PIX_PAYMENT_INTENT_SCHEMA_VERSION,
     PROVIDER_PAYOUT_ACCOUNT_SCHEMA_VERSION, PROVIDER_PAYOUT_SCHEMA_VERSION, PixPaymentIntentRecord,
-    PixPaymentIntentResponse, ProviderPayoutAccountRecord, ProviderPayoutAccountResponse,
-    ProviderPayoutRecord, ProviderPayoutResponse, SettleReservationBillingRequest,
-    UpsertMarketplacePriceRequest, UpsertProviderPayoutAccountRequest, hash_canonical,
+    PixPaymentIntentResponse, PricingSnapshotRecord, ProviderPayoutAccountRecord,
+    ProviderPayoutAccountResponse, ProviderPayoutRecord, ProviderPayoutResponse,
+    SettleReservationBillingRequest, UpsertMarketplacePriceRequest,
+    UpsertProviderPayoutAccountRequest, hash_canonical,
 };
 use chrono::{Duration, Utc};
 use tokio_postgres::{GenericClient, Row, Transaction};
 use uuid::Uuid;
 
-const DEFAULT_PLATFORM_FEE_BPS: u32 = 1500;
-const DEFAULT_CHARGEBACK_RESERVE_BPS: u32 = 500;
 const DEFAULT_MINIMUM_PAYOUT_MICROS: u64 = 5_000_000;
 const DEFAULT_PAYOUT_HOLD_DAYS: u32 = 7;
 const MAX_FINANCIAL_LEDGER_LIMIT: u32 = 200;
@@ -46,6 +45,7 @@ struct ReservationBillingSource {
     organization_id: String,
     project_id: String,
     listing_id: String,
+    pricing_snapshot_id: Option<String>,
     provider_id: String,
     device_id: String,
     gpu_uuid: Option<String>,
@@ -55,6 +55,8 @@ struct ReservationBillingSource {
 #[derive(Debug, Clone)]
 struct UsageBillingSource {
     entry_id: String,
+    reservation_id: Option<String>,
+    pricing_snapshot_id: Option<String>,
     provider_id: String,
     device_id: String,
     gpu_uuid: String,
@@ -62,13 +64,6 @@ struct UsageBillingSource {
     billable_gpu_seconds: u64,
     receipt_hash: String,
     source_hash: String,
-}
-
-#[derive(Debug, Clone)]
-struct ActivePrice {
-    price_id: String,
-    currency: String,
-    price_per_hour_micros: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -366,11 +361,6 @@ impl Database {
     ) -> Result<BillingInvoiceResponse, SessionError> {
         validate_id("reservation_id", reservation_id, 160)?;
         validate_id("usage_entry_id", &request.usage_entry_id, 160)?;
-        let platform_fee_bps = request.platform_fee_bps.unwrap_or(DEFAULT_PLATFORM_FEE_BPS);
-        let reserve_bps = request
-            .chargeback_reserve_bps
-            .unwrap_or(DEFAULT_CHARGEBACK_RESERVE_BPS);
-        validate_bps(platform_fee_bps, reserve_bps)?;
         let mut client = self.connect().await?;
         let transaction = client.transaction().await?;
         let reservation = load_reservation_billing_source(&transaction, reservation_id).await?;
@@ -379,6 +369,12 @@ impl Database {
                 "cancelled reservations cannot be billed".to_string(),
             ));
         }
+        let pricing_snapshot_id = reservation.pricing_snapshot_id.as_deref().ok_or_else(|| {
+            SessionError::Conflict("reservation has no authoritative pricing snapshot".to_string())
+        })?;
+        let pricing_snapshot = load_pricing_snapshot(&transaction, pricing_snapshot_id).await?;
+        validate_pricing_snapshot_matches_reservation(&reservation, &pricing_snapshot)?;
+        validate_legacy_fee_request_matches_snapshot(request, &pricing_snapshot)?;
         let usage = load_usage_billing_source(&transaction, &request.usage_entry_id).await?;
         validate_usage_matches_reservation(&reservation, &usage)?;
         if let Some(invoice) = load_invoice_for_usage(&transaction, &request.usage_entry_id).await?
@@ -393,17 +389,22 @@ impl Database {
                 "usage entry has no billable GPU seconds".to_string(),
             ));
         }
-        let price = load_active_price(&transaction, &reservation.listing_id).await?;
-        let subtotal =
-            billable_amount_micros(usage.billable_gpu_seconds, price.price_per_hour_micros)?;
-        let amounts = settlement_amounts(subtotal, platform_fee_bps, reserve_bps)?;
+        let subtotal = billable_amount_micros(
+            usage.billable_gpu_seconds,
+            pricing_snapshot.price_per_hour_micros,
+        )?;
+        let amounts = settlement_amounts(
+            subtotal,
+            pricing_snapshot.platform_fee_bps,
+            pricing_snapshot.chargeback_reserve_bps,
+        )?;
         let subtotal_i64 = to_i64(amounts.subtotal_micros)?;
         let customer_balance = account_balance(
             &transaction,
             "customer_balance",
             "project",
             &reservation.project_id,
-            &price.currency,
+            &pricing_snapshot.currency,
         )
         .await?;
         if customer_balance < subtotal_i64 {
@@ -412,15 +413,23 @@ impl Database {
             ));
         }
         let source_hash = hash_canonical(&serde_json::json!({
-            "reservation_id": reservation.reservation_id,
-            "usage_entry_id": usage.entry_id,
-            "usage_source_hash": usage.source_hash,
-            "usage_receipt_hash": usage.receipt_hash,
-            "price_id": price.price_id,
-            "price_per_hour_micros": price.price_per_hour_micros,
+            "reservation_id": &reservation.reservation_id,
+            "pricing_snapshot_id": &pricing_snapshot.pricing_snapshot_id,
+            "source_price_id": &pricing_snapshot.source_price_id,
+            "currency": &pricing_snapshot.currency,
+            "pricing_model": &pricing_snapshot.pricing_model,
+            "price_per_hour_micros": pricing_snapshot.price_per_hour_micros,
+            "fee_policy_version": &pricing_snapshot.fee_policy_version,
+            "platform_fee_bps": pricing_snapshot.platform_fee_bps,
+            "chargeback_reserve_bps": pricing_snapshot.chargeback_reserve_bps,
+            "usage_entry_id": &usage.entry_id,
+            "usage_source_hash": &usage.source_hash,
+            "usage_receipt_hash": &usage.receipt_hash,
             "billable_gpu_seconds": usage.billable_gpu_seconds,
-            "platform_fee_bps": platform_fee_bps,
-            "chargeback_reserve_bps": reserve_bps,
+            "subtotal_micros": amounts.subtotal_micros,
+            "platform_fee_micros": amounts.platform_fee_micros,
+            "provider_net_micros": amounts.provider_net_micros,
+            "chargeback_reserve_micros": amounts.chargeback_reserve_micros,
         }))
         .map_err(SessionError::Invalid)?;
         let invoice_id = format!("invoice_{}", Uuid::new_v4());
@@ -428,15 +437,16 @@ impl Database {
 
         let inserted = transaction
             .execute(
-                "INSERT INTO billing_invoices (invoice_id, organization_id, project_id, reservation_id, usage_entry_id, schema_version, status, currency, subtotal_micros, platform_fee_micros, provider_net_micros, chargeback_reserve_micros, total_micros, source_hash, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, 'issued', $7, $8, $9, $10, $11, $12, $13, $14, $14) ON CONFLICT DO NOTHING",
+                "INSERT INTO billing_invoices (invoice_id, organization_id, project_id, reservation_id, usage_entry_id, pricing_snapshot_id, schema_version, status, currency, subtotal_micros, platform_fee_micros, provider_net_micros, chargeback_reserve_micros, total_micros, source_hash, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 'issued', $8, $9, $10, $11, $12, $13, $14, $15, $15) ON CONFLICT DO NOTHING",
                 &[
                     &invoice_id,
                     &reservation.organization_id,
                     &reservation.project_id,
                     &Some(reservation_id.to_string()),
                     &Some(request.usage_entry_id.clone()),
+                    &Some(pricing_snapshot.pricing_snapshot_id.clone()),
                     &BILLING_INVOICE_SCHEMA_VERSION,
-                    &price.currency,
+                    &pricing_snapshot.currency,
                     &subtotal_i64,
                     &to_i64(amounts.platform_fee_micros)?,
                     &to_i64(amounts.provider_net_micros)?,
@@ -463,7 +473,7 @@ impl Database {
             &transaction,
             "billing_invoice",
             &invoice_id,
-            &price.currency,
+            &pricing_snapshot.currency,
             vec![
                 LedgerLine {
                     account_type: "customer_balance",
@@ -1000,22 +1010,21 @@ async fn load_price(
     price_from_row(row)
 }
 
-async fn load_active_price(
+async fn load_pricing_snapshot(
     transaction: &Transaction<'_>,
-    listing_id: &str,
-) -> Result<ActivePrice, SessionError> {
+    pricing_snapshot_id: &str,
+) -> Result<PricingSnapshotRecord, SessionError> {
     let row = transaction
         .query_opt(
-            "SELECT price_id, currency, price_per_hour_micros FROM marketplace_listing_prices WHERE listing_id = $1 AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
-            &[&listing_id],
+            &format!(
+                "{} WHERE pricing_snapshot_id = $1 FOR UPDATE",
+                pricing_snapshot_select_columns()
+            ),
+            &[&pricing_snapshot_id],
         )
         .await?
-        .ok_or_else(|| SessionError::Conflict("listing has no active billing price".to_string()))?;
-    Ok(ActivePrice {
-        price_id: row.get("price_id"),
-        currency: row.get("currency"),
-        price_per_hour_micros: from_i64_to_u64(row.get("price_per_hour_micros"))?,
-    })
+        .ok_or_else(|| SessionError::Conflict("pricing snapshot not found".to_string()))?;
+    pricing_snapshot_from_row(row)
 }
 
 async fn load_pix_payment_intent(
@@ -1110,7 +1119,7 @@ async fn load_reservation_billing_source(
 ) -> Result<ReservationBillingSource, SessionError> {
     let row = transaction
         .query_opt(
-            "SELECT reservation_id, organization_id, project_id, listing_id, provider_id, device_id, gpu_uuid, status FROM marketplace_reservations WHERE reservation_id = $1 FOR UPDATE",
+            "SELECT reservation_id, organization_id, project_id, listing_id, pricing_snapshot_id, provider_id, device_id, gpu_uuid, status FROM marketplace_reservations WHERE reservation_id = $1 FOR UPDATE",
             &[&reservation_id],
         )
         .await?
@@ -1120,6 +1129,7 @@ async fn load_reservation_billing_source(
         organization_id: row.get("organization_id"),
         project_id: row.get("project_id"),
         listing_id: row.get("listing_id"),
+        pricing_snapshot_id: row.get("pricing_snapshot_id"),
         provider_id: row.get("provider_id"),
         device_id: row.get("device_id"),
         gpu_uuid: row.get("gpu_uuid"),
@@ -1133,13 +1143,15 @@ async fn load_usage_billing_source(
 ) -> Result<UsageBillingSource, SessionError> {
     let row = transaction
         .query_opt(
-            "SELECT entry_id, provider_id, device_id, gpu_uuid, job_id, billable_gpu_seconds, receipt_hash, source_hash FROM usage_ledger_entries WHERE entry_id = $1 FOR UPDATE",
+            "SELECT entry_id, reservation_id, pricing_snapshot_id, provider_id, device_id, gpu_uuid, job_id, billable_gpu_seconds, receipt_hash, source_hash FROM usage_ledger_entries WHERE entry_id = $1 FOR UPDATE",
             &[&usage_entry_id],
         )
         .await?
         .ok_or_else(|| SessionError::NotFound("usage ledger entry not found".to_string()))?;
     Ok(UsageBillingSource {
         entry_id: row.get("entry_id"),
+        reservation_id: row.get("reservation_id"),
+        pricing_snapshot_id: row.get("pricing_snapshot_id"),
         provider_id: row.get("provider_id"),
         device_id: row.get("device_id"),
         gpu_uuid: row.get("gpu_uuid"),
@@ -1154,6 +1166,16 @@ fn validate_usage_matches_reservation(
     reservation: &ReservationBillingSource,
     usage: &UsageBillingSource,
 ) -> Result<(), SessionError> {
+    if usage.reservation_id.as_deref() != Some(reservation.reservation_id.as_str()) {
+        return Err(SessionError::Conflict(
+            "usage entry does not match reservation id".to_string(),
+        ));
+    }
+    if usage.pricing_snapshot_id.as_deref() != reservation.pricing_snapshot_id.as_deref() {
+        return Err(SessionError::Conflict(
+            "usage entry does not match reservation pricing snapshot".to_string(),
+        ));
+    }
     if reservation.provider_id != usage.provider_id || reservation.device_id != usage.device_id {
         return Err(SessionError::Conflict(
             "usage entry does not match reservation provider/device".to_string(),
@@ -1166,6 +1188,23 @@ fn validate_usage_matches_reservation(
     {
         return Err(SessionError::Conflict(
             "usage entry does not match reservation GPU UUID".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_pricing_snapshot_matches_reservation(
+    reservation: &ReservationBillingSource,
+    snapshot: &PricingSnapshotRecord,
+) -> Result<(), SessionError> {
+    if reservation.pricing_snapshot_id.as_deref() != Some(snapshot.pricing_snapshot_id.as_str()) {
+        return Err(SessionError::Conflict(
+            "pricing snapshot does not match reservation".to_string(),
+        ));
+    }
+    if reservation.listing_id != snapshot.listing_id {
+        return Err(SessionError::Conflict(
+            "pricing snapshot does not match reservation listing".to_string(),
         ));
     }
     Ok(())
@@ -1312,6 +1351,22 @@ fn price_from_row(row: Row) -> Result<MarketplacePriceRecord, SessionError> {
     })
 }
 
+fn pricing_snapshot_from_row(row: Row) -> Result<PricingSnapshotRecord, SessionError> {
+    Ok(PricingSnapshotRecord {
+        pricing_snapshot_id: row.get("pricing_snapshot_id"),
+        source_price_id: row.get("source_price_id"),
+        listing_id: row.get("listing_id"),
+        schema_version: row.get("schema_version"),
+        currency: row.get("currency"),
+        pricing_model: row.get("pricing_model"),
+        price_per_hour_micros: from_i64_to_u64(row.get("price_per_hour_micros"))?,
+        platform_fee_bps: from_i32_to_u32(row.get("platform_fee_bps"))?,
+        chargeback_reserve_bps: from_i32_to_u32(row.get("chargeback_reserve_bps"))?,
+        fee_policy_version: row.get("fee_policy_version"),
+        created_at: row.get("created_at"),
+    })
+}
+
 fn pix_from_row(row: Row) -> Result<PixPaymentIntentRecord, SessionError> {
     Ok(PixPaymentIntentRecord {
         payment_intent_id: row.get("payment_intent_id"),
@@ -1337,6 +1392,7 @@ fn invoice_from_row(row: Row) -> Result<BillingInvoiceRecord, SessionError> {
         project_id: row.get("project_id"),
         reservation_id: row.get("reservation_id"),
         usage_entry_id: row.get("usage_entry_id"),
+        pricing_snapshot_id: row.get("pricing_snapshot_id"),
         schema_version: row.get("schema_version"),
         status: row.get("status"),
         currency: row.get("currency"),
@@ -1409,12 +1465,16 @@ fn price_select_columns() -> &'static str {
     "SELECT price_id, listing_id, schema_version, currency, price_per_hour_micros, pricing_model, status, created_at, updated_at FROM marketplace_listing_prices"
 }
 
+fn pricing_snapshot_select_columns() -> &'static str {
+    "SELECT pricing_snapshot_id, source_price_id, listing_id, schema_version, currency, pricing_model, price_per_hour_micros, platform_fee_bps, chargeback_reserve_bps, fee_policy_version, created_at FROM pricing_snapshots"
+}
+
 fn pix_select_columns() -> &'static str {
     "SELECT payment_intent_id, organization_id, project_id, schema_version, status, amount_micros, currency, provider, external_reference, adapter_status, confirmed_at, created_at, updated_at FROM pix_payment_intents"
 }
 
 fn invoice_select_columns() -> &'static str {
-    "SELECT invoice_id, organization_id, project_id, reservation_id, usage_entry_id, schema_version, status, currency, subtotal_micros, platform_fee_micros, provider_net_micros, chargeback_reserve_micros, total_micros, source_hash, created_at, updated_at FROM billing_invoices"
+    "SELECT invoice_id, organization_id, project_id, reservation_id, usage_entry_id, pricing_snapshot_id, schema_version, status, currency, subtotal_micros, platform_fee_micros, provider_net_micros, chargeback_reserve_micros, total_micros, source_hash, created_at, updated_at FROM billing_invoices"
 }
 
 fn ledger_select_columns() -> &'static str {
@@ -1552,6 +1612,46 @@ fn validate_bps(platform_fee_bps: u32, reserve_bps: u32) -> Result<(), SessionEr
     Ok(())
 }
 
+fn validate_legacy_fee_request_matches_snapshot(
+    request: &SettleReservationBillingRequest,
+    snapshot: &PricingSnapshotRecord,
+) -> Result<(), SessionError> {
+    if request
+        .platform_fee_bps
+        .is_some_and(|value| value != snapshot.platform_fee_bps)
+    {
+        return Err(SessionError::Conflict(
+            "settlement platform fee does not match pricing snapshot".to_string(),
+        ));
+    }
+    if request
+        .chargeback_reserve_bps
+        .is_some_and(|value| value != snapshot.chargeback_reserve_bps)
+    {
+        return Err(SessionError::Conflict(
+            "settlement reserve fee does not match pricing snapshot".to_string(),
+        ));
+    }
+    validate_bps(snapshot.platform_fee_bps, snapshot.chargeback_reserve_bps)
+}
+
+#[cfg(test)]
+fn pricing_snapshot_fixture() -> PricingSnapshotRecord {
+    PricingSnapshotRecord {
+        pricing_snapshot_id: "pricing_snapshot_test".to_string(),
+        source_price_id: "price_test".to_string(),
+        listing_id: "listing_test".to_string(),
+        schema_version: "burd-pricing-snapshot-v1".to_string(),
+        currency: "BRL".to_string(),
+        pricing_model: "gpu_hour".to_string(),
+        price_per_hour_micros: 10_000_000,
+        platform_fee_bps: burd_protocol::DEFAULT_PLATFORM_FEE_BPS,
+        chargeback_reserve_bps: burd_protocol::DEFAULT_CHARGEBACK_RESERVE_BPS,
+        fee_policy_version: "burd-marketplace-fee-v1".to_string(),
+        created_at: "2026-07-13T00:00:00Z".to_string(),
+    }
+}
+
 fn billable_amount_micros(seconds: u64, price_per_hour_micros: u64) -> Result<u64, SessionError> {
     let raw = u128::from(seconds)
         .checked_mul(u128::from(price_per_hour_micros))
@@ -1670,6 +1770,24 @@ mod tests {
     }
 
     #[test]
+    fn settlement_fee_override_must_match_pricing_snapshot() {
+        let snapshot = pricing_snapshot_fixture();
+        let matching = SettleReservationBillingRequest {
+            usage_entry_id: "usage_test".to_string(),
+            platform_fee_bps: Some(burd_protocol::DEFAULT_PLATFORM_FEE_BPS),
+            chargeback_reserve_bps: Some(burd_protocol::DEFAULT_CHARGEBACK_RESERVE_BPS),
+        };
+        assert!(validate_legacy_fee_request_matches_snapshot(&matching, &snapshot).is_ok());
+
+        let mismatched = SettleReservationBillingRequest {
+            usage_entry_id: "usage_test".to_string(),
+            platform_fee_bps: Some(burd_protocol::DEFAULT_PLATFORM_FEE_BPS + 1),
+            chargeback_reserve_bps: Some(burd_protocol::DEFAULT_CHARGEBACK_RESERVE_BPS),
+        };
+        assert!(validate_legacy_fee_request_matches_snapshot(&mismatched, &snapshot).is_err());
+    }
+
+    #[test]
     fn financial_transaction_must_balance() {
         let balanced = vec![
             LedgerLine {
@@ -1724,7 +1842,9 @@ mod tests {
             .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
         let schema = format!("burd_billing_test_{}", Uuid::new_v4().simple());
         let db = Database::new(url, Some(schema)).unwrap();
-        db.migrate().await.unwrap();
+        db.migrate()
+            .await
+            .unwrap_or_else(|error| panic!("billing postgres test migration failed: {error:?}"));
 
         let client = db.connect().await.unwrap();
         client
@@ -1740,20 +1860,26 @@ mod tests {
                 VALUES ('policy_billing', '2026.07.0', 'burd-workload-policy-v2', 'llm_realtime_api', 'Billing policy', '{}', 'active', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z');
                 INSERT INTO marketplace_listings (listing_id, provider_id, provider_display_name, device_id, session_id, schema_version, engine_version, status, current_status, workload_type, policy_id, policy_version, gpu_uuid, gpu_verified, gpu_verification_source, vram_total_mib, vram_verified, vram_verification_source, region, region_source, trust_score, risk_score, reliability_score, verification_status, proof_freshness_status, remote_network_score, effective_network_score, regional_reachability_json, benchmark_status, benchmark_metrics_json, price_source, availability_window_json, active_lease_count, reason_codes_json, source_hash, published_at, updated_at)
                 VALUES ('listing_billing', 'provider_billing', 'Billing Provider', 'device_billing', 'session_billing', 'burd-marketplace-listing-v1', 'burd-marketplace-engine-v1', 'published', 'reserved', 'llm_realtime_api', 'policy_billing', '2026.07.0', 'GPU-billing', TRUE, 'proof', 24576, TRUE, 'benchmark', 'br-sao', 'probe', 90, 2, 99, 'verified', 'fresh', 90, 90, '[]', 'succeeded', '{}', 'not_configured_bn16', '{}', 0, '[]', 'listing_source_hash', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z');
+                INSERT INTO marketplace_listing_prices (price_id, listing_id, schema_version, currency, price_per_hour_micros, pricing_model, status, created_at, updated_at)
+                VALUES ('price_billing_initial', 'listing_billing', 'burd-marketplace-price-v1', 'BRL', 10000000, 'gpu_hour', 'active', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z');
+                INSERT INTO pricing_snapshots (pricing_snapshot_id, source_price_id, listing_id, schema_version, currency, pricing_model, price_per_hour_micros, platform_fee_bps, chargeback_reserve_bps, fee_policy_version, created_at)
+                VALUES ('pricing_snapshot_billing', 'price_billing_initial', 'listing_billing', 'burd-pricing-snapshot-v1', 'BRL', 'gpu_hour', 10000000, 1500, 500, 'burd-marketplace-fee-v1', '2026-07-13T00:00:00Z');
                 INSERT INTO organizations (organization_id, schema_version, display_name, status, created_at, updated_at)
                 VALUES ('org_billing', 'burd-organization-v1', 'Billing Org', 'active', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z');
                 INSERT INTO projects (project_id, organization_id, schema_version, display_name, status, created_at, updated_at)
                 VALUES ('project_billing', 'org_billing', 'burd-project-v1', 'Billing Project', 'active', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z');
+                INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, pricing_snapshot_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at)
+                VALUES ('reservation_billing', 'org_billing', 'project_billing', 'listing_billing', 'pricing_snapshot_billing', 'provider_billing', 'device_billing', 'session_billing', 'burd-marketplace-reservation-v2', 'llm_realtime_api', 'GPU-billing', 'reserved', 'reservation_key', 'reservation_hash', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z', 3600, '[]', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z');
                 INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at)
-                VALUES ('reservation_billing', 'org_billing', 'project_billing', 'listing_billing', 'provider_billing', 'device_billing', 'session_billing', 'burd-marketplace-reservation-v1', 'llm_realtime_api', 'GPU-billing', 'reserved', 'reservation_key', 'reservation_hash', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z', 3600, '[]', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z');
-                INSERT INTO compute_jobs (job_id, provider_id, device_id, session_id, schema_version, workload_type, template_id, image_ref, gpu_uuid, backend, parameters_json, input_artifacts_json, expected_outputs_json, result_artifacts_json, result_metrics_json, status, timeout_seconds, created_at, assigned_at, accepted_at, started_at, completed_at, updated_at)
-                VALUES ('job_billing', 'provider_billing', 'device_billing', 'session_billing', 'burd-job-v1', 'llm_realtime_api', 'llm_inference', 'ghcr.io/burd/runtime/llm@sha256:test', 'GPU-billing', 'cuda', '{}', '[]', '[]', '[]', '{}', 'succeeded', 900, '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:10:00Z', '2026-07-13T00:10:00Z');
-                INSERT INTO usage_ledger_entries (entry_id, schema_version, entry_type, job_id, provider_id, device_id, session_id, workload_type, gpu_uuid, job_status, job_started_at, job_completed_at, reserved_gpu_seconds, actual_gpu_seconds, billable_gpu_seconds, non_billable_gpu_seconds, idle_billable_gpu_seconds, idle_unbillable_gpu_seconds, input_bytes, output_bytes, network_transfer_bytes, storage_bytes, retry_count, provider_caused_failure, customer_caused_failure, challenge_non_billable_seconds, reason_codes_json, receipt_json, receipt_hash, receipt_signature_status, source_hash, created_at)
-                VALUES ('usage_billing', 'burd-usage-ledger-v1', 'job_usage_finalized', 'job_billing', 'provider_billing', 'device_billing', 'session_billing', 'llm_realtime_api', 'GPU-billing', 'succeeded', '2026-07-13T00:00:00Z', '2026-07-13T00:10:00Z', 3600, 3600, 3600, 0, 0, 0, 0, 0, 0, 0, 0, FALSE, FALSE, 0, '[]', '{}', 'receipt_hash_billing', 'unsigned', 'usage_source_hash_billing', '2026-07-13T00:10:00Z');
+                VALUES ('reservation_legacy_no_snapshot', 'org_billing', 'project_billing', 'listing_billing', 'provider_billing', 'device_billing', 'session_billing', 'burd-marketplace-reservation-v1', 'llm_realtime_api', 'GPU-billing', 'expired', 'reservation_key_legacy', 'reservation_hash_legacy', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z', 3600, '[]', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z');
+                INSERT INTO compute_jobs (job_id, provider_id, device_id, session_id, schema_version, workload_type, template_id, image_ref, gpu_uuid, backend, parameters_json, input_artifacts_json, expected_outputs_json, result_artifacts_json, result_metrics_json, status, timeout_seconds, reservation_id, created_at, assigned_at, accepted_at, started_at, completed_at, updated_at)
+                VALUES ('job_billing', 'provider_billing', 'device_billing', 'session_billing', 'burd-job-v1', 'llm_realtime_api', 'llm_inference', 'ghcr.io/burd/runtime/llm@sha256:test', 'GPU-billing', 'cuda', '{}', '[]', '[]', '[]', '{}', 'succeeded', 900, 'reservation_billing', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:10:00Z', '2026-07-13T00:10:00Z');
+                INSERT INTO usage_ledger_entries (entry_id, schema_version, entry_type, job_id, reservation_id, pricing_snapshot_id, provider_id, device_id, session_id, workload_type, gpu_uuid, job_status, job_started_at, job_completed_at, reserved_gpu_seconds, actual_gpu_seconds, billable_gpu_seconds, non_billable_gpu_seconds, idle_billable_gpu_seconds, idle_unbillable_gpu_seconds, input_bytes, output_bytes, network_transfer_bytes, storage_bytes, retry_count, provider_caused_failure, customer_caused_failure, challenge_non_billable_seconds, reason_codes_json, receipt_json, receipt_hash, receipt_signature_status, source_hash, created_at)
+                VALUES ('usage_billing', 'burd-usage-ledger-v1', 'job_usage_finalized', 'job_billing', 'reservation_billing', 'pricing_snapshot_billing', 'provider_billing', 'device_billing', 'session_billing', 'llm_realtime_api', 'GPU-billing', 'succeeded', '2026-07-13T00:00:00Z', '2026-07-13T00:10:00Z', 3600, 3600, 3600, 0, 0, 0, 0, 0, 0, 0, 0, FALSE, FALSE, 0, '[]', '{}', 'receipt_hash_billing', 'unsigned', 'usage_source_hash_billing', '2026-07-13T00:10:00Z');
                 "#,
             )
             .await
-            .unwrap();
+            .unwrap_or_else(|error| panic!("billing postgres fixture seed failed: {error:?}"));
         drop(client);
 
         db.upsert_marketplace_price(
@@ -1761,7 +1887,7 @@ mod tests {
             "listing_billing",
             &UpsertMarketplacePriceRequest {
                 currency: "BRL".to_string(),
-                price_per_hour_micros: 10_000_000,
+                price_per_hour_micros: 20_000_000,
                 pricing_model: None,
             },
         )
@@ -1774,12 +1900,121 @@ mod tests {
                 "reservation_billing",
                 &SettleReservationBillingRequest {
                     usage_entry_id: "usage_billing".to_string(),
-                    platform_fee_bps: None,
-                    chargeback_reserve_bps: None,
+                    platform_fee_bps: Some(1500),
+                    chargeback_reserve_bps: Some(500),
                 },
             )
             .await;
         assert!(matches!(unfunded, Err(SessionError::Conflict(_))));
+
+        let client = db.connect().await.unwrap();
+        let immutable_update = client
+            .execute(
+                "UPDATE pricing_snapshots SET currency = 'USD' WHERE pricing_snapshot_id = 'pricing_snapshot_billing'",
+                &[],
+            )
+            .await;
+        assert!(immutable_update.is_err());
+        let immutable_delete = client
+            .execute(
+                "DELETE FROM pricing_snapshots WHERE pricing_snapshot_id = 'pricing_snapshot_billing'",
+                &[],
+            )
+            .await;
+        assert!(immutable_delete.is_err());
+        let reservation_without_snapshot = client
+            .execute(
+                "INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at) VALUES ('reservation_v2_without_snapshot', 'org_billing', 'project_billing', 'listing_billing', 'provider_billing', 'device_billing', 'session_billing', 'burd-marketplace-reservation-v2', 'llm_realtime_api', 'GPU-billing', 'expired', 'reservation_key_no_snapshot', 'reservation_hash_no_snapshot', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z', 3600, '[]', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z')",
+                &[],
+            )
+            .await;
+        assert!(reservation_without_snapshot.is_err());
+        let duplicate_snapshot_reservation = client
+            .execute(
+                "INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, pricing_snapshot_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at) VALUES ('reservation_duplicate_snapshot', 'org_billing', 'project_billing', 'listing_billing', 'pricing_snapshot_billing', 'provider_billing', 'device_billing', 'session_billing', 'burd-marketplace-reservation-v2', 'llm_realtime_api', 'GPU-billing', 'expired', 'reservation_key_duplicate_snapshot', 'reservation_hash_duplicate_snapshot', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z', 3600, '[]', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z')",
+                &[],
+            )
+            .await;
+        assert!(duplicate_snapshot_reservation.is_err());
+        client
+            .batch_execute(
+                r#"
+                INSERT INTO marketplace_listing_prices (price_id, listing_id, schema_version, currency, price_per_hour_micros, pricing_model, status, created_at, updated_at)
+                VALUES ('price_billing_other', 'listing_billing', 'burd-marketplace-price-v1', 'BRL', 30000000, 'gpu_hour', 'superseded', '2026-07-13T00:12:00Z', '2026-07-13T00:12:00Z');
+                INSERT INTO pricing_snapshots (pricing_snapshot_id, source_price_id, listing_id, schema_version, currency, pricing_model, price_per_hour_micros, platform_fee_bps, chargeback_reserve_bps, fee_policy_version, created_at)
+                VALUES ('pricing_snapshot_other', 'price_billing_other', 'listing_billing', 'burd-pricing-snapshot-v1', 'BRL', 'gpu_hour', 30000000, 1500, 500, 'burd-marketplace-fee-v1', '2026-07-13T00:12:00Z');
+                INSERT INTO marketplace_listing_prices (price_id, listing_id, schema_version, currency, price_per_hour_micros, pricing_model, status, created_at, updated_at)
+                VALUES ('price_billing_failed', 'listing_billing', 'burd-marketplace-price-v1', 'BRL', 30000000, 'gpu_hour', 'superseded', '2026-07-13T00:13:00Z', '2026-07-13T00:13:00Z');
+                INSERT INTO pricing_snapshots (pricing_snapshot_id, source_price_id, listing_id, schema_version, currency, pricing_model, price_per_hour_micros, platform_fee_bps, chargeback_reserve_bps, fee_policy_version, created_at)
+                VALUES ('pricing_snapshot_failed', 'price_billing_failed', 'listing_billing', 'burd-pricing-snapshot-v1', 'BRL', 'gpu_hour', 30000000, 1500, 500, 'burd-marketplace-fee-v1', '2026-07-13T00:13:00Z');
+                INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, pricing_snapshot_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at)
+                VALUES ('reservation_cancelled_billing', 'org_billing', 'project_billing', 'listing_billing', 'pricing_snapshot_other', 'provider_billing', 'device_billing', 'session_billing', 'burd-marketplace-reservation-v2', 'llm_realtime_api', 'GPU-billing', 'cancelled', 'reservation_key_cancelled', 'reservation_hash_cancelled', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z', 3600, '[]', '2026-07-13T00:00:00Z', '2026-07-13T00:13:00Z');
+                INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, pricing_snapshot_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at)
+                VALUES ('reservation_failed_billing', 'org_billing', 'project_billing', 'listing_billing', 'pricing_snapshot_failed', 'provider_billing', 'device_billing', 'session_billing', 'burd-marketplace-reservation-v2', 'llm_realtime_api', 'GPU-billing', 'expired', 'reservation_key_failed', 'reservation_hash_failed', '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z', 3600, '[]', '2026-07-13T00:00:00Z', '2026-07-13T00:13:00Z');
+                INSERT INTO compute_jobs (job_id, provider_id, device_id, session_id, schema_version, workload_type, template_id, image_ref, gpu_uuid, backend, parameters_json, input_artifacts_json, expected_outputs_json, result_artifacts_json, result_metrics_json, status, timeout_seconds, reservation_id, created_at, assigned_at, accepted_at, started_at, completed_at, updated_at)
+                VALUES ('job_failed_billing', 'provider_billing', 'device_billing', 'session_billing', 'burd-job-v1', 'llm_realtime_api', 'llm_inference', 'ghcr.io/burd/runtime/llm@sha256:test', 'GPU-billing', 'cuda', '{}', '[]', '[]', '[]', '{}', 'failed', 900, 'reservation_failed_billing', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:10:00Z', '2026-07-13T00:10:00Z');
+                INSERT INTO compute_jobs (job_id, provider_id, device_id, session_id, schema_version, workload_type, template_id, image_ref, gpu_uuid, backend, parameters_json, input_artifacts_json, expected_outputs_json, result_artifacts_json, result_metrics_json, status, timeout_seconds, reservation_id, created_at, assigned_at, accepted_at, started_at, completed_at, updated_at)
+                VALUES ('job_cancelled_billing', 'provider_billing', 'device_billing', 'session_billing', 'burd-job-v1', 'llm_realtime_api', 'llm_inference', 'ghcr.io/burd/runtime/llm@sha256:test', 'GPU-billing', 'cuda', '{}', '[]', '[]', '[]', '{}', 'cancelled', 900, 'reservation_cancelled_billing', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:10:00Z', '2026-07-13T00:10:00Z');
+                INSERT INTO usage_ledger_entries (entry_id, schema_version, entry_type, job_id, reservation_id, pricing_snapshot_id, provider_id, device_id, session_id, workload_type, gpu_uuid, job_status, job_started_at, job_completed_at, reserved_gpu_seconds, actual_gpu_seconds, billable_gpu_seconds, non_billable_gpu_seconds, idle_billable_gpu_seconds, idle_unbillable_gpu_seconds, input_bytes, output_bytes, network_transfer_bytes, storage_bytes, retry_count, provider_caused_failure, customer_caused_failure, challenge_non_billable_seconds, reason_codes_json, receipt_json, receipt_hash, receipt_signature_status, source_hash, created_at)
+                VALUES ('usage_failed_billing', 'burd-usage-ledger-v1', 'job_usage_finalized', 'job_failed_billing', 'reservation_failed_billing', 'pricing_snapshot_failed', 'provider_billing', 'device_billing', 'session_billing', 'llm_realtime_api', 'GPU-billing', 'failed', '2026-07-13T00:00:00Z', '2026-07-13T00:10:00Z', 3600, 3600, 0, 3600, 0, 0, 0, 0, 0, 0, 0, FALSE, TRUE, 0, '["job_failed"]', '{}', 'receipt_hash_failed_billing', 'unsigned', 'usage_source_hash_failed_billing', '2026-07-13T00:10:00Z');
+                INSERT INTO usage_ledger_entries (entry_id, schema_version, entry_type, job_id, reservation_id, pricing_snapshot_id, provider_id, device_id, session_id, workload_type, gpu_uuid, job_status, job_started_at, job_completed_at, reserved_gpu_seconds, actual_gpu_seconds, billable_gpu_seconds, non_billable_gpu_seconds, idle_billable_gpu_seconds, idle_unbillable_gpu_seconds, input_bytes, output_bytes, network_transfer_bytes, storage_bytes, retry_count, provider_caused_failure, customer_caused_failure, challenge_non_billable_seconds, reason_codes_json, receipt_json, receipt_hash, receipt_signature_status, source_hash, created_at)
+                VALUES ('usage_cancelled_billing', 'burd-usage-ledger-v1', 'job_usage_finalized', 'job_cancelled_billing', 'reservation_cancelled_billing', 'pricing_snapshot_other', 'provider_billing', 'device_billing', 'session_billing', 'llm_realtime_api', 'GPU-billing', 'cancelled', '2026-07-13T00:00:00Z', '2026-07-13T00:10:00Z', 3600, 3600, 3600, 0, 0, 0, 0, 0, 0, 0, 0, FALSE, TRUE, 0, '["cancelled"]', '{}', 'receipt_hash_cancelled_billing', 'unsigned', 'usage_source_hash_cancelled_billing', '2026-07-13T00:10:00Z');
+                "#,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("billing postgres negative fixture seed failed: {error:?}"));
+        let tampered_usage_binding = client
+            .execute(
+                "INSERT INTO usage_ledger_entries (entry_id, schema_version, entry_type, job_id, reservation_id, pricing_snapshot_id, provider_id, device_id, session_id, workload_type, gpu_uuid, job_status, job_started_at, job_completed_at, reserved_gpu_seconds, actual_gpu_seconds, billable_gpu_seconds, non_billable_gpu_seconds, idle_billable_gpu_seconds, idle_unbillable_gpu_seconds, input_bytes, output_bytes, network_transfer_bytes, storage_bytes, retry_count, provider_caused_failure, customer_caused_failure, challenge_non_billable_seconds, reason_codes_json, receipt_json, receipt_hash, receipt_signature_status, source_hash, created_at) VALUES ('usage_tampered_snapshot', 'burd-usage-ledger-v1', 'tampered_snapshot', 'job_billing', 'reservation_billing', 'pricing_snapshot_other', 'provider_billing', 'device_billing', 'session_billing', 'llm_realtime_api', 'GPU-billing', 'succeeded', '2026-07-13T00:00:00Z', '2026-07-13T00:10:00Z', 3600, 3600, 3600, 0, 0, 0, 0, 0, 0, 0, 0, FALSE, FALSE, 0, '[]', '{}', 'receipt_hash_tampered', 'unsigned', 'usage_source_hash_tampered', '2026-07-13T00:10:00Z')",
+                &[],
+            )
+            .await;
+        assert!(tampered_usage_binding.is_err());
+        drop(client);
+
+        let legacy_settlement = db
+            .settle_reservation_billing(
+                "req_legacy_settlement",
+                "reservation_legacy_no_snapshot",
+                &SettleReservationBillingRequest {
+                    usage_entry_id: "usage_billing".to_string(),
+                    platform_fee_bps: Some(1500),
+                    chargeback_reserve_bps: Some(500),
+                },
+            )
+            .await;
+        assert!(matches!(legacy_settlement, Err(SessionError::Conflict(_))));
+
+        let mismatched_platform_fee = db
+            .settle_reservation_billing(
+                "req_settlement_bad_platform_fee",
+                "reservation_billing",
+                &SettleReservationBillingRequest {
+                    usage_entry_id: "usage_billing".to_string(),
+                    platform_fee_bps: Some(1000),
+                    chargeback_reserve_bps: Some(500),
+                },
+            )
+            .await;
+        assert!(matches!(
+            mismatched_platform_fee,
+            Err(SessionError::Conflict(_))
+        ));
+        let mismatched_reserve_fee = db
+            .settle_reservation_billing(
+                "req_settlement_bad_reserve_fee",
+                "reservation_billing",
+                &SettleReservationBillingRequest {
+                    usage_entry_id: "usage_billing".to_string(),
+                    platform_fee_bps: Some(1500),
+                    chargeback_reserve_bps: Some(100),
+                },
+            )
+            .await;
+        assert!(matches!(
+            mismatched_reserve_fee,
+            Err(SessionError::Conflict(_))
+        ));
 
         let auth = CustomerApiKeyAuth {
             api_key_id: "api_key_billing".to_string(),
@@ -1865,6 +2100,54 @@ mod tests {
             .unwrap();
         assert_eq!(funded_balance.balances[0].balance_micros, 10_000_000);
 
+        let failed_settlement = db
+            .settle_reservation_billing(
+                "req_settlement_failed_usage",
+                "reservation_failed_billing",
+                &SettleReservationBillingRequest {
+                    usage_entry_id: "usage_failed_billing".to_string(),
+                    platform_fee_bps: None,
+                    chargeback_reserve_bps: None,
+                },
+            )
+            .await;
+        let cancelled_settlement = db
+            .settle_reservation_billing(
+                "req_settlement_cancelled_usage",
+                "reservation_cancelled_billing",
+                &SettleReservationBillingRequest {
+                    usage_entry_id: "usage_cancelled_billing".to_string(),
+                    platform_fee_bps: None,
+                    chargeback_reserve_bps: None,
+                },
+            )
+            .await;
+        assert!(matches!(failed_settlement, Err(SessionError::Conflict(_))));
+        assert!(matches!(
+            cancelled_settlement,
+            Err(SessionError::Conflict(_))
+        ));
+        let client = db.connect().await.unwrap();
+        let failed_or_cancelled_invoices: i64 = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT FROM billing_invoices WHERE usage_entry_id IN ('usage_failed_billing', 'usage_cancelled_billing')",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let billing_ledger_before_success: i64 = client
+            .query_one(
+                "SELECT COUNT(*)::BIGINT FROM financial_ledger_lines WHERE source_type = 'billing_invoice'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(failed_or_cancelled_invoices, 0);
+        assert_eq!(billing_ledger_before_success, 0);
+        drop(client);
+
         let invoice = db
             .settle_reservation_billing(
                 "req_settlement",
@@ -1879,14 +2162,18 @@ mod tests {
             .unwrap();
         assert_eq!(invoice.invoice.total_micros, 10_000_000);
         assert_eq!(invoice.invoice.provider_net_micros, 8_000_000);
+        assert_eq!(
+            invoice.invoice.pricing_snapshot_id.as_deref(),
+            Some("pricing_snapshot_billing")
+        );
         let duplicate_invoice = db
             .settle_reservation_billing(
                 "req_settlement_duplicate",
                 "reservation_billing",
                 &SettleReservationBillingRequest {
                     usage_entry_id: "usage_billing".to_string(),
-                    platform_fee_bps: None,
-                    chargeback_reserve_bps: None,
+                    platform_fee_bps: Some(1500),
+                    chargeback_reserve_bps: Some(500),
                 },
             )
             .await
@@ -1929,6 +2216,44 @@ mod tests {
             .unwrap()
             .get(0);
         assert_eq!(billing_ledger_lines, 4);
+        async fn ledger_amount(
+            client: &tokio_postgres::Client,
+            invoice_id: &str,
+            account_type: &str,
+        ) -> i64 {
+            client
+                .query_one(
+                    "SELECT COALESCE(SUM(amount_micros), 0)::BIGINT FROM financial_ledger_lines WHERE source_type = 'billing_invoice' AND source_id = $1 AND account_type = $2",
+                    &[&invoice_id, &account_type],
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0)
+        }
+        assert_eq!(
+            ledger_amount(&client, &invoice.invoice.invoice_id, "customer_balance").await,
+            -(invoice.invoice.subtotal_micros as i64)
+        );
+        assert_eq!(
+            ledger_amount(&client, &invoice.invoice.invoice_id, "provider_payable").await,
+            invoice.invoice.provider_net_micros as i64
+        );
+        assert_eq!(
+            ledger_amount(&client, &invoice.invoice.invoice_id, "platform_revenue").await,
+            invoice.invoice.platform_fee_micros as i64
+        );
+        assert_eq!(
+            ledger_amount(&client, &invoice.invoice.invoice_id, "chargeback_reserve").await,
+            invoice.invoice.chargeback_reserve_micros as i64
+        );
+        assert_eq!(
+            invoice.invoice.subtotal_micros,
+            invoice
+                .invoice
+                .provider_net_micros
+                .saturating_add(invoice.invoice.platform_fee_micros)
+                .saturating_add(invoice.invoice.chargeback_reserve_micros)
+        );
         drop(client);
 
         let project_balance = db

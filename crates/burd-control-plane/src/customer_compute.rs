@@ -919,6 +919,18 @@ mod tests {
             )
             .await
             .unwrap();
+        client
+            .execute(
+                "INSERT INTO marketplace_listing_prices (price_id, listing_id, schema_version, currency, price_per_hour_micros, pricing_model, status, created_at, updated_at) VALUES ($1, $2, 'burd-marketplace-price-v1', 'BRL', $3, 'gpu_hour', 'active', $4, $4)",
+                &[
+                    &format!("price_{suffix}"),
+                    &listing_id,
+                    &price_per_hour_micros,
+                    &now_text,
+                ],
+            )
+            .await
+            .unwrap();
     }
 
     async fn seed_reservation(
@@ -929,16 +941,31 @@ mod tests {
         now: chrono::DateTime<Utc>,
     ) -> String {
         let reservation_id = format!("reservation_{reservation_suffix}");
+        let pricing_snapshot_id = format!("pricing_snapshot_{reservation_suffix}");
+        let source_price_id = format!("price_{supply_suffix}");
         let now_text = now.to_rfc3339();
         let expires_at = (now + chrono::Duration::hours(1)).to_rfc3339();
         client
             .execute(
-                "INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 'burd-marketplace-reservation-v1', 'llm_realtime_api', $8, 'reserved', $9, $10, $11, $12, 3600, '[]', $11, $11)",
+                "INSERT INTO pricing_snapshots (pricing_snapshot_id, source_price_id, listing_id, schema_version, currency, pricing_model, price_per_hour_micros, platform_fee_bps, chargeback_reserve_bps, fee_policy_version, created_at) VALUES ($1, $2, $3, 'burd-pricing-snapshot-v1', 'BRL', 'gpu_hour', 1000000, 1500, 500, 'burd-marketplace-fee-v1', $4)",
+                &[
+                    &pricing_snapshot_id,
+                    &source_price_id,
+                    &format!("listing_{supply_suffix}"),
+                    &now_text,
+                ],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, pricing_snapshot_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'burd-marketplace-reservation-v2', 'llm_realtime_api', $9, 'reserved', $10, $11, $12, $13, 3600, '[]', $12, $12)",
                 &[
                     &reservation_id,
                     &format!("org_{context_suffix}"),
                     &format!("project_{context_suffix}"),
                     &format!("listing_{supply_suffix}"),
+                    &pricing_snapshot_id,
                     &format!("provider_{supply_suffix}"),
                     &format!("device_{supply_suffix}"),
                     &format!("session_{supply_suffix}"),

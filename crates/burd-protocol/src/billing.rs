@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 pub const MARKETPLACE_PRICE_SCHEMA_VERSION: &str = "burd-marketplace-price-v1";
+pub const PRICING_SNAPSHOT_SCHEMA_VERSION: &str = "burd-pricing-snapshot-v1";
+pub const MARKETPLACE_FEE_POLICY_VERSION: &str = "burd-marketplace-fee-v1";
+pub const DEFAULT_PLATFORM_FEE_BPS: u32 = 1500;
+pub const DEFAULT_CHARGEBACK_RESERVE_BPS: u32 = 500;
 pub const FINANCIAL_LEDGER_SCHEMA_VERSION: &str = "burd-financial-ledger-v1";
 pub const BILLING_INVOICE_SCHEMA_VERSION: &str = "burd-billing-invoice-v1";
 pub const PIX_PAYMENT_INTENT_SCHEMA_VERSION: &str = "burd-pix-payment-intent-v1";
@@ -35,6 +39,21 @@ pub struct MarketplacePriceRecord {
 pub struct MarketplacePriceResponse {
     pub request_id: String,
     pub price: MarketplacePriceRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PricingSnapshotRecord {
+    pub pricing_snapshot_id: String,
+    pub source_price_id: String,
+    pub listing_id: String,
+    pub schema_version: String,
+    pub currency: String,
+    pub pricing_model: String,
+    pub price_per_hour_micros: u64,
+    pub platform_fee_bps: u32,
+    pub chargeback_reserve_bps: u32,
+    pub fee_policy_version: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,6 +116,8 @@ pub struct BillingInvoiceRecord {
     pub reservation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_entry_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_snapshot_id: Option<String>,
     pub schema_version: String,
     pub status: String,
     pub currency: String,

@@ -29,6 +29,8 @@ struct MeteredJobSource {
     completed_at: Option<String>,
     job_updated_at: String,
     lease_id: Option<String>,
+    reservation_id: Option<String>,
+    pricing_snapshot_id: Option<String>,
     lease_offered_at: Option<String>,
     lease_accepted_at: Option<String>,
     lease_active_at: Option<String>,
@@ -119,6 +121,11 @@ pub(crate) async fn append_usage_ledger_for_job(
     now: &str,
 ) -> Result<(UsageLedgerEntry, bool), SessionError> {
     let source = load_metered_job_source(transaction, job_id).await?;
+    if source.reservation_id.is_some() && source.pricing_snapshot_id.is_none() {
+        return Err(SessionError::Conflict(
+            "customer job has no authoritative pricing snapshot".to_string(),
+        ));
+    }
     if !matches!(source.status.as_str(), "succeeded" | "failed" | "cancelled") {
         return Err(SessionError::Conflict(
             "usage can only be finalized for terminal jobs".to_string(),
@@ -135,6 +142,8 @@ pub(crate) async fn append_usage_ledger_for_job(
         "job_updated_at": source.job_updated_at,
         "lease_id": source.lease_id,
         "lease_updated_at": source.lease_updated_at,
+        "reservation_id": source.reservation_id,
+        "pricing_snapshot_id": source.pricing_snapshot_id,
         "retry_count": source.retry_count,
     }))
     .map_err(SessionError::Invalid)?;
@@ -144,13 +153,15 @@ pub(crate) async fn append_usage_ledger_for_job(
 
     let inserted = transaction
         .query_opt(
-            "INSERT INTO usage_ledger_entries (entry_id, schema_version, entry_type, job_id, lease_id, provider_id, device_id, session_id, workload_type, gpu_uuid, job_status, lease_started_at, lease_ended_at, job_started_at, job_completed_at, reserved_gpu_seconds, actual_gpu_seconds, billable_gpu_seconds, non_billable_gpu_seconds, idle_billable_gpu_seconds, idle_unbillable_gpu_seconds, input_bytes, output_bytes, network_transfer_bytes, storage_bytes, retry_count, provider_caused_failure, customer_caused_failure, failure_classification, challenge_non_billable_seconds, reason_codes_json, receipt_json, receipt_hash, receipt_signature, receipt_public_key, receipt_signature_status, source_hash, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, NULL, NULL, $34, $35, $36) ON CONFLICT (job_id, entry_type) DO NOTHING RETURNING entry_id",
+            "INSERT INTO usage_ledger_entries (entry_id, schema_version, entry_type, job_id, lease_id, reservation_id, pricing_snapshot_id, provider_id, device_id, session_id, workload_type, gpu_uuid, job_status, lease_started_at, lease_ended_at, job_started_at, job_completed_at, reserved_gpu_seconds, actual_gpu_seconds, billable_gpu_seconds, non_billable_gpu_seconds, idle_billable_gpu_seconds, idle_unbillable_gpu_seconds, input_bytes, output_bytes, network_transfer_bytes, storage_bytes, retry_count, provider_caused_failure, customer_caused_failure, failure_classification, challenge_non_billable_seconds, reason_codes_json, receipt_json, receipt_hash, receipt_signature, receipt_public_key, receipt_signature_status, source_hash, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, NULL, NULL, $36, $37, $38) ON CONFLICT (job_id, entry_type) DO NOTHING RETURNING entry_id",
             &[
                 &entry_id,
                 &USAGE_LEDGER_SCHEMA_VERSION,
                 &ENTRY_TYPE_JOB_USAGE_FINALIZED,
                 &receipt.job_id,
                 &receipt.lease_id,
+                &receipt.reservation_id,
+                &receipt.pricing_snapshot_id,
                 &receipt.provider_id,
                 &receipt.device_id,
                 &receipt.session_id,
@@ -223,7 +234,7 @@ async fn load_metered_job_source(
 ) -> Result<MeteredJobSource, SessionError> {
     let row = transaction
         .query_opt(
-            "SELECT j.job_id, j.provider_id, j.device_id, j.session_id, j.workload_type, j.gpu_uuid, j.status, j.input_artifacts_json, j.result_artifacts_json, j.error_code, j.cancellation_reason, j.assigned_at, j.started_at, j.completed_at, j.updated_at AS job_updated_at, l.lease_id, l.offered_at AS lease_offered_at, l.accepted_at AS lease_accepted_at, l.active_at AS lease_active_at, l.completed_at AS lease_completed_at, l.updated_at AS lease_updated_at, COALESCE((SELECT COUNT(*) FROM job_events e WHERE e.job_id = j.job_id AND e.event_type IN ('retry', 'retried', 'retrying')), 0) AS retry_count FROM compute_jobs j LEFT JOIN LATERAL (SELECT lease_id, offered_at, accepted_at, active_at, completed_at, updated_at FROM job_leases WHERE job_id = j.job_id ORDER BY created_at DESC LIMIT 1) l ON TRUE WHERE j.job_id = $1 FOR UPDATE OF j",
+            "SELECT j.job_id, j.provider_id, j.device_id, j.session_id, j.workload_type, j.gpu_uuid, j.status, j.input_artifacts_json, j.result_artifacts_json, j.error_code, j.cancellation_reason, j.assigned_at, j.started_at, j.completed_at, j.updated_at AS job_updated_at, j.reservation_id, r.pricing_snapshot_id, l.lease_id, l.offered_at AS lease_offered_at, l.accepted_at AS lease_accepted_at, l.active_at AS lease_active_at, l.completed_at AS lease_completed_at, l.updated_at AS lease_updated_at, COALESCE((SELECT COUNT(*) FROM job_events e WHERE e.job_id = j.job_id AND e.event_type IN ('retry', 'retried', 'retrying')), 0) AS retry_count FROM compute_jobs j LEFT JOIN marketplace_reservations r ON r.reservation_id = j.reservation_id LEFT JOIN LATERAL (SELECT lease_id, offered_at, accepted_at, active_at, completed_at, updated_at FROM job_leases WHERE job_id = j.job_id ORDER BY created_at DESC LIMIT 1) l ON TRUE WHERE j.job_id = $1 FOR UPDATE OF j",
             &[&job_id],
         )
         .await?
@@ -250,6 +261,8 @@ async fn load_metered_job_source(
         completed_at: row.get("completed_at"),
         job_updated_at: row.get("job_updated_at"),
         lease_id: row.get("lease_id"),
+        reservation_id: row.get("reservation_id"),
+        pricing_snapshot_id: row.get("pricing_snapshot_id"),
         lease_offered_at: row.get("lease_offered_at"),
         lease_accepted_at: row.get("lease_accepted_at"),
         lease_active_at: row.get("lease_active_at"),
@@ -307,6 +320,8 @@ fn build_job_usage_receipt(source: &MeteredJobSource) -> JobUsageReceipt {
         schema_version: JOB_USAGE_RECEIPT_SCHEMA_VERSION.to_string(),
         job_id: source.job_id.clone(),
         lease_id: source.lease_id.clone(),
+        reservation_id: source.reservation_id.clone(),
+        pricing_snapshot_id: source.pricing_snapshot_id.clone(),
         provider_id: source.provider_id.clone(),
         device_id: source.device_id.clone(),
         session_id: source.session_id.clone(),
@@ -396,6 +411,8 @@ fn usage_entry_from_row(row: Row) -> Result<UsageLedgerEntry, SessionError> {
         schema_version: JOB_USAGE_RECEIPT_SCHEMA_VERSION.to_string(),
         job_id: row.get("job_id"),
         lease_id: row.get("lease_id"),
+        reservation_id: row.get("reservation_id"),
+        pricing_snapshot_id: row.get("pricing_snapshot_id"),
         provider_id: row.get("provider_id"),
         device_id: row.get("device_id"),
         session_id: row.get("session_id"),
@@ -439,7 +456,7 @@ fn usage_entry_from_row(row: Row) -> Result<UsageLedgerEntry, SessionError> {
 }
 
 fn usage_select_columns() -> &'static str {
-    "SELECT entry_id, schema_version, entry_type, job_id, lease_id, provider_id, device_id, session_id, workload_type, gpu_uuid, job_status, lease_started_at, lease_ended_at, job_started_at, job_completed_at, reserved_gpu_seconds, actual_gpu_seconds, billable_gpu_seconds, non_billable_gpu_seconds, idle_billable_gpu_seconds, idle_unbillable_gpu_seconds, input_bytes, output_bytes, network_transfer_bytes, storage_bytes, retry_count, provider_caused_failure, customer_caused_failure, failure_classification, challenge_non_billable_seconds, reason_codes_json, receipt_hash, receipt_signature, receipt_public_key, receipt_signature_status, source_hash, created_at FROM usage_ledger_entries"
+    "SELECT entry_id, schema_version, entry_type, job_id, lease_id, reservation_id, pricing_snapshot_id, provider_id, device_id, session_id, workload_type, gpu_uuid, job_status, lease_started_at, lease_ended_at, job_started_at, job_completed_at, reserved_gpu_seconds, actual_gpu_seconds, billable_gpu_seconds, non_billable_gpu_seconds, idle_billable_gpu_seconds, idle_unbillable_gpu_seconds, input_bytes, output_bytes, network_transfer_bytes, storage_bytes, retry_count, provider_caused_failure, customer_caused_failure, failure_classification, challenge_non_billable_seconds, reason_codes_json, receipt_hash, receipt_signature, receipt_public_key, receipt_signature_status, source_hash, created_at FROM usage_ledger_entries"
 }
 
 fn to_i64(value: u64) -> Result<i64, SessionError> {
@@ -507,6 +524,8 @@ mod tests {
             completed_at: Some("2026-07-13T00:05:00Z".to_string()),
             job_updated_at: "2026-07-13T00:05:00Z".to_string(),
             lease_id: Some("lease_1".to_string()),
+            reservation_id: None,
+            pricing_snapshot_id: None,
             lease_offered_at: Some("2026-07-12T23:59:30Z".to_string()),
             lease_accepted_at: Some("2026-07-13T00:00:00Z".to_string()),
             lease_active_at: Some("2026-07-13T00:02:00Z".to_string()),
@@ -546,6 +565,8 @@ mod tests {
             completed_at: Some("2026-07-13T00:00:42Z".to_string()),
             job_updated_at: "2026-07-13T00:00:42Z".to_string(),
             lease_id: None,
+            reservation_id: None,
+            pricing_snapshot_id: None,
             lease_offered_at: None,
             lease_accepted_at: Some("2026-07-13T00:00:00Z".to_string()),
             lease_active_at: None,

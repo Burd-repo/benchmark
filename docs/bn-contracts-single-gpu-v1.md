@@ -49,9 +49,9 @@ Non-goals:
   `crates/burd-control-plane/migrations/0030_compute_job_assignment_lease_binding.sql`
   binds active `compute_jobs.assignment_lease_id` to `job_leases`.
 - Current billing/payment/payout chain is PARTIAL, not missing. Billing
-  primitives, Pix payment intents, financial ledger lines, invoices, payout
-  accounts, and payout records exist, but immutable pricing snapshots and real
-  external money movement are not the public production contract.
+  primitives, immutable pricing snapshots, Pix payment intents, financial ledger
+  lines, invoices, payout accounts, and payout records exist, but real external
+  money movement is not the public production contract.
 - Current OpenAPI is PARTIAL, not missing. `crates/burd-control-plane/src/openapi.rs`
   manually defines `OpenAPI 3.1.0`, security schemes, error envelope, idempotency
   parameter, and many route schemas; serde/OpenAPI parity is not yet generated
@@ -140,12 +140,13 @@ attempts remain follow-up work.
 
 ### Billing and Payments
 
-- Current: non-settlement customer credits, financial ledger lines, Pix payment
-  intents, invoices, payout accounts, payouts, refund/dispute/reconciliation
-  placeholders.
-- Target: immutable `PricingSnapshot` binds reservation/workload/job/invoice to
+- Current: non-settlement customer credits, immutable pricing snapshots,
+  financial ledger lines, Pix payment intents, invoices, payout accounts,
+  payouts, refund/dispute/reconciliation placeholders.
+- Current `PricingSnapshot` binds reservation/workload/job/usage/invoice to
   quoted price, currency, pricing model, fees, reserve policy, source listing,
-  and policy version.
+  source price, and policy version. Legacy reservations without snapshots fail
+  closed at settlement.
 
 ### API and OpenAPI
 
@@ -292,15 +293,14 @@ Target RBAC:
 
 ## Immutable Pricing Snapshot
 
-Current billing settlement loads active listing price at settlement time in
-`crates/burd-control-plane/src/billing.rs`. Target `PricingSnapshot`:
+Billing settlement now uses immutable `pricing_snapshots` instead of loading the
+active listing price at settlement time. Current `PricingSnapshot`:
 
 - created when reservation or workload quote is accepted;
 - immutable after creation;
-- includes `pricing_snapshot_id`, `listing_id`, `reservation_id`, optional
-  `workload_id`, optional `placement_id`, currency, price model,
-  price_per_hour_micros, platform fee bps, reserve bps, policy version, source
-  hash, created_at, and expires_at;
+- includes `pricing_snapshot_id`, `listing_id`, `source_price_id`, currency,
+  price model, price_per_hour_micros, platform fee bps, reserve bps, fee policy
+  version, and created_at;
 - `billing_invoices` references the snapshot rather than re-reading the active
   price book;
 - repeated settlement must verify usage, reservation, placement/job, and pricing

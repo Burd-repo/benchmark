@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 pub const CUSTOMER_ORGANIZATION_SCHEMA_VERSION: &str = "burd-customer-organization-v1";
 pub const CUSTOMER_PROJECT_SCHEMA_VERSION: &str = "burd-customer-project-v1";
 pub const CUSTOMER_API_KEY_SCHEMA_VERSION: &str = "burd-customer-api-key-v1";
-pub const MARKETPLACE_RESERVATION_SCHEMA_VERSION: &str = "burd-marketplace-reservation-v1";
+pub const MARKETPLACE_RESERVATION_SCHEMA_VERSION: &str = "burd-marketplace-reservation-v2";
 pub const CUSTOMER_CREDIT_LEDGER_SCHEMA_VERSION: &str = "burd-customer-credit-ledger-v1";
 pub const CUSTOMER_AUDIT_SCHEMA_VERSION: &str = "burd-customer-audit-v1";
 
@@ -193,6 +193,8 @@ pub struct MarketplaceReservationRecord {
     pub organization_id: String,
     pub project_id: String,
     pub listing_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_snapshot_id: Option<String>,
     pub provider_id: String,
     pub device_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
