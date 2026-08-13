@@ -1466,6 +1466,12 @@ async fn release_customer_placement(
             &[&job_id],
         )
         .await?;
+    transaction
+        .execute(
+            "UPDATE marketplace_reservations SET status = 'released', updated_at = $1 WHERE reservation_id = (SELECT reservation_id FROM compute_jobs WHERE job_id = $2) AND status = 'consumed'",
+            &[&Utc::now().to_rfc3339(), &job_id],
+        )
+        .await?;
     Ok(())
 }
 fn validate_id(label: &str, value: &str, maximum_len: usize) -> Result<(), SessionError> {

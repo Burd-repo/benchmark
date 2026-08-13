@@ -28,6 +28,8 @@ pub struct ComputeRequirements {
 pub struct CreateCustomerWorkloadRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_workload_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation_id: Option<String>,
     pub workload_type: String,
     pub requirements: ComputeRequirements,
     #[serde(default)]
@@ -44,6 +46,8 @@ pub struct CustomerWorkloadRecord {
     pub schema_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_workload_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation_id: Option<String>,
     pub workload_type: String,
     pub requirements: ComputeRequirements,
     pub status: String,
@@ -67,6 +71,7 @@ mod tests {
     fn request() -> CreateCustomerWorkloadRequest {
         CreateCustomerWorkloadRequest {
             client_workload_id: Some("customer-request-1".to_string()),
+            reservation_id: Some("reservation_1".to_string()),
             workload_type: "llm_realtime_api".to_string(),
             requirements: ComputeRequirements {
                 gpu_count: 1,
@@ -98,6 +103,7 @@ mod tests {
                 "unexpected physical field {field}"
             );
         }
+        assert_eq!(value["reservation_id"], "reservation_1");
     }
 
     #[test]

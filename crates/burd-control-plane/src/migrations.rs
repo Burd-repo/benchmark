@@ -161,6 +161,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "customer_workloads_placement",
         sql: include_str!("../migrations/0031_customer_workloads_placement.sql"),
     },
+    Migration {
+        version: "0032",
+        name: "reservation_workload_binding",
+        sql: include_str!("../migrations/0032_reservation_workload_binding.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -501,6 +506,23 @@ mod tests {
             "ADD COLUMN IF NOT EXISTS placement_id TEXT UNIQUE",
             "compute_jobs_workload_placement_pair_check",
             "idx_compute_placements_active_supply",
+        ] {
+            assert!(sql.contains(needle));
+        }
+    }
+
+    #[test]
+    fn reservation_workload_binding_migration_is_exclusive() {
+        let sql = MIGRATIONS[31].sql;
+        for needle in [
+            "ADD COLUMN IF NOT EXISTS reservation_id TEXT",
+            "idx_customer_workloads_reservation",
+            "idx_compute_placements_reservation",
+            "idx_compute_jobs_reservation",
+            "status IN ('reserved', 'consumed', 'released', 'cancelled', 'expired')",
+            "customer_workloads_reservation_binding_fk",
+            "compute_placements_reservation_binding_fk",
+            "compute_jobs_reservation_workload_binding_fk",
         ] {
             assert!(sql.contains(needle));
         }

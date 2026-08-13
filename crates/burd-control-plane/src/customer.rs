@@ -797,6 +797,11 @@ impl Database {
         expire_stale_reservations(&transaction, &now).await?;
         let before = load_reservation(&transaction, reservation_id).await?;
         authorize_project_access(&transaction, auth, &before.project_id).await?;
+        if before.status == "consumed" {
+            return Err(SessionError::Conflict(
+                "consumed reservations cannot be cancelled directly".to_string(),
+            ));
+        }
         if before.status == "reserved" {
             transaction
                 .execute(

@@ -49,12 +49,23 @@ struct PlacementCandidate {
     policy_version: String,
 }
 
+#[derive(Debug)]
+struct ReservationBinding {
+    reservation_id: String,
+    listing_id: String,
+    provider_id: String,
+    device_id: String,
+    session_id: String,
+    gpu_uuid: String,
+}
+
 struct CustomerWorkloadAudit<'a> {
     api_key_id: &'a str,
     workload_id: &'a str,
     placement_id: &'a str,
     job_id: &'a str,
     listing_id: &'a str,
+    reservation_id: Option<&'a str>,
     occurred_at: &'a str,
 }
 
@@ -97,13 +108,34 @@ impl Database {
 
         let project =
             authorize_project_access(&transaction, &command.auth, &command.project_id).await?;
+        let reservation = match command.request.reservation_id.as_deref() {
+            Some(reservation_id) => Some(
+                load_reservation_binding(
+                    &transaction,
+                    &project,
+                    reservation_id,
+                    &command.request.workload_type,
+                    &command.request.requirements,
+                    &now_text,
+                )
+                .await?,
+            ),
+            None => None,
+        };
+        let candidates = match reservation.as_ref() {
+            Some(reservation) => {
+                vec![load_reserved_placement_candidate(&transaction, reservation).await?]
+            }
+            None => {
+                select_placement_candidates(
+                    &transaction,
+                    &command.request.workload_type,
+                    &command.request.requirements,
+                )
+                .await?
+            }
+        };
         let mut selected = None;
-        let candidates = select_placement_candidates(
-            &transaction,
-            &command.request.workload_type,
-            &command.request.requirements,
-        )
-        .await?;
         for candidate in candidates {
             if gpu_has_selected_placement(
                 &transaction,
@@ -130,9 +162,11 @@ impl Database {
             }
         }
         let (candidate, admission) = selected.ok_or_else(|| {
-            SessionError::Conflict(
-                "no runtime-admitted marketplace supply satisfies the workload".to_string(),
-            )
+            SessionError::Conflict(if reservation.is_some() {
+                "reserved marketplace supply is not runtime-admitted for the workload".to_string()
+            } else {
+                "no runtime-admitted marketplace supply satisfies the workload".to_string()
+            })
         })?;
 
         let workload_id = format!("workload_{}", Uuid::new_v4());
@@ -147,11 +181,12 @@ impl Database {
         let parameters_json = normalized_json_object(&command.request.parameters)?;
         transaction
             .execute(
-                "INSERT INTO customer_workloads (workload_id, organization_id, project_id, schema_version, client_workload_id, workload_type, requirements_json, parameters_json, timeout_seconds, status, idempotency_key, request_hash, job_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued', $10, $11, NULL, $12, $12)",
+                "INSERT INTO customer_workloads (workload_id, organization_id, project_id, reservation_id, schema_version, client_workload_id, workload_type, requirements_json, parameters_json, timeout_seconds, status, idempotency_key, request_hash, job_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $12, NULL, $13, $13)",
                 &[
                     &workload_id,
                     &project.organization_id,
                     &project.project_id,
+                    &reservation.as_ref().map(|value| &value.reservation_id),
                     &CUSTOMER_WORKLOAD_SCHEMA_VERSION,
                     &command.request.client_workload_id,
                     &command.request.workload_type,
@@ -169,16 +204,21 @@ impl Database {
             "workload_requirements_satisfied".to_string(),
             "runtime_admission_admitted".to_string(),
         ];
+        let mut reason_codes = reason_codes;
+        if reservation.is_some() {
+            reason_codes.push("customer_reservation_bound".to_string());
+        }
         let reason_codes_json = serde_json::to_string(&reason_codes)
             .map_err(|error| SessionError::Invalid(error.to_string()))?;
         let admission_json = serde_json::to_string(&admission)
             .map_err(|error| SessionError::Invalid(error.to_string()))?;
         transaction
             .execute(
-                "INSERT INTO compute_placements (placement_id, workload_id, schema_version, listing_id, provider_id, device_id, session_id, gpu_uuid, policy_id, policy_version, status, reason_codes_json, runtime_admission_json, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'selected', $11, $12, $13)",
+                "INSERT INTO compute_placements (placement_id, workload_id, reservation_id, schema_version, listing_id, provider_id, device_id, session_id, gpu_uuid, policy_id, policy_version, status, reason_codes_json, runtime_admission_json, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'selected', $12, $13, $14)",
                 &[
                     &placement_id,
                     &workload_id,
+                    &reservation.as_ref().map(|value| &value.reservation_id),
                     &PLACEMENT_SCHEMA_VERSION,
                     &candidate.listing_id,
                     &candidate.provider_id,
@@ -197,7 +237,7 @@ impl Database {
             load_backend_execution_contract(&transaction, &command.request.workload_type).await?;
         transaction
             .execute(
-                "INSERT INTO compute_jobs (job_id, client_job_id, provider_id, device_id, session_id, schema_version, workload_type, template_id, image_ref, gpu_uuid, backend, parameters_json, input_artifacts_json, expected_outputs_json, result_artifacts_json, result_metrics_json, policy_id, policy_version, status, timeout_seconds, workload_id, placement_id, created_at, updated_at) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, 'cuda', $10, '[]', '[]', '[]', '{}', $11, $12, 'queued', $13, $14, $15, $16, $16)",
+                "INSERT INTO compute_jobs (job_id, client_job_id, provider_id, device_id, session_id, schema_version, workload_type, template_id, image_ref, gpu_uuid, backend, parameters_json, input_artifacts_json, expected_outputs_json, result_artifacts_json, result_metrics_json, policy_id, policy_version, status, timeout_seconds, workload_id, placement_id, reservation_id, created_at, updated_at) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, 'cuda', $10, '[]', '[]', '[]', '{}', $11, $12, 'queued', $13, $14, $15, $16, $17, $17)",
                 &[
                     &job_id,
                     &candidate.provider_id,
@@ -214,10 +254,24 @@ impl Database {
                     &(timeout_seconds as i32),
                     &workload_id,
                     &placement_id,
+                    &reservation.as_ref().map(|value| &value.reservation_id),
                     &now_text,
                 ],
             )
             .await?;
+        if let Some(reservation) = reservation.as_ref() {
+            let consumed = transaction
+                .execute(
+                    "UPDATE marketplace_reservations SET status = 'consumed', updated_at = $1 WHERE reservation_id = $2 AND status = 'reserved' AND starts_at <= $1 AND expires_at > $1",
+                    &[&now_text, &reservation.reservation_id],
+                )
+                .await?;
+            if consumed != 1 {
+                return Err(SessionError::Conflict(
+                    "reservation is no longer available for workload consumption".to_string(),
+                ));
+            }
+        }
         transaction
             .execute(
                 "UPDATE customer_workloads SET status = 'placed', job_id = $1, updated_at = $2 WHERE workload_id = $3 AND status = 'queued'",
@@ -234,6 +288,9 @@ impl Database {
                 placement_id: &placement_id,
                 job_id: &job_id,
                 listing_id: &candidate.listing_id,
+                reservation_id: reservation
+                    .as_ref()
+                    .map(|reservation| reservation.reservation_id.as_str()),
                 occurred_at: &now_text,
             },
         )
@@ -335,6 +392,124 @@ async fn select_placement_candidates(
         .collect())
 }
 
+async fn load_reservation_binding(
+    transaction: &Transaction<'_>,
+    project: &ProjectAccess,
+    reservation_id: &str,
+    workload_type: &str,
+    requirements: &ComputeRequirements,
+    now: &str,
+) -> Result<ReservationBinding, SessionError> {
+    validate_id("reservation_id", reservation_id, 128)?;
+    let row = transaction
+        .query_opt(
+            "SELECT reservation_id, organization_id, project_id, listing_id, provider_id, device_id, session_id, gpu_uuid, workload_type, status, starts_at, expires_at FROM marketplace_reservations WHERE reservation_id = $1 FOR UPDATE",
+            &[&reservation_id],
+        )
+        .await?
+        .ok_or_else(|| SessionError::NotFound("marketplace reservation not found".to_string()))?;
+    if row.get::<_, String>("organization_id") != project.organization_id
+        || row.get::<_, String>("project_id") != project.project_id
+    {
+        return Err(SessionError::Unauthorized);
+    }
+    if row.get::<_, String>("status") != "reserved"
+        || row.get::<_, String>("starts_at").as_str() > now
+        || row.get::<_, String>("expires_at").as_str() <= now
+    {
+        return Err(SessionError::Conflict(
+            "reservation is not active for workload consumption".to_string(),
+        ));
+    }
+    if row.get::<_, String>("workload_type") != workload_type {
+        return Err(SessionError::Conflict(
+            "reservation workload_type does not match workload".to_string(),
+        ));
+    }
+    let session_id = row
+        .get::<_, Option<String>>("session_id")
+        .ok_or_else(|| SessionError::Conflict("reservation has no bound session".to_string()))?;
+    let gpu_uuid = row
+        .get::<_, Option<String>>("gpu_uuid")
+        .ok_or_else(|| SessionError::Conflict("reservation has no bound GPU".to_string()))?;
+    let listing_id: String = row.get("listing_id");
+    assert_reserved_listing_requirements(transaction, &listing_id, requirements).await?;
+    Ok(ReservationBinding {
+        reservation_id: row.get("reservation_id"),
+        listing_id,
+        provider_id: row.get("provider_id"),
+        device_id: row.get("device_id"),
+        session_id,
+        gpu_uuid,
+    })
+}
+
+async fn assert_reserved_listing_requirements(
+    transaction: &Transaction<'_>,
+    listing_id: &str,
+    requirements: &ComputeRequirements,
+) -> Result<(), SessionError> {
+    let minimum_vram_mib = requirements.minimum_vram_mib.map(to_i64).transpose()?;
+    let maximum_price = requirements
+        .maximum_price_per_hour_micros
+        .map(to_i64)
+        .transpose()?;
+    let compatible = transaction
+        .query_opt(
+            "SELECT listing_id FROM marketplace_listings WHERE listing_id = $1 AND status IN ('published', 'limited') AND gpu_verified = TRUE AND vram_verified = TRUE AND ($2::BIGINT IS NULL OR vram_total_mib >= $2) AND ($3::TEXT IS NULL OR region = $3) AND ($4::DOUBLE PRECISION IS NULL OR trust_score >= $4) AND ($5::DOUBLE PRECISION IS NULL OR risk_score <= $5) AND ($6::DOUBLE PRECISION IS NULL OR reliability_score >= $6) AND ($7::BIGINT IS NULL OR (price_per_hour_micros IS NOT NULL AND price_per_hour_micros <= $7))",
+            &[
+                &listing_id,
+                &minimum_vram_mib,
+                &requirements.region,
+                &requirements.minimum_trust_score,
+                &requirements.maximum_risk_score,
+                &requirements.minimum_reliability_score,
+                &maximum_price,
+            ],
+        )
+        .await?
+        .is_some();
+    if compatible {
+        Ok(())
+    } else {
+        Err(SessionError::Conflict(
+            "reserved marketplace supply does not satisfy workload requirements".to_string(),
+        ))
+    }
+}
+
+async fn load_reserved_placement_candidate(
+    transaction: &Transaction<'_>,
+    reservation: &ReservationBinding,
+) -> Result<PlacementCandidate, SessionError> {
+    let row = transaction
+        .query_opt(
+            "SELECT listing_id, provider_id, device_id, session_id, gpu_uuid, policy_id, policy_version FROM marketplace_listings WHERE listing_id = $1 AND provider_id = $2 AND device_id = $3 AND session_id = $4 AND lower(gpu_uuid) = lower($5) FOR UPDATE",
+            &[
+                &reservation.listing_id,
+                &reservation.provider_id,
+                &reservation.device_id,
+                &reservation.session_id,
+                &reservation.gpu_uuid,
+            ],
+        )
+        .await?
+        .ok_or_else(|| {
+            SessionError::Conflict(
+                "reservation no longer matches backend marketplace supply".to_string(),
+            )
+        })?;
+    Ok(PlacementCandidate {
+        listing_id: row.get("listing_id"),
+        provider_id: row.get("provider_id"),
+        device_id: row.get("device_id"),
+        session_id: row.get("session_id"),
+        gpu_uuid: row.get("gpu_uuid"),
+        policy_id: row.get("policy_id"),
+        policy_version: row.get("policy_version"),
+    })
+}
+
 async fn load_backend_execution_contract(
     transaction: &Transaction<'_>,
     workload_type: &str,
@@ -370,7 +545,7 @@ async fn load_workload(
 ) -> Result<CustomerWorkloadRecord, SessionError> {
     let row = transaction
         .query_one(
-            "SELECT workload_id, organization_id, project_id, schema_version, client_workload_id, workload_type, requirements_json, status, job_id, created_at, updated_at FROM customer_workloads WHERE workload_id = $1",
+            "SELECT workload_id, organization_id, project_id, reservation_id, schema_version, client_workload_id, workload_type, requirements_json, status, job_id, created_at, updated_at FROM customer_workloads WHERE workload_id = $1",
             &[&workload_id],
         )
         .await?;
@@ -381,6 +556,7 @@ async fn load_workload(
         project_id: row.get("project_id"),
         schema_version: row.get("schema_version"),
         client_workload_id: row.get("client_workload_id"),
+        reservation_id: row.get("reservation_id"),
         workload_type: row.get("workload_type"),
         requirements: serde_json::from_str(&requirements_json)
             .map_err(|error| SessionError::Database(DbError::new(error.to_string())))?,
@@ -400,6 +576,7 @@ async fn insert_customer_audit_event(
         "placement_id": audit.placement_id,
         "job_id": audit.job_id,
         "listing_id": audit.listing_id,
+        "reservation_id": audit.reservation_id,
     })
     .to_string();
     transaction
@@ -422,6 +599,9 @@ async fn insert_customer_audit_event(
 fn validate_workload_request(request: &CreateCustomerWorkloadRequest) -> Result<(), SessionError> {
     if let Some(client_workload_id) = request.client_workload_id.as_deref() {
         validate_id("client_workload_id", client_workload_id, 128)?;
+    }
+    if let Some(reservation_id) = request.reservation_id.as_deref() {
+        validate_id("reservation_id", reservation_id, 128)?;
     }
     validate_id("workload_type", &request.workload_type, 96)?;
     if request.requirements.gpu_count != 1 {
@@ -552,6 +732,7 @@ mod tests {
     fn request() -> CreateCustomerWorkloadRequest {
         CreateCustomerWorkloadRequest {
             client_workload_id: Some("request-1".to_string()),
+            reservation_id: None,
             workload_type: "llm_realtime_api".to_string(),
             requirements: ComputeRequirements {
                 gpu_count: 1,
@@ -662,6 +843,39 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    async fn seed_reservation(
+        client: &tokio_postgres::Client,
+        context_suffix: &str,
+        supply_suffix: &str,
+        reservation_suffix: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> String {
+        let reservation_id = format!("reservation_{reservation_suffix}");
+        let now_text = now.to_rfc3339();
+        let expires_at = (now + chrono::Duration::hours(1)).to_rfc3339();
+        client
+            .execute(
+                "INSERT INTO marketplace_reservations (reservation_id, organization_id, project_id, listing_id, provider_id, device_id, session_id, schema_version, workload_type, gpu_uuid, status, idempotency_key, request_hash, starts_at, expires_at, reserved_gpu_seconds, reason_codes_json, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, 'burd-marketplace-reservation-v1', 'llm_realtime_api', $8, 'reserved', $9, $10, $11, $12, 3600, '[]', $11, $11)",
+                &[
+                    &reservation_id,
+                    &format!("org_{context_suffix}"),
+                    &format!("project_{context_suffix}"),
+                    &format!("listing_{supply_suffix}"),
+                    &format!("provider_{supply_suffix}"),
+                    &format!("device_{supply_suffix}"),
+                    &format!("session_{supply_suffix}"),
+                    &format!("GPU-{supply_suffix}"),
+                    &format!("reservation-key-{reservation_suffix}"),
+                    &format!("reservation-hash-{reservation_suffix}"),
+                    &now_text,
+                    &expires_at,
+                ],
+            )
+            .await
+            .unwrap();
+        reservation_id
     }
 
     fn workload_command(
@@ -1089,5 +1303,201 @@ mod tests {
             .get("count");
         assert_eq!(selected_count, 1);
         assert_eq!(job_count, 1);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_reservation_binds_workload_placement_and_job() {
+        let db = crate::scheduler::tests::postgres_test_database(
+            "burd_customer_compute_reservation_binding",
+        )
+        .await;
+        let now = Utc::now();
+        let client = db.connect().await.unwrap();
+        seed_customer_context(&client, "reservation_binding", &now.to_rfc3339()).await;
+        seed_marketplace_supply(&client, "reservation_bound", now, 100, true).await;
+        let reservation_id = seed_reservation(
+            &client,
+            "reservation_binding",
+            "reservation_bound",
+            "binding",
+            now,
+        )
+        .await;
+        let mut command = workload_command(
+            "reservation_binding",
+            "reservation-workload-key",
+            "reservation-workload-request",
+        );
+        command.request.reservation_id = Some(reservation_id.clone());
+        command.request_hash = burd_protocol::hash_canonical(&command.request).unwrap();
+
+        let outcome = db
+            .create_customer_workload_idempotently(
+                command,
+                &crate::scheduler::tests::runtime_policy(),
+            )
+            .await
+            .unwrap();
+        let CreateCustomerWorkloadOutcome::Response(record) = outcome else {
+            panic!("expected workload response");
+        };
+        let response: CustomerWorkloadResponse =
+            serde_json::from_str(&record.response_json).unwrap();
+        assert_eq!(
+            response.workload.reservation_id.as_deref(),
+            Some(reservation_id.as_str())
+        );
+        let row = client
+            .query_one(
+                "SELECT w.reservation_id AS workload_reservation_id, p.reservation_id AS placement_reservation_id, j.reservation_id AS job_reservation_id, r.status AS reservation_status, j.provider_id FROM customer_workloads w JOIN compute_placements p ON p.workload_id = w.workload_id JOIN compute_jobs j ON j.workload_id = w.workload_id JOIN marketplace_reservations r ON r.reservation_id = w.reservation_id WHERE w.workload_id = $1",
+                &[&response.workload.workload_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            row.get::<_, String>("workload_reservation_id"),
+            reservation_id
+        );
+        assert_eq!(
+            row.get::<_, String>("placement_reservation_id"),
+            reservation_id
+        );
+        assert_eq!(row.get::<_, String>("job_reservation_id"), reservation_id);
+        assert_eq!(row.get::<_, String>("reservation_status"), "consumed");
+        assert_eq!(
+            row.get::<_, String>("provider_id"),
+            "provider_reservation_bound"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_reservation_rejects_cross_project_and_incompatible_workload() {
+        let db = crate::scheduler::tests::postgres_test_database(
+            "burd_customer_compute_reservation_rejection",
+        )
+        .await;
+        let now = Utc::now();
+        let client = db.connect().await.unwrap();
+        seed_customer_context(&client, "reservation_owner", &now.to_rfc3339()).await;
+        client
+            .execute(
+                "INSERT INTO projects (project_id, organization_id, schema_version, display_name, status, created_at, updated_at) VALUES ('project_reservation_other', 'org_reservation_owner', 'burd-customer-project-v1', 'Other', 'active', $1, $1)",
+                &[&now.to_rfc3339()],
+            )
+            .await
+            .unwrap();
+        seed_marketplace_supply(&client, "reservation_rejected", now, 100, true).await;
+        let reservation_id = seed_reservation(
+            &client,
+            "reservation_owner",
+            "reservation_rejected",
+            "rejected",
+            now,
+        )
+        .await;
+
+        let mut cross_project = workload_command(
+            "reservation_owner",
+            "reservation-cross-key",
+            "reservation-cross-request",
+        );
+        cross_project.project_id = "project_reservation_other".to_string();
+        cross_project.auth.project_id = Some("project_reservation_other".to_string());
+        cross_project.scope =
+            "POST /v1/customer/projects/project_reservation_other/workloads".to_string();
+        cross_project.request.reservation_id = Some(reservation_id.clone());
+        cross_project.request_hash = burd_protocol::hash_canonical(&cross_project.request).unwrap();
+        assert!(matches!(
+            db.create_customer_workload_idempotently(
+                cross_project,
+                &crate::scheduler::tests::runtime_policy(),
+            )
+            .await,
+            Err(SessionError::Unauthorized)
+        ));
+
+        let mut incompatible = workload_command(
+            "reservation_owner",
+            "reservation-incompatible-key",
+            "reservation-incompatible-request",
+        );
+        incompatible.request.reservation_id = Some(reservation_id);
+        incompatible.request.requirements.minimum_vram_mib = Some(48_000);
+        incompatible.request_hash = burd_protocol::hash_canonical(&incompatible.request).unwrap();
+        assert!(matches!(
+            db.create_customer_workload_idempotently(
+                incompatible,
+                &crate::scheduler::tests::runtime_policy(),
+            )
+            .await,
+            Err(SessionError::Conflict(_))
+        ));
+        let count: i64 = client
+            .query_one("SELECT COUNT(*) AS count FROM customer_workloads", &[])
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_concurrent_reservation_consumption_creates_one_workload() {
+        let db = crate::scheduler::tests::postgres_test_database(
+            "burd_customer_compute_reservation_concurrent",
+        )
+        .await;
+        let now = Utc::now();
+        let client = db.connect().await.unwrap();
+        seed_customer_context(&client, "reservation_concurrent", &now.to_rfc3339()).await;
+        seed_marketplace_supply(&client, "reservation_concurrent", now, 100, true).await;
+        let reservation_id = seed_reservation(
+            &client,
+            "reservation_concurrent",
+            "reservation_concurrent",
+            "concurrent",
+            now,
+        )
+        .await;
+        let command = |key: &str, request_id: &str| {
+            let mut command = workload_command("reservation_concurrent", key, request_id);
+            command.request.reservation_id = Some(reservation_id.clone());
+            command.request_hash = burd_protocol::hash_canonical(&command.request).unwrap();
+            command
+        };
+        let policy = crate::scheduler::tests::runtime_policy();
+        let (first, second) = tokio::join!(
+            db.create_customer_workload_idempotently(
+                command("consume-key-1", "consume-1"),
+                &policy
+            ),
+            db.create_customer_workload_idempotently(
+                command("consume-key-2", "consume-2"),
+                &policy
+            ),
+        );
+        let results = [first, second];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Ok(CreateCustomerWorkloadOutcome::Response(_))))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(SessionError::Conflict(_))))
+                .count(),
+            1
+        );
+        let count: i64 = client
+            .query_one("SELECT COUNT(*) AS count FROM customer_workloads", &[])
+            .await
+            .unwrap()
+            .get("count");
+        assert_eq!(count, 1);
     }
 }
