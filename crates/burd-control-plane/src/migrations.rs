@@ -166,6 +166,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "reservation_workload_binding",
         sql: include_str!("../migrations/0032_reservation_workload_binding.sql"),
     },
+    Migration {
+        version: "0033",
+        name: "customer_artifact_ingress",
+        sql: include_str!("../migrations/0033_customer_artifact_ingress.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -191,6 +196,15 @@ mod tests {
         ] {
             assert!(sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")));
         }
+    }
+
+    #[test]
+    fn customer_artifact_ingress_migration_binds_project_artifacts_to_workloads() {
+        let sql = MIGRATIONS.last().unwrap().sql;
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS customer_artifacts"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS customer_workload_input_artifacts"));
+        assert!(sql.contains("customer_artifacts_sha256_format"));
+        assert!(sql.contains("customer_artifacts_ready_state"));
     }
 
     #[test]

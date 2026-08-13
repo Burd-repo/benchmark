@@ -4,6 +4,7 @@ use crate::customer::{
     CreateReservationCommand, CreateReservationOutcome, CustomerApiKeyAuth,
     GrantCustomerCreditsCommand, GrantCustomerCreditsOutcome,
 };
+use crate::customer_artifact::{CreateCustomerArtifactCommand, CreateCustomerArtifactOutcome};
 use crate::customer_compute::{CreateCustomerWorkloadCommand, CreateCustomerWorkloadOutcome};
 use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};
 use crate::enrollment::EnrollmentError;
@@ -36,22 +37,22 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use burd_protocol::{
     AcceptJobRequest, CancelJobRequest, CancelReservationRequest, ClientControlMessage,
-    ConfirmPixPaymentIntentRequest, CreateCustomerApiKeyRequest, CreateCustomerUserRequest,
-    CreateCustomerWorkloadRequest, CreateJobRequest, CreateOrganizationRequest,
-    CreatePixPaymentIntentRequest, CreateProjectRequest, CreateProviderPayoutRequest,
-    CreateReservationRequest, EnrollmentProofRequest, GrantCustomerCreditsRequest,
-    IssueProofChallengeRequest, IssueRuntimeVerificationChallengeRequest,
-    JOB_ARTIFACT_UPLOAD_VERSION, JobArtifactUploadResponse, JobEventRequest,
-    KeyRotationProofRequest, RevokeEvidenceRequest, RunMarketplaceListingSweepRequest,
-    RunSchedulerRequest, RunTrustSweepRequest, RunVerificationSweepRequest,
-    RunWorkloadEligibilityRequest, ServerControlMessage, SettleReservationBillingRequest,
-    Sha256Accumulator, SignedBenchmarkResult, SignedDeviceGpuInventory,
-    SignedProofCapabilityResponse, SignedProviderRuntimeObservation,
+    ConfirmPixPaymentIntentRequest, CreateCustomerApiKeyRequest, CreateCustomerArtifactRequest,
+    CreateCustomerUserRequest, CreateCustomerWorkloadRequest, CreateJobRequest,
+    CreateOrganizationRequest, CreatePixPaymentIntentRequest, CreateProjectRequest,
+    CreateProviderPayoutRequest, CreateReservationRequest, EnrollmentProofRequest,
+    GrantCustomerCreditsRequest, IssueProofChallengeRequest,
+    IssueRuntimeVerificationChallengeRequest, JOB_ARTIFACT_UPLOAD_VERSION,
+    JobArtifactUploadResponse, JobEventRequest, KeyRotationProofRequest, RevokeEvidenceRequest,
+    RunMarketplaceListingSweepRequest, RunSchedulerRequest, RunTrustSweepRequest,
+    RunVerificationSweepRequest, RunWorkloadEligibilityRequest, ServerControlMessage,
+    SettleReservationBillingRequest, Sha256Accumulator, SignedBenchmarkResult,
+    SignedDeviceGpuInventory, SignedProofCapabilityResponse, SignedProviderRuntimeObservation,
     SignedRuntimeVerificationResponse, SignedSecurityPosture, StartEnrollmentRequest,
     StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
     SubmitJobResultRequest, SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
     UpsertMarketplacePriceRequest, UpsertProjectQuotaRequest, UpsertProviderPayoutAccountRequest,
-    UpsertWorkloadPolicyRequest, create_private_file_new, hash_canonical, sha256_hex,
+    UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
 };
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
@@ -401,6 +402,18 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/customer/projects/{project_id}/workloads",
             post(create_customer_workload),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/artifacts",
+            post(create_customer_artifact),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/content",
+            put(upload_customer_artifact),
+        )
+        .route(
+            "/v1/customer/projects/{project_id}/artifacts/{artifact_id}/finalize",
+            post(finalize_customer_artifact),
         )
         .route(
             "/v1/customer/projects/{project_id}/usage",
@@ -1702,6 +1715,205 @@ async fn create_customer_workload(
     }
 }
 
+async fn create_customer_artifact(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateCustomerArtifactRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    let idempotency_key = required_idempotency_key(&headers, &request_id)?;
+    let request_hash = hash_canonical(&payload)
+        .map_err(|error| ApiError::invalid_request(error, request_id.clone()))?;
+    let outcome = state
+        .db
+        .create_customer_artifact_idempotently(CreateCustomerArtifactCommand {
+            request_id: request_id.clone(),
+            scope: format!("POST /v1/customer/projects/{project_id}/artifacts"),
+            idempotency_key,
+            request_hash,
+            auth,
+            project_id,
+            request: payload,
+        })
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    match outcome {
+        CreateCustomerArtifactOutcome::Response(record) => {
+            let value = serde_json::from_str::<serde_json::Value>(&record.response_json).map_err(
+                |error| ApiError::invalid_request(error.to_string(), request_id.clone()),
+            )?;
+            let status = StatusCode::from_u16(record.status_code).unwrap_or(StatusCode::OK);
+            Ok((status, Json(value)).into_response())
+        }
+        CreateCustomerArtifactOutcome::Conflict => Err(ApiError::idempotency_conflict(request_id)),
+    }
+}
+
+async fn upload_customer_artifact(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, artifact_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    let authorized = state
+        .db
+        .authorize_customer_artifact_upload(&auth, &project_id, &artifact_id)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    let expected = &authorized.artifact;
+    let content_length = required_content_length(&headers, expected.size_bytes, &request_id)?;
+    if content_length != expected.size_bytes {
+        return Err(ApiError::invalid_request(
+            "artifact Content-Length does not match its declaration",
+            request_id,
+        ));
+    }
+    let declared_digest = required_artifact_digest(&headers, &request_id)?;
+    if declared_digest != expected.sha256 {
+        return Err(ApiError::invalid_request(
+            "artifact digest does not match its declaration",
+            request_id,
+        ));
+    }
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream");
+    if expected
+        .content_type
+        .as_deref()
+        .is_some_and(|declared| declared != content_type)
+    {
+        return Err(ApiError::invalid_request(
+            "artifact Content-Type does not match its declaration",
+            request_id,
+        ));
+    }
+
+    let destination =
+        writable_object_path(&state.config.object_storage_dir, &authorized.object_key)
+            .map_err(|_| artifact_storage_error(&request_id))?;
+    let temporary =
+        destination.with_file_name(format!(".burd-upload-{}.tmp", Uuid::new_v4().simple()));
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Bytes>(4);
+    let writer_digest = declared_digest.clone();
+    let writer = tokio::task::spawn_blocking(move || {
+        write_upload_stream(
+            &temporary,
+            receiver,
+            content_length,
+            content_length,
+            &writer_digest,
+        )
+    });
+    let mut stream = body.into_data_stream();
+    let mut received = 0_u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| {
+            ApiError::invalid_request("artifact upload body is invalid", request_id.clone())
+        })?;
+        received = received
+            .checked_add(chunk.len() as u64)
+            .filter(|size| *size <= content_length)
+            .ok_or_else(|| {
+                ApiError::invalid_request(
+                    "artifact upload exceeds its declared size",
+                    request_id.clone(),
+                )
+            })?;
+        sender
+            .send(chunk)
+            .await
+            .map_err(|_| artifact_storage_error(&request_id))?;
+    }
+    drop(sender);
+    if received != content_length {
+        return Err(ApiError::invalid_request(
+            "artifact upload size does not match Content-Length",
+            request_id,
+        ));
+    }
+    let written = writer
+        .await
+        .map_err(|_| artifact_storage_error(&request_id))?
+        .map_err(|_| artifact_storage_error(&request_id))?;
+    finalize_uploaded_object(
+        &written.temporary,
+        &destination,
+        &written.sha256,
+        written.size_bytes,
+    )
+    .map_err(|_| artifact_storage_error(&request_id))?;
+    let artifact = state
+        .db
+        .record_customer_artifact_upload(
+            &auth,
+            &project_id,
+            &artifact_id,
+            &written.sha256,
+            written.size_bytes,
+        )
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    Ok(sensitive_json_response(
+        StatusCode::OK,
+        burd_protocol::CustomerArtifactResponse {
+            request_id,
+            artifact,
+            duplicate: false,
+        },
+    ))
+}
+
+async fn finalize_customer_artifact(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, artifact_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::CustomerArtifactResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_customer_headers(&state, &headers, Some(&project_id), &request_id).await?;
+    let authorized = state
+        .db
+        .authorize_customer_artifact_finalize(&auth, &project_id, &artifact_id)
+        .await
+        .map_err(|error| session_api_error(error, request_id.clone()))?;
+    let path = existing_object_path(&state.config.object_storage_dir, &authorized.object_key)
+        .map_err(|_| artifact_storage_error(&request_id))?;
+    let expected_size = authorized.artifact.size_bytes;
+    let expected_sha256 = authorized.artifact.sha256.clone();
+    let object_matches = tokio::task::spawn_blocking(move || {
+        let metadata = fs::metadata(&path)
+            .map_err(|error| format!("artifact metadata inspection failed: {error}"))?;
+        let stored_digest = hash_file(&path)?;
+        Ok::<bool, String>(
+            metadata.is_file()
+                && metadata.len() == expected_size
+                && stored_digest == expected_sha256,
+        )
+    })
+    .await
+    .map_err(|_| artifact_storage_error(&request_id))?
+    .map_err(|_| artifact_storage_error(&request_id))?;
+    if !object_matches {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            ErrorCode::Conflict,
+            "customer artifact object does not match its declaration",
+            request_id,
+        ));
+    }
+    state
+        .db
+        .finalize_customer_artifact(&request_id, &auth, &project_id, &artifact_id)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
 async fn list_project_reservations(
     State(state): State<Arc<AppState>>,
     Path(project_id): Path<String>,
@@ -2132,7 +2344,7 @@ fn write_upload_stream(
     maximum_size: u64,
     declared_digest: &str,
 ) -> Result<WrittenUpload, String> {
-    let mut file = create_private_file_new(temporary)?;
+    let mut file = create_object_upload_file(temporary)?;
     let mut digest = Sha256Accumulator::new();
     let mut written = 0_u64;
     let result = (|| {
@@ -2165,6 +2377,20 @@ fn write_upload_stream(
         let _ = fs::remove_file(temporary);
     }
     result
+}
+
+#[cfg(windows)]
+fn create_object_upload_file(path: &FilePath) -> Result<File, String> {
+    std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| format!("artifact upload file creation failed: {error}"))
+}
+
+#[cfg(not(windows))]
+fn create_object_upload_file(path: &FilePath) -> Result<File, String> {
+    burd_protocol::create_private_file_new(path)
 }
 
 fn stream_file_chunks(
@@ -4119,6 +4345,128 @@ mod tests {
         db.drop_schema_for_test().await.unwrap();
     }
 
+    #[tokio::test]
+    #[ignore]
+    async fn live_customer_artifact_http_flow_uploads_verifies_and_finalizes_bytes() {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
+            .expect("BURD_CONTROL_TEST_DATABASE_URL is required for the ignored database test");
+        let schema = format!("burd_http_artifact_{}", Uuid::new_v4().simple());
+        let object_storage_dir = format!("target/test-control-objects/{schema}");
+        let mut config = test_config(&url);
+        config.database_schema = Some(schema.clone());
+        config.object_storage_dir = object_storage_dir.clone();
+        let db = Database::new(url, Some(schema)).unwrap();
+        db.migrate().await.unwrap();
+        fs::create_dir_all(&object_storage_dir).unwrap();
+        let client = db.connect().await.unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        let customer_token = "customer-artifact-token";
+        client
+            .execute(
+                "INSERT INTO organizations (organization_id, schema_version, display_name, status, created_at, updated_at) VALUES ('org_http_artifact', 'burd-customer-organization-v1', 'Org', 'active', $1, $1)",
+                &[&now],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO projects (project_id, organization_id, schema_version, display_name, status, created_at, updated_at) VALUES ('project_http_artifact', 'org_http_artifact', 'burd-customer-project-v1', 'Project', 'active', $1, $1)",
+                &[&now],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO customer_api_keys (api_key_id, organization_id, project_id, schema_version, key_prefix, key_hash, status, scopes_json, created_at) VALUES ('api_key_http_artifact', 'org_http_artifact', 'project_http_artifact', 'burd-customer-api-key-v1', 'customer-', $1, 'active', '[\"artifacts:write\"]', $2)",
+                &[&sha256_hex(customer_token.as_bytes()), &now],
+            )
+            .await
+            .unwrap();
+        let app = router(Arc::new(AppState::new(config, db.clone())));
+        let payload = b"customer-artifact-bytes";
+        let digest = format!("sha256:{}", sha256_hex(payload));
+        let create_body = serde_json::to_string(&serde_json::json!({
+            "client_artifact_id": "customer-input-1",
+            "sha256": digest,
+            "size_bytes": payload.len(),
+            "content_type": "application/octet-stream",
+            "retention_seconds": 3600
+        }))
+        .unwrap();
+        let authorization = format!("Bearer {customer_token}");
+        let created = send_request(
+            app.clone(),
+            Method::POST,
+            "/v1/customer/projects/project_http_artifact/artifacts",
+            Some(&create_body),
+            &[
+                ("authorization", authorization.as_str()),
+                ("idempotency-key", "customer-artifact-http-key"),
+            ],
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let created = response_json(created).await;
+        let artifact_id = created["artifact"]["artifact_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(created["artifact"]["status"], "pending_upload");
+        assert!(created.get("object_key").is_none());
+        assert!(!created.to_string().contains("credential"));
+
+        let upload = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(format!(
+                        "/v1/customer/projects/project_http_artifact/artifacts/{artifact_id}/content"
+                    ))
+                    .header("authorization", authorization.as_str())
+                    .header("content-type", "application/octet-stream")
+                    .header("content-length", payload.len())
+                    .header("x-burd-content-sha256", digest.as_str())
+                    .body(Body::from(payload.as_slice()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upload.status(), StatusCode::OK);
+        let upload = response_json(upload).await;
+        assert_eq!(upload["artifact"]["status"], "uploaded");
+
+        let finalize_uri =
+            format!("/v1/customer/projects/project_http_artifact/artifacts/{artifact_id}/finalize");
+        let finalized = send_request(
+            app.clone(),
+            Method::POST,
+            &finalize_uri,
+            None,
+            &[("authorization", authorization.as_str())],
+        )
+        .await;
+        assert_eq!(finalized.status(), StatusCode::OK);
+        let finalized = response_json(finalized).await;
+        assert_eq!(finalized["artifact"]["status"], "ready");
+        assert_eq!(finalized["duplicate"], false);
+
+        let replay = send_request(
+            app,
+            Method::POST,
+            &finalize_uri,
+            None,
+            &[("authorization", authorization.as_str())],
+        )
+        .await;
+        assert_eq!(replay.status(), StatusCode::OK);
+        let replay = response_json(replay).await;
+        assert_eq!(replay["duplicate"], true);
+
+        db.drop_schema_for_test().await.unwrap();
+        let _ = fs::remove_dir_all(object_storage_dir);
+    }
+
     struct LiveHttpFixture {
         app: Router,
         db: Database,
@@ -5735,7 +6083,7 @@ mod tests {
 
     #[test]
     fn upload_writer_streams_exact_size_and_digest() {
-        let root = std::env::temp_dir().join(format!(
+        let root = FilePath::new("target/test-control-objects").join(format!(
             "burd-artifact-upload-test-{}",
             Uuid::new_v4().simple()
         ));
@@ -5759,6 +6107,47 @@ mod tests {
         assert_eq!(written.sha256, digest);
         assert_eq!(written.size_bytes, payload.len() as u64);
         assert_eq!(fs::read(&temporary).unwrap(), payload);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn upload_writer_rejects_oversized_and_digest_mismatched_streams() {
+        let root = FilePath::new("target/test-control-objects").join(format!(
+            "burd-artifact-invalid-upload-test-{}",
+            Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&root).unwrap();
+
+        for (name, declared_size, declared_digest) in [
+            (
+                "oversized.tmp",
+                3,
+                format!("sha256:{}", sha256_hex(b"four")),
+            ),
+            (
+                "digest-mismatch.tmp",
+                4,
+                format!("sha256:{}", "0".repeat(64)),
+            ),
+        ] {
+            let temporary = root.join(name);
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            sender.try_send(Bytes::from_static(b"four")).unwrap();
+            drop(sender);
+
+            assert!(
+                write_upload_stream(
+                    &temporary,
+                    receiver,
+                    declared_size,
+                    declared_size,
+                    &declared_digest,
+                )
+                .is_err()
+            );
+            assert!(!temporary.exists());
+        }
+
         fs::remove_dir_all(root).unwrap();
     }
 }

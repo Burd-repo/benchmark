@@ -2,6 +2,7 @@ pub mod benchmark_profile;
 pub mod billing;
 pub mod challenge;
 pub mod customer;
+pub mod customer_artifact;
 pub mod customer_compute;
 pub mod enrollment;
 pub mod evidence;
@@ -79,6 +80,11 @@ pub use customer::{
     MarketplaceReservationResponse, OrganizationMembershipRecord, OrganizationRecord,
     OrganizationResponse, ProjectQuotaRecord, ProjectQuotaResponse, ProjectRecord, ProjectResponse,
     UpsertProjectQuotaRequest,
+};
+pub use customer_artifact::{
+    CUSTOMER_ARTIFACT_SCHEMA_VERSION, CUSTOMER_ARTIFACT_UPLOAD_INTENT_SCHEMA_VERSION,
+    CreateCustomerArtifactRequest, CustomerArtifactRecord, CustomerArtifactResponse,
+    CustomerArtifactUploadIntentResponse, CustomerArtifactUploadTarget,
 };
 pub use customer_compute::{
     COMPUTE_REQUIREMENTS_SCHEMA_VERSION, CUSTOMER_WORKLOAD_SCHEMA_VERSION, ComputeRequirements,

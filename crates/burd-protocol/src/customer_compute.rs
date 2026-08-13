@@ -30,6 +30,8 @@ pub struct CreateCustomerWorkloadRequest {
     pub client_workload_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reservation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_artifact_ids: Vec<String>,
     pub workload_type: String,
     pub requirements: ComputeRequirements,
     #[serde(default)]
@@ -72,6 +74,7 @@ mod tests {
         CreateCustomerWorkloadRequest {
             client_workload_id: Some("customer-request-1".to_string()),
             reservation_id: Some("reservation_1".to_string()),
+            input_artifact_ids: vec!["artifact_1".to_string()],
             workload_type: "llm_realtime_api".to_string(),
             requirements: ComputeRequirements {
                 gpu_count: 1,
@@ -104,6 +107,7 @@ mod tests {
             );
         }
         assert_eq!(value["reservation_id"], "reservation_1");
+        assert_eq!(value["input_artifact_ids"][0], "artifact_1");
     }
 
     #[test]

@@ -5,7 +5,8 @@ use crate::runtime_admission::{
 };
 use burd_protocol::{
     CUSTOMER_WORKLOAD_SCHEMA_VERSION, ComputeRequirements, CreateCustomerWorkloadRequest,
-    CustomerWorkloadRecord, CustomerWorkloadResponse, JOB_SCHEMA_VERSION, PLACEMENT_SCHEMA_VERSION,
+    CustomerWorkloadRecord, CustomerWorkloadResponse, JOB_SCHEMA_VERSION, JobArtifact,
+    PLACEMENT_SCHEMA_VERSION,
 };
 use chrono::Utc;
 use tokio_postgres::{Row, Transaction};
@@ -14,6 +15,7 @@ use uuid::Uuid;
 const DEFAULT_WORKLOAD_TIMEOUT_SECONDS: u32 = 3_600;
 const MAX_WORKLOAD_TIMEOUT_SECONDS: u32 = 24 * 60 * 60;
 const PLACEMENT_CANDIDATE_LIMIT: usize = 16;
+const MAX_WORKLOAD_INPUT_ARTIFACTS: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct CreateCustomerWorkloadCommand {
@@ -66,6 +68,7 @@ struct CustomerWorkloadAudit<'a> {
     job_id: &'a str,
     listing_id: &'a str,
     reservation_id: Option<&'a str>,
+    input_artifact_ids: &'a [String],
     occurred_at: &'a str,
 }
 
@@ -179,6 +182,15 @@ impl Database {
         let requirements_json = serde_json::to_string(&command.request.requirements)
             .map_err(|error| SessionError::Invalid(error.to_string()))?;
         let parameters_json = normalized_json_object(&command.request.parameters)?;
+        let input_artifacts = load_ready_input_artifacts(
+            &transaction,
+            &project,
+            &command.request.input_artifact_ids,
+            &now_text,
+        )
+        .await?;
+        let input_artifacts_json = serde_json::to_string(&input_artifacts)
+            .map_err(|error| SessionError::Invalid(error.to_string()))?;
         transaction
             .execute(
                 "INSERT INTO customer_workloads (workload_id, organization_id, project_id, reservation_id, schema_version, client_workload_id, workload_type, requirements_json, parameters_json, timeout_seconds, status, idempotency_key, request_hash, job_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $12, NULL, $13, $13)",
@@ -237,7 +249,7 @@ impl Database {
             load_backend_execution_contract(&transaction, &command.request.workload_type).await?;
         transaction
             .execute(
-                "INSERT INTO compute_jobs (job_id, client_job_id, provider_id, device_id, session_id, schema_version, workload_type, template_id, image_ref, gpu_uuid, backend, parameters_json, input_artifacts_json, expected_outputs_json, result_artifacts_json, result_metrics_json, policy_id, policy_version, status, timeout_seconds, workload_id, placement_id, reservation_id, created_at, updated_at) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, 'cuda', $10, '[]', '[]', '[]', '{}', $11, $12, 'queued', $13, $14, $15, $16, $17, $17)",
+                "INSERT INTO compute_jobs (job_id, client_job_id, provider_id, device_id, session_id, schema_version, workload_type, template_id, image_ref, gpu_uuid, backend, parameters_json, input_artifacts_json, expected_outputs_json, result_artifacts_json, result_metrics_json, policy_id, policy_version, status, timeout_seconds, workload_id, placement_id, reservation_id, created_at, updated_at) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, 'cuda', $10, $11, '[]', '[]', '{}', $12, $13, 'queued', $14, $15, $16, $17, $18, $18)",
                 &[
                     &job_id,
                     &candidate.provider_id,
@@ -249,6 +261,7 @@ impl Database {
                     &image_ref,
                     &candidate.gpu_uuid,
                     &parameters_json,
+                    &input_artifacts_json,
                     &candidate.policy_id,
                     &candidate.policy_version,
                     &(timeout_seconds as i32),
@@ -259,6 +272,14 @@ impl Database {
                 ],
             )
             .await?;
+        for artifact in &input_artifacts {
+            transaction
+                .execute(
+                    "INSERT INTO customer_workload_input_artifacts (workload_id, project_id, artifact_id, bound_at) VALUES ($1, $2, $3, $4)",
+                    &[&workload_id, &project.project_id, &artifact.artifact_id, &now_text],
+                )
+                .await?;
+        }
         if let Some(reservation) = reservation.as_ref() {
             let consumed = transaction
                 .execute(
@@ -291,6 +312,7 @@ impl Database {
                 reservation_id: reservation
                     .as_ref()
                     .map(|reservation| reservation.reservation_id.as_str()),
+                input_artifact_ids: &command.request.input_artifact_ids,
                 occurred_at: &now_text,
             },
         )
@@ -577,6 +599,7 @@ async fn insert_customer_audit_event(
         "job_id": audit.job_id,
         "listing_id": audit.listing_id,
         "reservation_id": audit.reservation_id,
+        "input_artifact_ids": audit.input_artifact_ids,
     })
     .to_string();
     transaction
@@ -602,6 +625,21 @@ fn validate_workload_request(request: &CreateCustomerWorkloadRequest) -> Result<
     }
     if let Some(reservation_id) = request.reservation_id.as_deref() {
         validate_id("reservation_id", reservation_id, 128)?;
+    }
+    if request.input_artifact_ids.len() > MAX_WORKLOAD_INPUT_ARTIFACTS {
+        return Err(SessionError::Invalid(
+            "too many workload input artifacts".to_string(),
+        ));
+    }
+    let mut input_ids = request.input_artifact_ids.clone();
+    input_ids.sort();
+    if input_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(SessionError::Invalid(
+            "workload input artifact IDs must be unique".to_string(),
+        ));
+    }
+    for artifact_id in &request.input_artifact_ids {
+        validate_id("input_artifact_id", artifact_id, 128)?;
     }
     validate_id("workload_type", &request.workload_type, 96)?;
     if request.requirements.gpu_count != 1 {
@@ -656,6 +694,43 @@ fn validate_workload_request(request: &CreateCustomerWorkloadRequest) -> Result<
     }
     normalized_json_object(&request.parameters)?;
     Ok(())
+}
+
+async fn load_ready_input_artifacts(
+    transaction: &Transaction<'_>,
+    project: &ProjectAccess,
+    artifact_ids: &[String],
+    now: &str,
+) -> Result<Vec<JobArtifact>, SessionError> {
+    let mut artifacts = Vec::with_capacity(artifact_ids.len());
+    for artifact_id in artifact_ids {
+        let row = transaction
+            .query_opt(
+                "SELECT artifact_id, object_key, sha256, size_bytes, content_type, status, expires_at FROM customer_artifacts WHERE artifact_id = $1 AND project_id = $2 AND organization_id = $3 FOR SHARE",
+                &[&artifact_id, &project.project_id, &project.organization_id],
+            )
+            .await?
+            .ok_or_else(|| SessionError::NotFound("customer input artifact not found".to_string()))?;
+        if row.get::<_, String>("status") != "ready"
+            || row.get::<_, String>("expires_at").as_str() <= now
+        {
+            return Err(SessionError::Conflict(
+                "customer input artifact is not ready or has expired".to_string(),
+            ));
+        }
+        let size = row.get::<_, i64>("size_bytes");
+        artifacts.push(JobArtifact {
+            artifact_id: row.get("artifact_id"),
+            role: "input".to_string(),
+            object_key: row.get("object_key"),
+            sha256: Some(row.get("sha256")),
+            size_bytes: Some(u64::try_from(size).map_err(|_| {
+                SessionError::Invalid("customer input artifact size is invalid".to_string())
+            })?),
+            content_type: row.get("content_type"),
+        });
+    }
+    Ok(artifacts)
 }
 
 fn normalized_json_object(value: &serde_json::Value) -> Result<String, SessionError> {
@@ -733,6 +808,7 @@ mod tests {
         CreateCustomerWorkloadRequest {
             client_workload_id: Some("request-1".to_string()),
             reservation_id: None,
+            input_artifact_ids: Vec::new(),
             workload_type: "llm_realtime_api".to_string(),
             requirements: ComputeRequirements {
                 gpu_count: 1,
@@ -1062,6 +1138,131 @@ mod tests {
                 .starts_with("placement_")
         );
         assert_eq!(row.get::<_, String>("status"), "queued");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_binds_only_ready_same_project_artifacts_into_job_manifest() {
+        let db = crate::scheduler::tests::postgres_test_database("burd_customer_compute_artifacts")
+            .await;
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        let expires_at = (now + chrono::Duration::hours(1)).to_rfc3339();
+        let client = db.connect().await.unwrap();
+        seed_customer_context(&client, "artifact_bind", &now_text).await;
+        seed_marketplace_supply(&client, "artifact_bind", now, 1_000_000, true).await;
+        client
+            .execute(
+                "INSERT INTO customer_artifacts (artifact_id, organization_id, project_id, schema_version, status, object_key, sha256, size_bytes, content_type, upload_expires_at, expires_at, verified_sha256, verified_size_bytes, uploaded_at, ready_at, idempotency_key, request_hash, created_at, updated_at) VALUES ('artifact_ready', 'org_artifact_bind', 'project_artifact_bind', 'burd-customer-artifact-v1', 'ready', 'customer-artifacts/artifact_ready/content', $1, 12, 'application/json', $2, $2, $1, 12, $3, $3, 'artifact-ready-key', 'artifact-ready-hash', $3, $3)",
+                &[&format!("sha256:{}", "a".repeat(64)), &expires_at, &now_text],
+            )
+            .await
+            .unwrap();
+        let mut command = workload_command(
+            "artifact_bind",
+            "workload-artifact-key",
+            "artifact-workload",
+        );
+        command.request.input_artifact_ids = vec!["artifact_ready".to_string()];
+        command.request_hash = burd_protocol::hash_canonical(&command.request).unwrap();
+        let outcome = db
+            .create_customer_workload_idempotently(
+                command,
+                &crate::scheduler::tests::runtime_policy(),
+            )
+            .await
+            .unwrap();
+        let CreateCustomerWorkloadOutcome::Response(record) = outcome else {
+            panic!("expected workload response");
+        };
+        let response: CustomerWorkloadResponse =
+            serde_json::from_str(&record.response_json).unwrap();
+        let row = client
+            .query_one(
+                "SELECT input_artifacts_json FROM compute_jobs WHERE job_id = $1",
+                &[&response.workload.job_id.unwrap()],
+            )
+            .await
+            .unwrap();
+        let manifest: Vec<JobArtifact> =
+            serde_json::from_str(&row.get::<_, String>("input_artifacts_json")).unwrap();
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(manifest[0].artifact_id, "artifact_ready");
+        assert_eq!(manifest[0].role, "input");
+        assert_eq!(manifest[0].size_bytes, Some(12));
+        let binding_count = client
+            .query_one(
+                "SELECT COUNT(*) AS count FROM customer_workload_input_artifacts WHERE artifact_id = 'artifact_ready'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>("count");
+        assert_eq!(binding_count, 1);
+        assert!(
+            client
+                .execute(
+                    "DELETE FROM customer_artifacts WHERE artifact_id = 'artifact_ready'",
+                    &[],
+                )
+                .await
+                .is_err(),
+            "a workload-bound artifact must remain protected by its foreign key"
+        );
+        db.drop_schema_for_test().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_rejects_incomplete_or_cross_project_workload_artifacts() {
+        let db = crate::scheduler::tests::postgres_test_database(
+            "burd_customer_compute_artifact_reject",
+        )
+        .await;
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        let expires_at = (now + chrono::Duration::hours(1)).to_rfc3339();
+        let client = db.connect().await.unwrap();
+        seed_customer_context(&client, "artifact_reject", &now_text).await;
+        client
+            .execute(
+                "INSERT INTO organizations (organization_id, schema_version, display_name, status, created_at, updated_at) VALUES ('org_artifact_other', 'burd-customer-organization-v1', 'Other Org', 'active', $1, $1)",
+                &[&now_text],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO projects (project_id, organization_id, schema_version, display_name, status, created_at, updated_at) VALUES ('project_artifact_other', 'org_artifact_other', 'burd-customer-project-v1', 'Other Project', 'active', $1, $1)",
+                &[&now_text],
+            )
+            .await
+            .unwrap();
+        seed_marketplace_supply(&client, "artifact_reject", now, 1_000_000, true).await;
+        client
+            .execute(
+                "INSERT INTO customer_artifacts (artifact_id, organization_id, project_id, schema_version, status, object_key, sha256, size_bytes, upload_expires_at, expires_at, idempotency_key, request_hash, created_at, updated_at) VALUES ('artifact_pending', 'org_artifact_reject', 'project_artifact_reject', 'burd-customer-artifact-v1', 'pending_upload', 'customer-artifacts/artifact_pending/content', $1, 12, $2, $2, 'pending-key', 'pending-hash', $3, $3), ('artifact_other', 'org_artifact_other', 'project_artifact_other', 'burd-customer-artifact-v1', 'pending_upload', 'customer-artifacts/artifact_other/content', $1, 12, $2, $2, 'other-key', 'other-hash', $3, $3)",
+                &[&format!("sha256:{}", "a".repeat(64)), &expires_at, &now_text],
+            )
+            .await
+            .unwrap();
+        for (key, artifact_id) in [
+            ("pending-workload", "artifact_pending"),
+            ("cross-project-workload", "artifact_other"),
+        ] {
+            let mut command = workload_command("artifact_reject", key, key);
+            command.request.input_artifact_ids = vec![artifact_id.to_string()];
+            command.request_hash = burd_protocol::hash_canonical(&command.request).unwrap();
+            assert!(
+                db.create_customer_workload_idempotently(
+                    command,
+                    &crate::scheduler::tests::runtime_policy(),
+                )
+                .await
+                .is_err()
+            );
+        }
+        db.drop_schema_for_test().await.unwrap();
     }
 
     #[tokio::test]
