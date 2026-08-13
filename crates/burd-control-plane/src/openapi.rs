@@ -2931,6 +2931,7 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
             "required": ["workload_type", "requirements"],
             "properties": {
                 "client_workload_id": { "type": ["string", "null"] },
+                "reservation_id": { "type": ["string", "null"], "description": "Optional customer-owned commercial reservation. The Control Plane still selects and verifies physical execution fields from the reservation binding." },
                 "workload_type": { "type": "string" },
                 "requirements": { "$ref": "#/components/schemas/ComputeRequirements" },
                 "parameters": { "type": "object", "additionalProperties": true },
@@ -2949,6 +2950,7 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
                 "project_id": { "type": "string" },
                 "schema_version": { "type": "string", "const": "burd-customer-workload-v1" },
                 "client_workload_id": { "type": ["string", "null"] },
+                "reservation_id": { "type": ["string", "null"] },
                 "workload_type": { "type": "string" },
                 "requirements": { "$ref": "#/components/schemas/ComputeRequirements" },
                 "status": { "type": "string", "enum": ["queued", "placed", "placement_failed", "cancelled"] },
@@ -3495,7 +3497,7 @@ fn add_jobs_scheduler_reservation_contracts(document: &mut serde_json::Value) {
                 "schema_version": { "type": "string", "const": "burd-marketplace-reservation-v1" },
                 "workload_type": { "type": "string" },
                 "gpu_uuid": { "type": ["string", "null"] },
-                "status": { "type": "string", "enum": ["reserved", "cancelled", "expired"] },
+                "status": { "type": "string", "enum": ["reserved", "consumed", "released", "cancelled", "expired"] },
                 "starts_at": { "type": "string", "format": "date-time" },
                 "expires_at": { "type": "string", "format": "date-time" },
                 "cancelled_at": { "type": ["string", "null"], "format": "date-time" },
@@ -4889,6 +4891,16 @@ mod tests {
         assert_eq!(
             schemas["ProviderJobCancellationPolicy"]["properties"]["max_control_silence_seconds"]["minimum"],
             1
+        );
+        assert!(
+            schemas["CreateCustomerWorkloadRequest"]["properties"]
+                .get("reservation_id")
+                .is_some()
+        );
+        assert!(
+            schemas["CustomerWorkloadRecord"]["properties"]
+                .get("reservation_id")
+                .is_some()
         );
 
         let paths = document["paths"].as_object().unwrap();
