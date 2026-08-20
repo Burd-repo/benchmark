@@ -3218,6 +3218,7 @@ async fn handle_control_channel(
         payload: serde_json::json!({
             "heartbeat_interval_seconds": authorized.heartbeat_interval_seconds,
             "missed_heartbeat_limit": authorized.missed_heartbeat_limit,
+            "protocol_negotiation": authorized.protocol_negotiation,
         }),
     };
     if send_server_message(&mut socket, &ready).await.is_err() {
@@ -5206,6 +5207,10 @@ mod tests {
         let ready = live_server_control_message(socket.next().await.unwrap().unwrap());
         assert_eq!(ready.session_id, fixture.session_id);
         assert_eq!(ready.message_type, "session_ready");
+        assert_eq!(
+            ready.payload["protocol_negotiation"]["status"],
+            "legacy_unnegotiated"
+        );
         assert_eq!(ready.sequence_ack, 0);
         assert_eq!(ready.payload["heartbeat_interval_seconds"], 15);
         assert_eq!(ready.payload["missed_heartbeat_limit"], 3);

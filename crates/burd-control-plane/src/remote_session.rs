@@ -1,5 +1,6 @@
 use crate::db::{Database, DbError, NewAuditEvent, insert_audit_event};
 use crate::enrollment::{DeviceAuth, EnrollmentError, authenticate_device};
+use crate::protocol_negotiation::{current_agent_protocol_policy, negotiate_agent_protocol};
 use burd_protocol::{
     ClientControlMessage, HeartbeatPayload, HeartbeatReceipt, RemoteSessionRecord,
     RemoteSessionRevocationResponse, RemoteSessionStatus, StartRemoteSessionRequest,
@@ -76,6 +77,7 @@ pub struct AuthorizedSession {
     pub sequence_last: u64,
     pub heartbeat_interval_seconds: u32,
     pub missed_heartbeat_limit: u32,
+    pub protocol_negotiation: burd_protocol::RemoteSessionProtocolNegotiation,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -192,6 +194,23 @@ impl Database {
         let expires_at = (now + Duration::seconds(i64::from(policy.ttl_seconds))).to_rfc3339();
         let capabilities_json = serde_json::to_string(&request.capabilities)
             .map_err(|error| SessionError::Invalid(error.to_string()))?;
+        let (protocol_negotiation, declared_versions, declared_capabilities) =
+            negotiate_agent_protocol(
+                &request.agent_version,
+                &request.supported_protocol_versions,
+                &request.supported_capabilities,
+                &current_agent_protocol_policy(),
+            )?;
+        let declared_versions_json = serde_json::to_string(&declared_versions)
+            .map_err(|error| SessionError::Invalid(error.to_string()))?;
+        let declared_capabilities_json = serde_json::to_string(&declared_capabilities)
+            .map_err(|error| SessionError::Invalid(error.to_string()))?;
+        let accepted_capabilities_json =
+            serde_json::to_string(&protocol_negotiation.accepted_capabilities)
+                .map_err(|error| SessionError::Invalid(error.to_string()))?;
+        let protocol_reason_codes_json = serde_json::to_string(&protocol_negotiation.reason_codes)
+            .map_err(|error| SessionError::Invalid(error.to_string()))?;
+        let protocol_status = protocol_negotiation.status.as_str();
 
         let mut response = if let Some(resume) = &request.resume {
             let resume_hash = sha256_hex(resume.resume_token.as_bytes());
@@ -218,8 +237,8 @@ impl Database {
             let sequence_last = row.get::<_, i64>("sequence_last").max(0) as u64;
             transaction
                 .execute(
-                    "UPDATE provider_sessions SET status = 'pending_connection', hardware_fingerprint = $1, agent_version = $2, capabilities_json = $3, latest_report_hash = $4, latest_challenge_id = $5, expires_at = $6, disconnect_reason = NULL, updated_at = $7 WHERE session_id = $8",
-                    &[&request.hardware_fingerprint, &request.agent_version, &capabilities_json, &request.latest_report_hash, &request.latest_challenge_id, &expires_at, &now.to_rfc3339(), &resume.session_id],
+                    "UPDATE provider_sessions SET status = 'pending_connection', hardware_fingerprint = $1, agent_version = $2, capabilities_json = $3, latest_report_hash = $4, latest_challenge_id = $5, expires_at = $6, disconnect_reason = NULL, updated_at = $7, negotiated_protocol_version = $8, protocol_negotiation_status = $9, declared_protocol_versions_json = $10, declared_protocol_capabilities_json = $11, accepted_protocol_capabilities_json = $12, protocol_policy_version = $13, protocol_reason_codes_json = $14, protocol_negotiated_at = $15 WHERE session_id = $16",
+                    &[&request.hardware_fingerprint, &request.agent_version, &capabilities_json, &request.latest_report_hash, &request.latest_challenge_id, &expires_at, &now.to_rfc3339(), &protocol_negotiation.selected_protocol_version, &protocol_status, &declared_versions_json, &declared_capabilities_json, &accepted_capabilities_json, &protocol_negotiation.policy_version, &protocol_reason_codes_json, &protocol_negotiation.negotiated_at, &resume.session_id],
                 )
                 .await?;
             StartRemoteSessionResponse {
@@ -234,6 +253,7 @@ impl Database {
                 telemetry_sequence_start: row.get::<_, i64>("telemetry_sequence_last").max(0)
                     as u64,
                 control_url,
+                protocol_negotiation: protocol_negotiation.clone(),
             }
         } else {
             let active = transaction
@@ -253,8 +273,8 @@ impl Database {
             let started_at = now.to_rfc3339();
             transaction
                 .execute(
-                    "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, resume_token_hash, hardware_fingerprint, agent_version, capabilities_json, latest_report_hash, latest_challenge_id, heartbeat_interval_seconds, missed_heartbeat_limit, updated_at) VALUES ($1, $2, $3, 'pending_connection', 0, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $4)",
-                    &[&session_id, &auth.provider_id, &auth.device_id, &started_at, &expires_at, &resume_token_hash, &request.hardware_fingerprint, &request.agent_version, &capabilities_json, &request.latest_report_hash, &request.latest_challenge_id, &(policy.heartbeat_interval_seconds as i32), &(policy.missed_heartbeat_limit as i32)],
+                    "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, resume_token_hash, hardware_fingerprint, agent_version, capabilities_json, latest_report_hash, latest_challenge_id, heartbeat_interval_seconds, missed_heartbeat_limit, updated_at, negotiated_protocol_version, protocol_negotiation_status, declared_protocol_versions_json, declared_protocol_capabilities_json, accepted_protocol_capabilities_json, protocol_policy_version, protocol_reason_codes_json, protocol_negotiated_at) VALUES ($1, $2, $3, 'pending_connection', 0, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $4, $14, $15, $16, $17, $18, $19, $20, $21)",
+                    &[&session_id, &auth.provider_id, &auth.device_id, &started_at, &expires_at, &resume_token_hash, &request.hardware_fingerprint, &request.agent_version, &capabilities_json, &request.latest_report_hash, &request.latest_challenge_id, &(policy.heartbeat_interval_seconds as i32), &(policy.missed_heartbeat_limit as i32), &protocol_negotiation.selected_protocol_version, &protocol_status, &declared_versions_json, &declared_capabilities_json, &accepted_capabilities_json, &protocol_negotiation.policy_version, &protocol_reason_codes_json, &protocol_negotiation.negotiated_at],
                 )
                 .await?;
             StartRemoteSessionResponse {
@@ -268,12 +288,20 @@ impl Database {
                 sequence_start: 0,
                 telemetry_sequence_start: 0,
                 control_url,
+                protocol_negotiation: protocol_negotiation.clone(),
             }
         };
 
         response.control_url = response
             .control_url
             .replace("{session_id}", &response.session_id);
+        let negotiation_audit_metadata = serde_json::json!({
+            "agent_version": request.agent_version,
+            "declared_protocol_versions": declared_versions,
+            "declared_capabilities": declared_capabilities,
+            "protocol_negotiation": protocol_negotiation,
+        })
+        .to_string();
         insert_audit_event(
             &transaction,
             NewAuditEvent {
@@ -289,7 +317,7 @@ impl Database {
                 },
                 idempotency_key: None,
                 summary: "remote provider session authorized",
-                metadata_json: "{}",
+                metadata_json: &negotiation_audit_metadata,
             },
         )
         .await?;
@@ -310,7 +338,7 @@ impl Database {
         let auth = authenticate_device(&transaction, device_id, credential).await?;
         let row = transaction
             .query_opt(
-                "SELECT session_id, provider_id, device_id, status, sequence_last, resume_token_hash, expires_at, heartbeat_interval_seconds, missed_heartbeat_limit FROM provider_sessions WHERE session_id = $1 FOR UPDATE",
+                "SELECT session_id, provider_id, device_id, status, sequence_last, resume_token_hash, expires_at, heartbeat_interval_seconds, missed_heartbeat_limit, negotiated_protocol_version, protocol_negotiation_status, accepted_protocol_capabilities_json, protocol_policy_version, protocol_reason_codes_json, protocol_negotiated_at FROM provider_sessions WHERE session_id = $1 FOR UPDATE",
                 &[&session_id],
             )
             .await?
@@ -339,6 +367,7 @@ impl Database {
             sequence_last: row.get::<_, i64>("sequence_last").max(0) as u64,
             heartbeat_interval_seconds: row.get::<_, i32>("heartbeat_interval_seconds") as u32,
             missed_heartbeat_limit: row.get::<_, i32>("missed_heartbeat_limit") as u32,
+            protocol_negotiation: protocol_negotiation_from_row(&row)?,
         };
         transaction.commit().await?;
         Ok(authorized)
@@ -679,6 +708,47 @@ fn parse_status(status: &str) -> Result<RemoteSessionStatus, SessionError> {
     }
 }
 
+fn protocol_negotiation_from_row(
+    row: &Row,
+) -> Result<burd_protocol::RemoteSessionProtocolNegotiation, SessionError> {
+    use burd_protocol::RemoteSessionProtocolNegotiationStatus as Status;
+    let raw_status: String = row.get("protocol_negotiation_status");
+    let status = match raw_status.as_str() {
+        "accepted" => Status::Accepted,
+        "upgrade_required" => Status::UpgradeRequired,
+        "incompatible_protocol" => Status::IncompatibleProtocol,
+        "missing_capabilities" => Status::MissingCapabilities,
+        "legacy_unnegotiated" => Status::LegacyUnnegotiated,
+        _ => {
+            return Err(SessionError::Invalid(
+                "invalid protocol negotiation status".to_string(),
+            ));
+        }
+    };
+    let parse_list = |column| -> Result<Vec<String>, SessionError> {
+        serde_json::from_str(&row.get::<_, String>(column)).map_err(|_| {
+            SessionError::Invalid("invalid persisted protocol negotiation".to_string())
+        })
+    };
+    let policy = current_agent_protocol_policy();
+    Ok(burd_protocol::RemoteSessionProtocolNegotiation {
+        status,
+        selected_protocol_version: row.get("negotiated_protocol_version"),
+        minimum_agent_version: policy.minimum_agent_version.to_string(),
+        required_capabilities: policy
+            .required_capabilities
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        accepted_capabilities: parse_list("accepted_protocol_capabilities_json")?,
+        policy_version: row
+            .get::<_, Option<String>>("protocol_policy_version")
+            .unwrap_or_default(),
+        reason_codes: parse_list("protocol_reason_codes_json")?,
+        negotiated_at: row.get("protocol_negotiated_at"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -740,6 +810,14 @@ mod tests {
             hardware_fingerprint: "sha256:fingerprint".to_string(),
             agent_version: "0.1.0".to_string(),
             capabilities: serde_json::json!({"backend": "cuda"}),
+            supported_protocol_versions: vec![
+                burd_protocol::AGENT_CONTROL_PROTOCOL_VERSION.to_string(),
+            ],
+            supported_capabilities: current_agent_protocol_policy()
+                .required_capabilities
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
             latest_report_hash: None,
             latest_challenge_id: None,
             resume: None,
@@ -760,6 +838,10 @@ mod tests {
             .unwrap();
         assert_eq!(started.status, RemoteSessionStatus::PendingConnection);
         assert!(started.control_url.contains(&started.session_id));
+        assert_eq!(
+            started.protocol_negotiation.status,
+            burd_protocol::RemoteSessionProtocolNegotiationStatus::Accepted
+        );
         assert!(matches!(
             db.start_remote_session(
                 "req_duplicate",
@@ -938,6 +1020,10 @@ mod tests {
             .unwrap();
         assert_eq!(resumed.sequence_start, 4);
         assert_eq!(resumed.telemetry_sequence_start, 1);
+        assert_eq!(
+            resumed.protocol_negotiation.status,
+            burd_protocol::RemoteSessionProtocolNegotiationStatus::Accepted
+        );
         let revoked = db
             .revoke_remote_session(&started.session_id, "req_revoke")
             .await

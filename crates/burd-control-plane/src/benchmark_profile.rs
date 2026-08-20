@@ -1128,6 +1128,7 @@ mod tests {
             sequence_last: 0,
             heartbeat_interval_seconds: 30,
             missed_heartbeat_limit: 3,
+            protocol_negotiation: burd_protocol::RemoteSessionProtocolNegotiation::default(),
         };
         let signed = signed_result("key_1", &keys.secret_key_base64);
         let response = db

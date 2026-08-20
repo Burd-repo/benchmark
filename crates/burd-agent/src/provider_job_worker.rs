@@ -213,6 +213,14 @@ impl LocalProviderJobControlPlane {
 impl ProviderJobControlPlane for LocalProviderJobControlPlane {
     fn next_job(&self) -> Result<ProviderJobPoll, ProviderJobControlError> {
         let (enrollment, session) = self.load_auth_state()?;
+        if session.protocol_negotiation.status
+            != burd_protocol::RemoteSessionProtocolNegotiationStatus::Accepted
+        {
+            return Err(ProviderJobControlError::new(
+                "protocol_ineligible",
+                "remote session protocol negotiation is not accepted",
+            ));
+        }
         // Verify the local NVIDIA identity before the backend assignment endpoint performs
         // its authoritative queued -> assigned transition.
         let context = self.context(&enrollment, &session)?;

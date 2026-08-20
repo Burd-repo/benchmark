@@ -181,6 +181,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "pricing_snapshots_financial_binding",
         sql: include_str!("../migrations/0035_pricing_snapshots_financial_binding.sql"),
     },
+    Migration {
+        version: "0036",
+        name: "agent_protocol_negotiation",
+        sql: include_str!("../migrations/0036_agent_protocol_negotiation.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -205,6 +210,23 @@ mod tests {
             "audit_events",
         ] {
             assert!(sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")));
+        }
+    }
+
+    #[test]
+    fn agent_protocol_negotiation_migration_defaults_legacy_fail_closed() {
+        let sql = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == "0036")
+            .unwrap()
+            .sql;
+        for needle in [
+            "protocol_negotiation_status TEXT NOT NULL DEFAULT 'legacy_unnegotiated'",
+            "accepted_protocol_capabilities_json TEXT NOT NULL DEFAULT '[]'",
+            "provider_sessions_protocol_authority_consistent",
+            "protocol_negotiation_status = 'accepted'",
+        ] {
+            assert!(sql.contains(needle));
         }
     }
 
@@ -234,7 +256,11 @@ mod tests {
 
     #[test]
     fn pricing_snapshot_migration_binds_financial_authority_fail_closed() {
-        let sql = MIGRATIONS.last().unwrap().sql;
+        let sql = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == "0035")
+            .unwrap()
+            .sql;
         for needle in [
             "CREATE TABLE IF NOT EXISTS pricing_snapshots",
             "source_price_id TEXT NOT NULL REFERENCES marketplace_listing_prices(price_id)",

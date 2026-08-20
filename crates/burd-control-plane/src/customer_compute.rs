@@ -1,4 +1,5 @@
 use crate::db::{Database, DbError, IdempotencyRecord};
+use crate::protocol_negotiation::assert_current_compute_protocol_negotiation;
 use crate::remote_session::SessionError;
 use crate::runtime_admission::{
     RuntimeAdmissionPolicy, evaluate_runtime_admission_for_gpu_in_transaction,
@@ -140,6 +141,12 @@ impl Database {
         };
         let mut selected = None;
         for candidate in candidates {
+            if assert_current_compute_protocol_negotiation(&transaction, &candidate.session_id)
+                .await
+                .is_err()
+            {
+                continue;
+            }
             if gpu_has_selected_placement(
                 &transaction,
                 &candidate.provider_id,

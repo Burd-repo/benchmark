@@ -1,4 +1,5 @@
 use crate::db::{Database, DbError, NewAuditEvent, insert_audit_event};
+use crate::protocol_negotiation::assert_current_compute_protocol_negotiation;
 use crate::remote_session::SessionError;
 use crate::runtime_admission::{
     RuntimeAdmissionPolicy, evaluate_runtime_admission_for_gpu_in_transaction,
@@ -75,6 +76,17 @@ impl Database {
             for row in candidate_rows {
                 let candidate = scheduler_candidate_from_row(row);
                 evaluated_job_ids.push(candidate.job_id.clone());
+                if assert_current_compute_protocol_negotiation(&transaction, &candidate.session_id)
+                    .await
+                    .is_err()
+                {
+                    skipped += 1;
+                    decisions.push(skipped_scheduler_decision(
+                        &candidate,
+                        vec!["session_protocol_ineligible".to_string()],
+                    ));
+                    continue;
+                }
                 let admission = evaluate_runtime_admission_for_gpu_in_transaction(
                     &transaction,
                     &candidate.provider_id,
@@ -601,8 +613,8 @@ pub(crate) mod tests {
             .unwrap();
         client
             .execute(
-                "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint) VALUES ($1, $2, $3, 'online', 0, $4, $5, $6)",
-                &[&session_id, &provider_id, &device_id, &now, &expires_at, &"a".repeat(64)],
+                "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint, negotiated_protocol_version, protocol_negotiation_status, accepted_protocol_capabilities_json, protocol_policy_version, protocol_reason_codes_json, protocol_negotiated_at) VALUES ($1, $2, $3, 'online', 0, $4, $5, $6, $7, 'accepted', $8, $9, '[\"protocol_negotiation_accepted\"]', $4)",
+                &[&session_id, &provider_id, &device_id, &now, &expires_at, &"a".repeat(64), &burd_protocol::AGENT_CONTROL_PROTOCOL_VERSION, &serde_json::to_string(crate::protocol_negotiation::current_agent_protocol_policy().required_capabilities).unwrap(), &burd_protocol::AGENT_CONTROL_PROTOCOL_POLICY_VERSION],
             )
             .await
             .unwrap();

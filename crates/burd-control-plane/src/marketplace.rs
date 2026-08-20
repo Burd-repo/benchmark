@@ -1,4 +1,5 @@
 use crate::db::{Database, DbError, NewAuditEvent, insert_audit_event};
+use crate::protocol_negotiation::assert_current_compute_protocol_negotiation;
 use crate::remote_session::SessionError;
 use burd_protocol::{
     BenchmarkResultMetrics, ListMarketplaceListingsResponse, MARKETPLACE_ENGINE_VERSION,
@@ -21,6 +22,7 @@ struct MarketplaceCandidate {
     device_status: String,
     session_id: Option<String>,
     session_status: Option<String>,
+    protocol_eligible: bool,
     workload_type: String,
     policy_id: String,
     policy_version: String,
@@ -277,16 +279,29 @@ impl Database {
         &self,
         limit: u32,
     ) -> Result<Vec<MarketplaceCandidate>, SessionError> {
-        let client = self.connect().await?;
-        let rows = client
+        let mut client = self.connect().await?;
+        let transaction = client.transaction().await?;
+        let rows = transaction
             .query(
                 "SELECT pwe.provider_id, p.display_name AS provider_display_name, p.status AS provider_status, pwe.device_id, d.status AS device_status, latest_session.session_id, COALESCE(latest_session.status, pwe.session_status) AS session_status, pwe.workload_type, pwe.policy_id, pwe.policy_version, pwe.status AS eligibility_status, pwe.reason_codes_json AS eligibility_reason_codes_json, pwe.trust_score, pwe.risk_score, pwe.reliability_score, pwe.verification_status, vs.last_verified_at, pwe.remote_network_score, ns.effective_network_score, pwe.regional_reachability_json, pwe.latest_gpu_uuid, pwe.vram_total_mib, pwe.benchmark_result_id, pwe.benchmark_profile_id, pwe.benchmark_profile_version, pwe.benchmark_status, pwe.benchmark_completed_at, br.gpu_uuid AS benchmark_gpu_uuid, br.metrics_json AS benchmark_metrics_json, COALESCE(active_leases.active_lease_count, 0) AS active_lease_count, COALESCE(active_reservations.active_reservation_count, 0) AS active_reservation_count FROM provider_workload_eligibility pwe JOIN providers p ON p.provider_id = pwe.provider_id JOIN devices d ON d.device_id = pwe.device_id AND d.provider_id = pwe.provider_id LEFT JOIN provider_verification_states vs ON vs.provider_id = pwe.provider_id AND vs.device_id = pwe.device_id LEFT JOIN provider_network_states ns ON ns.provider_id = pwe.provider_id AND ns.device_id = pwe.device_id LEFT JOIN LATERAL (SELECT session_id, status, started_at FROM provider_sessions s WHERE s.provider_id = pwe.provider_id AND s.device_id = pwe.device_id ORDER BY started_at DESC LIMIT 1) latest_session ON TRUE LEFT JOIN benchmark_results br ON br.result_id = pwe.benchmark_result_id LEFT JOIN LATERAL (SELECT COUNT(*)::BIGINT AS active_lease_count FROM job_leases jl WHERE jl.provider_id = pwe.provider_id AND jl.device_id = pwe.device_id AND (pwe.latest_gpu_uuid IS NULL OR jl.gpu_uuid = pwe.latest_gpu_uuid) AND jl.status IN ('offered', 'accepted', 'provisioning', 'active')) active_leases ON TRUE LEFT JOIN LATERAL (SELECT COUNT(*)::BIGINT AS active_reservation_count FROM marketplace_reservations mr WHERE mr.provider_id = pwe.provider_id AND mr.device_id = pwe.device_id AND mr.workload_type = pwe.workload_type AND (pwe.latest_gpu_uuid IS NULL OR mr.gpu_uuid = pwe.latest_gpu_uuid) AND mr.status = 'reserved') active_reservations ON TRUE ORDER BY pwe.updated_at DESC, pwe.provider_id, pwe.device_id, pwe.workload_type LIMIT $1",
                 &[&(limit as i64)],
             )
             .await?;
-        rows.into_iter()
+        let mut candidates = rows
+            .into_iter()
             .map(marketplace_candidate_from_row)
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        for candidate in &mut candidates {
+            candidate.protocol_eligible = if let Some(session_id) = &candidate.session_id {
+                assert_current_compute_protocol_negotiation(&transaction, session_id)
+                    .await
+                    .is_ok()
+            } else {
+                false
+            };
+        }
+        transaction.commit().await?;
+        Ok(candidates)
     }
 }
 fn evaluate_marketplace_candidate(candidate: &MarketplaceCandidate) -> ListingEvaluation {
@@ -295,6 +310,9 @@ fn evaluate_marketplace_candidate(candidate: &MarketplaceCandidate) -> ListingEv
         candidate.provider_status.as_str(),
         "blocked" | "quarantined"
     ) || candidate.device_status != "active";
+    if !candidate.protocol_eligible {
+        reason_codes.push("session_protocol_ineligible".to_string());
+    }
     let benchmark_succeeded = candidate.benchmark_result_id.is_some()
         && candidate.benchmark_status.as_deref() == Some("succeeded");
     let benchmark_gpu_matches = match (
@@ -350,7 +368,7 @@ fn evaluate_marketplace_candidate(candidate: &MarketplaceCandidate) -> ListingEv
     let status = if provider_or_device_blocked {
         reason_codes.push("provider_or_device_blocked".to_string());
         "blocked".to_string()
-    } else if !gpu_verified || !vram_verified {
+    } else if !candidate.protocol_eligible || !gpu_verified || !vram_verified {
         "verification_required".to_string()
     } else {
         match candidate.eligibility_status.as_str() {
@@ -442,6 +460,7 @@ fn marketplace_candidate_from_row(row: Row) -> Result<MarketplaceCandidate, Sess
         device_status: row.get("device_status"),
         session_id: row.get("session_id"),
         session_status: row.get("session_status"),
+        protocol_eligible: false,
         workload_type: row.get("workload_type"),
         policy_id: row.get("policy_id"),
         policy_version: row.get("policy_version"),
@@ -610,6 +629,7 @@ mod tests {
             device_status: "active".to_string(),
             session_id: Some("session_1".to_string()),
             session_status: Some("online".to_string()),
+            protocol_eligible: true,
             workload_type: "llm_realtime_api".to_string(),
             policy_id: "llm_realtime_api_cuda".to_string(),
             policy_version: "2026.07.0".to_string(),
@@ -718,8 +738,8 @@ mod postgres_tests {
                 VALUES ('provider_1', NULL, 'Marketplace Provider', 'available', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z');
                 INSERT INTO devices (device_id, provider_id, machine_id, status, created_at, updated_at)
                 VALUES ('device_1', 'provider_1', 'machine_1', 'active', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z');
-                INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint)
-                VALUES ('session_1', 'provider_1', 'device_1', 'online', 0, '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z', 'fp_1');
+                INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint, negotiated_protocol_version, protocol_negotiation_status, accepted_protocol_capabilities_json, protocol_policy_version, protocol_reason_codes_json, protocol_negotiated_at)
+                VALUES ('session_1', 'provider_1', 'device_1', 'online', 0, '2026-07-13T00:00:00Z', '2026-07-13T01:00:00Z', 'fp_1', 'burd-agent-control-protocol-v1', 'accepted', '["burd-agent-runtime-contract-v1","burd-job-artifact-upload-v1","burd-job-data-plane-grant-v1","burd-job-execution-control-v1","burd-provider-job-execution-v3"]', 'burd-agent-control-protocol-policy-v1', '["protocol_negotiation_accepted"]', '2026-07-13T00:00:00Z');
                 INSERT INTO provider_verification_states (provider_id, device_id, status, policy_version, reason, risk_score, success_count, failure_count, retry_budget_remaining, last_verified_at, created_at, updated_at)
                 VALUES ('provider_1', 'device_1', 'verified', 'test', NULL, 0, 1, 0, 2, '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z', '2026-07-13T00:00:00Z');
                 INSERT INTO provider_network_states (provider_id, device_id, local_network_score, remote_network_score, regional_reachability_json, effective_network_score, sample_count, last_observed_at, updated_at)

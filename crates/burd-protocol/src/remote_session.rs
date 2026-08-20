@@ -4,6 +4,60 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub const AGENT_CONTROL_PROTOCOL_VERSION: &str = "burd-agent-control-protocol-v1";
+pub const AGENT_CONTROL_PROTOCOL_POLICY_VERSION: &str = "burd-agent-control-protocol-policy-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteSessionProtocolNegotiationStatus {
+    Accepted,
+    UpgradeRequired,
+    IncompatibleProtocol,
+    MissingCapabilities,
+    LegacyUnnegotiated,
+}
+
+impl RemoteSessionProtocolNegotiationStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::UpgradeRequired => "upgrade_required",
+            Self::IncompatibleProtocol => "incompatible_protocol",
+            Self::MissingCapabilities => "missing_capabilities",
+            Self::LegacyUnnegotiated => "legacy_unnegotiated",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteSessionProtocolNegotiation {
+    pub status: RemoteSessionProtocolNegotiationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_protocol_version: Option<String>,
+    pub minimum_agent_version: String,
+    pub required_capabilities: Vec<String>,
+    pub accepted_capabilities: Vec<String>,
+    pub policy_version: String,
+    pub reason_codes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub negotiated_at: Option<String>,
+}
+
+impl Default for RemoteSessionProtocolNegotiation {
+    fn default() -> Self {
+        Self {
+            status: RemoteSessionProtocolNegotiationStatus::LegacyUnnegotiated,
+            selected_protocol_version: None,
+            minimum_agent_version: String::new(),
+            required_capabilities: Vec::new(),
+            accepted_capabilities: Vec::new(),
+            policy_version: String::new(),
+            reason_codes: vec!["legacy_request_missing_protocol_declaration".to_string()],
+            negotiated_at: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteSessionStatus {
@@ -46,6 +100,10 @@ pub struct StartRemoteSessionRequest {
     pub agent_version: String,
     #[serde(default)]
     pub capabilities: Value,
+    #[serde(default)]
+    pub supported_protocol_versions: Vec<String>,
+    #[serde(default)]
+    pub supported_capabilities: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_report_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +125,7 @@ pub struct StartRemoteSessionResponse {
     #[serde(default)]
     pub telemetry_sequence_start: u64,
     pub control_url: String,
+    pub protocol_negotiation: RemoteSessionProtocolNegotiation,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -148,6 +207,8 @@ pub struct RemoteSessionState {
     #[serde(default)]
     pub telemetry_sequence_last: u64,
     pub control_url: String,
+    #[serde(default)]
+    pub protocol_negotiation: RemoteSessionProtocolNegotiation,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,6 +223,7 @@ pub struct RemoteSessionStateStatus {
     pub telemetry_sequence_last: u64,
     pub control_url: String,
     pub resume_token_present: bool,
+    pub protocol_negotiation: RemoteSessionProtocolNegotiation,
 }
 
 pub fn remote_session_path() -> PathBuf {
@@ -196,6 +258,7 @@ pub fn save_remote_session(
         sequence_last: response.sequence_start,
         telemetry_sequence_last: response.telemetry_sequence_start,
         control_url: response.control_url.clone(),
+        protocol_negotiation: response.protocol_negotiation.clone(),
     };
     write_remote_session(&state)?;
     Ok(show_remote_session_from(&state))
@@ -237,6 +300,7 @@ fn show_remote_session_from(state: &RemoteSessionState) -> RemoteSessionStateSta
         telemetry_sequence_last: state.telemetry_sequence_last,
         control_url: state.control_url.clone(),
         resume_token_present: !state.resume_token.is_empty(),
+        protocol_negotiation: state.protocol_negotiation.clone(),
     }
 }
 
@@ -273,6 +337,19 @@ mod tests {
     }
 
     #[test]
+    fn legacy_start_request_deserializes_without_protocol_authority() {
+        let request: StartRemoteSessionRequest = serde_json::from_value(serde_json::json!({
+            "provider_id": "provider_1",
+            "device_id": "device_1",
+            "hardware_fingerprint": "fingerprint",
+            "agent_version": "0.1.0"
+        }))
+        .unwrap();
+        assert!(request.supported_protocol_versions.is_empty());
+        assert!(request.supported_capabilities.is_empty());
+    }
+
+    #[test]
     fn status_view_redacts_resume_token() {
         let state = RemoteSessionState {
             control_plane_url: "https://api.burd.cloud".to_string(),
@@ -284,6 +361,7 @@ mod tests {
             sequence_last: 4,
             telemetry_sequence_last: 2,
             control_url: "wss://api.burd.cloud/v1/sessions/session_test/control".to_string(),
+            protocol_negotiation: RemoteSessionProtocolNegotiation::default(),
         };
         let value = serde_json::to_value(show_remote_session_from(&state)).unwrap();
         assert_eq!(value["resume_token_present"], true);

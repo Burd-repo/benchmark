@@ -990,6 +990,7 @@ mod tests {
             sequence_last: 0,
             heartbeat_interval_seconds: 15,
             missed_heartbeat_limit: 3,
+            protocol_negotiation: burd_protocol::RemoteSessionProtocolNegotiation::default(),
         };
         let submitted = db
             .submit_provider_runtime_observation(

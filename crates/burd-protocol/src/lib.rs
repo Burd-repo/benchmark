@@ -163,9 +163,11 @@ pub use network_probe::{
     SubmitNetworkProbeObservationResponse,
 };
 pub use remote_session::{
-    ClientControlMessage, HeartbeatPayload, HeartbeatReceipt, RemoteSessionRecord,
-    RemoteSessionResume, RemoteSessionRevocationResponse, RemoteSessionState,
-    RemoteSessionStateStatus, RemoteSessionStatus, ServerControlMessage, StartRemoteSessionRequest,
+    AGENT_CONTROL_PROTOCOL_POLICY_VERSION, AGENT_CONTROL_PROTOCOL_VERSION, ClientControlMessage,
+    HeartbeatPayload, HeartbeatReceipt, RemoteSessionProtocolNegotiation,
+    RemoteSessionProtocolNegotiationStatus, RemoteSessionRecord, RemoteSessionResume,
+    RemoteSessionRevocationResponse, RemoteSessionState, RemoteSessionStateStatus,
+    RemoteSessionStatus, ServerControlMessage, StartRemoteSessionRequest,
     StartRemoteSessionResponse, clear_remote_session, load_remote_session,
     load_remote_session_optional, new_resume_token, remote_session_path, save_remote_session,
     show_remote_session, update_remote_session_sequence, update_remote_telemetry_sequence,
