@@ -22,6 +22,7 @@ pub mod network_probe;
 pub mod observability;
 pub mod openapi;
 pub mod proof_challenge;
+pub mod protocol_negotiation;
 pub mod rate_limit;
 pub mod remote_session;
 pub mod runtime_admission;

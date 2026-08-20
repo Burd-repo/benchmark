@@ -1,4 +1,5 @@
 use crate::db::{Database, DbError, IdempotencyRecord, NewAuditEvent, insert_audit_event};
+use crate::protocol_negotiation::assert_current_compute_protocol_negotiation;
 use crate::remote_session::SessionError;
 use burd_protocol::{
     CUSTOMER_API_KEY_SCHEMA_VERSION, CUSTOMER_AUDIT_SCHEMA_VERSION,
@@ -679,6 +680,10 @@ impl Database {
             ));
         }
         assert_listing_reservable(&listing)?;
+        let listing_session_id = listing.session_id.as_deref().ok_or_else(|| {
+            SessionError::Conflict("marketplace listing has no active session".to_string())
+        })?;
+        assert_current_compute_protocol_negotiation(&transaction, listing_session_id).await?;
         assert_project_quota(
             &transaction,
             &project,
@@ -2095,7 +2100,7 @@ mod tests {
             .batch_execute(&format!(
                 "INSERT INTO providers (provider_id, display_name, status, created_at, updated_at) VALUES ('provider_customer_flow', 'Provider Customer Flow', 'verified', '{now}', '{now}');
                  INSERT INTO devices (device_id, provider_id, machine_id, status, created_at, updated_at) VALUES ('device_customer_flow', 'provider_customer_flow', 'machine_customer_flow', 'active', '{now}', '{now}');
-                 INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, last_seen_at, expires_at, hardware_fingerprint, updated_at) VALUES ('session_customer_flow', 'provider_customer_flow', 'device_customer_flow', 'online', 1, '{now}', '{now}', '{expires_at}', 'fp_customer_flow', '{now}');
+                 INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, last_seen_at, expires_at, hardware_fingerprint, updated_at, negotiated_protocol_version, protocol_negotiation_status, accepted_protocol_capabilities_json, protocol_policy_version, protocol_reason_codes_json, protocol_negotiated_at) VALUES ('session_customer_flow', 'provider_customer_flow', 'device_customer_flow', 'online', 1, '{now}', '{now}', '{expires_at}', 'fp_customer_flow', '{now}', 'burd-agent-control-protocol-v1', 'accepted', '[\"burd-agent-runtime-contract-v1\",\"burd-job-artifact-upload-v1\",\"burd-job-data-plane-grant-v1\",\"burd-job-execution-control-v1\",\"burd-provider-job-execution-v3\"]', 'burd-agent-control-protocol-policy-v1', '[\"protocol_negotiation_accepted\"]', '{now}');
                  INSERT INTO workload_policies (policy_id, policy_version, schema_version, workload_type, display_name, requirements_json, status, created_at, updated_at) VALUES ('policy_customer_flow', 'v1', 'burd-workload-policy-v1', 'llm_batch_inference', 'Customer Flow Policy', '{{}}', 'active', '{now}', '{now}');
                  INSERT INTO marketplace_listings (listing_id, provider_id, provider_display_name, device_id, session_id, schema_version, engine_version, status, current_status, workload_type, policy_id, policy_version, gpu_uuid, gpu_verified, gpu_verification_source, vram_total_mib, vram_verified, vram_verification_source, region, region_source, trust_score, risk_score, reliability_score, verification_status, proof_freshness_status, last_verified_at, remote_network_score, effective_network_score, regional_reachability_json, benchmark_profile_id, benchmark_profile_version, benchmark_status, benchmark_completed_at, price_source, availability_window_json, active_lease_count, reason_codes_json, source_hash, published_at, updated_at) VALUES ('listing_customer_flow', 'provider_customer_flow', 'Provider Customer Flow', 'device_customer_flow', 'session_customer_flow', 'burd-marketplace-listing-v1', 'burd-marketplace-engine-v1', 'published', 'available', 'llm_batch_inference', 'policy_customer_flow', 'v1', 'GPU-customer-flow', TRUE, 'backend_proof_and_benchmark', 24576, TRUE, 'backend_telemetry_bound_to_verified_gpu', 'us-east', 'regional_probe', 91.0, 3.0, 96.0, 'verified', 'freshness_backend_timestamp_present', '{now}', 92.0, 93.0, '[]', 'bench_profile_customer_flow', 'v1', 'succeeded', '{now}', 'not_configured_bn16', '{{\"reservations_enabled\":true}}', 0, '[]', 'source_hash_customer_flow', '{now}', '{now}');
                  INSERT INTO marketplace_listing_prices (price_id, listing_id, schema_version, currency, price_per_hour_micros, pricing_model, status, created_at, updated_at) VALUES ('price_customer_flow', 'listing_customer_flow', 'burd-marketplace-price-v1', 'BRL', 1000000, 'gpu_hour', 'active', '{now}', '{now}');"

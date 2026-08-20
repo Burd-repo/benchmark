@@ -626,6 +626,7 @@ mod tests {
             sequence_last: 0,
             heartbeat_interval_seconds: 30,
             missed_heartbeat_limit: 3,
+            protocol_negotiation: burd_protocol::RemoteSessionProtocolNegotiation::default(),
         };
         assert!(validate_signed_inventory_shape(&inventory, &authorized).is_ok());
     }
@@ -640,6 +641,7 @@ mod tests {
             sequence_last: 0,
             heartbeat_interval_seconds: 30,
             missed_heartbeat_limit: 3,
+            protocol_negotiation: burd_protocol::RemoteSessionProtocolNegotiation::default(),
         };
         let payload_json = serde_json::to_string(&signed.payload).unwrap();
         let mut stored = StoredInventorySnapshot {
@@ -878,6 +880,7 @@ mod tests {
             sequence_last: 0,
             heartbeat_interval_seconds: 30,
             missed_heartbeat_limit: 3,
+            protocol_negotiation: burd_protocol::RemoteSessionProtocolNegotiation::default(),
         };
         let mut present_payload = signed_inventory().payload;
         present_payload.gpus.truncate(1);

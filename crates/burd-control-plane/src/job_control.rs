@@ -2,6 +2,7 @@ use crate::db::{Database, DbError, IdempotencyRecord, NewAuditEvent, insert_audi
 use crate::gpu_inventory::assert_gpu_inventory_contains;
 use crate::job_artifact::validate_uploaded_job_results;
 use crate::metering::append_usage_ledger_for_job;
+use crate::protocol_negotiation::assert_current_compute_protocol_negotiation;
 use crate::remote_session::{AuthorizedSession, SessionError};
 use crate::runtime_admission::{
     RuntimeAdmissionPolicy, evaluate_runtime_admission_for_gpu_in_transaction,
@@ -61,6 +62,8 @@ impl Database {
         validate_create_job_request(&command.request)?;
         let mut client = self.connect().await?;
         let transaction = client.transaction().await?;
+        assert_current_compute_protocol_negotiation(&transaction, &command.request.session_id)
+            .await?;
         let now = Utc::now().to_rfc3339();
         let reserved = transaction
             .execute(
@@ -239,6 +242,7 @@ impl Database {
     ) -> Result<NextJobResponse, SessionError> {
         let mut client = self.connect().await?;
         let transaction = client.transaction().await?;
+        assert_current_compute_protocol_negotiation(&transaction, &authorized.session_id).await?;
         let now = Utc::now();
         let now_text = now.to_rfc3339();
         let lease_rows = transaction
@@ -376,6 +380,7 @@ impl Database {
         validate_job_message(request.status_message.as_deref())?;
         let mut client = self.connect().await?;
         let transaction = client.transaction().await?;
+        assert_current_compute_protocol_negotiation(&transaction, &authorized.session_id).await?;
         let (job, lease) =
             locked_authorized_assignment(&transaction, authorized, job_id, &request.lease_id)
                 .await?;
@@ -487,12 +492,21 @@ impl Database {
         let transaction = client.transaction().await?;
         let (job, lease) =
             locked_authorized_assignment(&transaction, authorized, job_id, lease_id).await?;
+        let protocol_authorized =
+            assert_current_compute_protocol_negotiation(&transaction, &authorized.session_id)
+                .await
+                .is_ok();
         let (directive, reason_code) = match job.status.as_str() {
             "accepted" | "provisioning" | "running" | "uploading"
-                if execution_lease_matches_job_state(&job.status, &lease.status) =>
+                if protocol_authorized
+                    && execution_lease_matches_job_state(&job.status, &lease.status) =>
             {
                 (JobExecutionDirective::Continue, None)
             }
+            "accepted" | "provisioning" | "running" | "uploading" => (
+                JobExecutionDirective::Cancel,
+                Some("session_protocol_authority_lost".to_string()),
+            ),
             "cancelled" => (
                 JobExecutionDirective::Cancel,
                 Some("job_cancelled".to_string()),
@@ -1706,6 +1720,7 @@ mod tests {
                 sequence_last: 0,
                 heartbeat_interval_seconds: 15,
                 missed_heartbeat_limit: 3,
+                protocol_negotiation: burd_protocol::RemoteSessionProtocolNegotiation::default(),
             },
             crate::scheduler::tests::runtime_policy(),
             now,
@@ -1968,6 +1983,70 @@ mod tests {
         let mut wrong_lease = lease;
         wrong_lease.job_id = "job_2".to_string();
         assert!(provider_job_execution_spec(&job, &wrong_lease, &grant).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_policy_invalidation_cancels_active_compute_but_allows_failed_cleanup() {
+        let (db, authorized, policy, now) =
+            assignment_fixture("burd_protocol_active_cleanup", &["GPU-A"]).await;
+        seed_and_offer_jobs(&db, &policy, now, &[("job_active", "GPU-A", -10)]).await;
+        let next = db
+            .next_job_for_session("req_protocol_next", &authorized, &policy)
+            .await
+            .unwrap();
+        let lease_id = next.lease.unwrap().lease_id;
+        db.accept_job(
+            "req_protocol_accept",
+            &authorized,
+            "job_active",
+            &AcceptJobRequest {
+                lease_id: lease_id.clone(),
+                status_message: None,
+            },
+            &policy,
+        )
+        .await
+        .unwrap();
+
+        let client = db.connect().await.unwrap();
+        client
+            .execute(
+                "UPDATE provider_sessions SET protocol_policy_version = 'obsolete-policy' WHERE session_id = $1",
+                &[&authorized.session_id],
+            )
+            .await
+            .unwrap();
+        drop(client);
+
+        let control = db
+            .job_execution_control("req_protocol_control", &authorized, "job_active", &lease_id)
+            .await
+            .unwrap();
+        assert_eq!(control.directive, JobExecutionDirective::Cancel);
+        assert_eq!(
+            control.reason_code.as_deref(),
+            Some("session_protocol_authority_lost")
+        );
+
+        let result = db
+            .submit_job_result(
+                "req_protocol_cleanup",
+                &authorized,
+                "job_active",
+                &SubmitJobResultRequest {
+                    status: "failed".to_string(),
+                    result_artifacts: Vec::new(),
+                    metrics: serde_json::json!({}),
+                    error_code: Some("protocol_authority_lost".to_string()),
+                    error_message: Some("protocol policy changed".to_string()),
+                    completed_at: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.job.status, "failed");
+        db.drop_schema_for_test().await.unwrap();
     }
 
     #[tokio::test]
@@ -2608,7 +2687,7 @@ mod tests {
             .unwrap();
         client
             .execute(
-                "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint) VALUES ('session_1', 'provider_1', 'device_1', 'online', 0, $1, $2, $3)",
+                "INSERT INTO provider_sessions (session_id, provider_id, device_id, status, sequence_last, started_at, expires_at, hardware_fingerprint, negotiated_protocol_version, protocol_negotiation_status, accepted_protocol_capabilities_json, protocol_policy_version, protocol_reason_codes_json, protocol_negotiated_at) VALUES ('session_1', 'provider_1', 'device_1', 'online', 0, $1, $2, $3, 'burd-agent-control-protocol-v1', 'accepted', '[\"burd-agent-runtime-contract-v1\",\"burd-job-artifact-upload-v1\",\"burd-job-data-plane-grant-v1\",\"burd-job-execution-control-v1\",\"burd-provider-job-execution-v3\"]', 'burd-agent-control-protocol-policy-v1', '[\"protocol_negotiation_accepted\"]', $1)",
                 &[&now, &expires_at, &"a".repeat(64)],
             )
             .await
@@ -2685,6 +2764,7 @@ mod tests {
             sequence_last: 0,
             heartbeat_interval_seconds: 15,
             missed_heartbeat_limit: 3,
+            protocol_negotiation: burd_protocol::RemoteSessionProtocolNegotiation::default(),
         };
         let next = db
             .next_job_for_session(

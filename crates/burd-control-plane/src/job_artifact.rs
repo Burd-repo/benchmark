@@ -1,4 +1,5 @@
 use crate::db::Database;
+use crate::protocol_negotiation::assert_current_compute_protocol_negotiation;
 use crate::remote_session::SessionError;
 use burd_protocol::{JobArtifact, sha256_hex};
 use chrono::{DateTime, Utc};
@@ -28,15 +29,22 @@ impl Database {
     ) -> Result<AuthorizedJobArtifact, SessionError> {
         validate_id(job_id)?;
         validate_id(artifact_id)?;
-        let client = self.connect().await?;
-        let row = client
+        let mut client = self.connect().await?;
+        let transaction = client.transaction().await?;
+        let row = transaction
             .query_opt(
-                "SELECT status, input_artifacts_json, expected_outputs_json, job_credential_hash, job_credential_expires_at FROM compute_jobs WHERE job_id = $1",
+                "SELECT session_id, status, input_artifacts_json, expected_outputs_json, job_credential_hash, job_credential_expires_at FROM compute_jobs WHERE job_id = $1",
                 &[&job_id],
             )
             .await?
             .ok_or_else(|| SessionError::NotFound("job not found".to_string()))?;
+        assert_current_compute_protocol_negotiation(
+            &transaction,
+            &row.get::<_, String>("session_id"),
+        )
+        .await?;
         let artifact = authorized_artifact_from_row(&row, artifact_id, credential, direction)?;
+        transaction.commit().await?;
         Ok(AuthorizedJobArtifact { artifact })
     }
 
@@ -59,11 +67,16 @@ impl Database {
         let transaction = client.transaction().await?;
         let row = transaction
             .query_opt(
-                "SELECT status, input_artifacts_json, expected_outputs_json, job_credential_hash, job_credential_expires_at FROM compute_jobs WHERE job_id = $1 FOR UPDATE",
+                "SELECT session_id, status, input_artifacts_json, expected_outputs_json, job_credential_hash, job_credential_expires_at FROM compute_jobs WHERE job_id = $1 FOR UPDATE",
                 &[&job_id],
             )
             .await?
             .ok_or_else(|| SessionError::NotFound("job not found".to_string()))?;
+        assert_current_compute_protocol_negotiation(
+            &transaction,
+            &row.get::<_, String>("session_id"),
+        )
+        .await?;
         let expected = authorized_artifact_from_row(
             &row,
             artifact_id,

@@ -32,15 +32,18 @@ use burd_hardware::{
     NvidiaTelemetryCollection, collect_nvidia_gpu_inventory, collect_nvidia_telemetry,
 };
 use burd_protocol::{
-    ClientControlMessage, GpuTelemetrySample, HeartbeatPayload, PROVIDER_JOB_APPROVED_TEMPLATES,
-    RemoteEnrollmentState, RemoteSessionRecord, RemoteSessionResume, RemoteSessionState,
-    RemoteSessionStateStatus, ServerControlMessage, SignedTelemetryBatch,
-    StartRemoteSessionRequest, StartRemoteSessionResponse, TELEMETRY_CANONICALIZATION_VERSION,
-    TELEMETRY_SCHEMA_VERSION, TelemetryBatchPayload, TelemetryBatchReceipt, clear_remote_session,
-    immutable_image_ref, load_identity, load_private_key, load_remote_enrollment,
-    load_remote_session, load_remote_session_optional, save_remote_session, show_remote_session,
-    sign_message, telemetry_batch_hash, telemetry_batch_signature_message,
-    update_remote_session_sequence, update_remote_telemetry_sequence,
+    AGENT_CONTROL_PROTOCOL_VERSION, AGENT_RUNTIME_CONTRACT_VERSION, ClientControlMessage,
+    GpuTelemetrySample, HeartbeatPayload, JOB_ARTIFACT_UPLOAD_VERSION,
+    JOB_DATA_PLANE_GRANT_VERSION, JOB_EXECUTION_CONTROL_SCHEMA_VERSION,
+    PROVIDER_JOB_APPROVED_TEMPLATES, PROVIDER_JOB_EXECUTION_SCHEMA_VERSION, RemoteEnrollmentState,
+    RemoteSessionRecord, RemoteSessionResume, RemoteSessionState, RemoteSessionStateStatus,
+    ServerControlMessage, SignedTelemetryBatch, StartRemoteSessionRequest,
+    StartRemoteSessionResponse, TELEMETRY_CANONICALIZATION_VERSION, TELEMETRY_SCHEMA_VERSION,
+    TelemetryBatchPayload, TelemetryBatchReceipt, clear_remote_session, immutable_image_ref,
+    load_identity, load_private_key, load_remote_enrollment, load_remote_session,
+    load_remote_session_optional, save_remote_session, show_remote_session, sign_message,
+    telemetry_batch_hash, telemetry_batch_signature_message, update_remote_session_sequence,
+    update_remote_telemetry_sequence,
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use futures_util::{SinkExt, StreamExt};
@@ -890,6 +893,14 @@ fn start_or_resume(
         hardware_fingerprint: registration.hardware_fingerprint.clone(),
         agent_version: agent_version.to_string(),
         capabilities: registration.capabilities.clone(),
+        supported_protocol_versions: vec![AGENT_CONTROL_PROTOCOL_VERSION.to_string()],
+        supported_capabilities: vec![
+            PROVIDER_JOB_EXECUTION_SCHEMA_VERSION.to_string(),
+            JOB_EXECUTION_CONTROL_SCHEMA_VERSION.to_string(),
+            JOB_DATA_PLANE_GRANT_VERSION.to_string(),
+            JOB_ARTIFACT_UPLOAD_VERSION.to_string(),
+            AGENT_RUNTIME_CONTRACT_VERSION.to_string(),
+        ],
         latest_report_hash: registration.latest_signed_report_hash.clone(),
         latest_challenge_id: None,
         resume: persisted.as_ref().map(|state| RemoteSessionResume {
@@ -2431,6 +2442,7 @@ mod tests {
             sequence_last: 4,
             telemetry_sequence_last: 2,
             control_url: "wss://api.burd.cloud/v1/sessions/session_1/control".to_string(),
+            protocol_negotiation: burd_protocol::RemoteSessionProtocolNegotiation::default(),
         };
 
         assert!(session_belongs_to_control_plane(

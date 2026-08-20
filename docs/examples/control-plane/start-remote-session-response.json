@@ -8,5 +8,27 @@
   "missed_heartbeat_limit": 3,
   "sequence_start": 0,
   "telemetry_sequence_start": 0,
-  "control_url": "wss://control.example.test/v1/sessions/session_example_001/control"
+  "control_url": "wss://control.example.test/v1/sessions/session_example_001/control",
+  "protocol_negotiation": {
+    "status": "accepted",
+    "selected_protocol_version": "burd-agent-control-protocol-v1",
+    "minimum_agent_version": "0.1.0",
+    "required_capabilities": [
+      "burd-agent-runtime-contract-v1",
+      "burd-job-artifact-upload-v1",
+      "burd-job-data-plane-grant-v1",
+      "burd-job-execution-control-v1",
+      "burd-provider-job-execution-v3"
+    ],
+    "accepted_capabilities": [
+      "burd-agent-runtime-contract-v1",
+      "burd-job-artifact-upload-v1",
+      "burd-job-data-plane-grant-v1",
+      "burd-job-execution-control-v1",
+      "burd-provider-job-execution-v3"
+    ],
+    "policy_version": "burd-agent-control-protocol-policy-v1",
+    "reason_codes": ["protocol_negotiation_accepted"],
+    "negotiated_at": "2026-07-23T01:05:00Z"
+  }
 }

@@ -1741,6 +1741,17 @@ fn add_bn01_bn11_contracts(document: &mut serde_json::Value) {
                 ),
                 ("RemoteSessionResume", &["session_id", "resume_token"]),
                 (
+                    "RemoteSessionProtocolNegotiation",
+                    &[
+                        "status",
+                        "minimum_agent_version",
+                        "required_capabilities",
+                        "accepted_capabilities",
+                        "policy_version",
+                        "reason_codes",
+                    ],
+                ),
+                (
                     "StartRemoteSessionRequest",
                     &[
                         "provider_id",
@@ -1762,6 +1773,7 @@ fn add_bn01_bn11_contracts(document: &mut serde_json::Value) {
                         "sequence_start",
                         "telemetry_sequence_start",
                         "control_url",
+                        "protocol_negotiation",
                     ],
                 ),
                 (

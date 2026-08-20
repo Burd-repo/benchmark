@@ -662,6 +662,7 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
                 sequence_start: 0,
                 telemetry_sequence_start: 0,
                 control_url: "ws://127.0.0.1/stale".to_string(),
+                protocol_negotiation: burd_protocol::RemoteSessionProtocolNegotiation::default(),
             },
         )
     })
@@ -671,11 +672,7 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
     assert!(burd_protocol::remote_session_path().is_file());
     let enrollment_url = control_plane_url.clone();
     let enrollment = tokio::task::spawn_blocking(move || {
-        burd_agent::remote_enrollment::enroll(
-            &enrollment_url,
-            enrollment_token,
-            "burd-agent-integration/0.1.0",
-        )
+        burd_agent::remote_enrollment::enroll(&enrollment_url, enrollment_token, "0.1.0")
     })
     .await
     .unwrap()
@@ -689,14 +686,7 @@ async fn live_agent_remote_session_reconnects_restarts_and_stops_on_revocation()
     let client = schema_client(&database_url, &schema).await;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut agent_task = tokio::spawn(async move {
-        burd_agent::remote_session::connect_until_shutdown(
-            "burd-agent-integration/0.1.0",
-            1,
-            false,
-            4,
-            shutdown_rx,
-        )
-        .await
+        burd_agent::remote_session::connect_until_shutdown("0.1.0", 1, false, 4, shutdown_rx).await
     });
 
     let initial_rows =
@@ -859,11 +849,7 @@ async fn live_agent_signed_telemetry_persists_ack_resumes_and_handles_rejection(
         .unwrap();
     let enrollment_url = control_plane_url.clone();
     let enrollment = tokio::task::spawn_blocking(move || {
-        burd_agent::remote_enrollment::enroll(
-            &enrollment_url,
-            enrollment_token,
-            "burd-agent-integration/0.1.0",
-        )
+        burd_agent::remote_enrollment::enroll(&enrollment_url, enrollment_token, "0.1.0")
     })
     .await
     .unwrap()
@@ -874,7 +860,7 @@ async fn live_agent_signed_telemetry_persists_ack_resumes_and_handles_rejection(
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut agent_task = tokio::spawn(async move {
         burd_agent::remote_session::connect_until_shutdown_with_telemetry_collector(
-            "burd-agent-integration/0.1.0",
+            "0.1.0",
             1,
             true,
             1,
@@ -1129,11 +1115,7 @@ async fn live_agent_executes_and_submits_a_verified_remote_proof() {
         .unwrap();
     let enrollment_url = control_plane_url.clone();
     let enrollment = tokio::task::spawn_blocking(move || {
-        burd_agent::remote_enrollment::enroll(
-            &enrollment_url,
-            enrollment_token,
-            "burd-agent-proof-integration/0.1.0",
-        )
+        burd_agent::remote_enrollment::enroll(&enrollment_url, enrollment_token, "0.1.0")
     })
     .await
     .unwrap()
@@ -1144,7 +1126,7 @@ async fn live_agent_executes_and_submits_a_verified_remote_proof() {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let mut agent_task = tokio::spawn(async move {
         burd_agent::remote_session::connect_until_shutdown_with_test_runtime(
-            "burd-agent-proof-integration/0.1.0",
+            "0.1.0",
             1,
             8,
             deterministic_proof_telemetry,
