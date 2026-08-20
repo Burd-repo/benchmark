@@ -8,6 +8,14 @@
     "gpu_uuids": ["GPU-example-001"],
     "telemetry": true
   },
+  "supported_protocol_versions": ["burd-agent-control-protocol-v1"],
+  "supported_capabilities": [
+    "burd-agent-runtime-contract-v1",
+    "burd-job-artifact-upload-v1",
+    "burd-job-data-plane-grant-v1",
+    "burd-job-execution-control-v1",
+    "burd-provider-job-execution-v3"
+  ],
   "latest_report_hash": "sha256:example-report-hash",
   "latest_challenge_id": "challenge_example_previous"
 }
