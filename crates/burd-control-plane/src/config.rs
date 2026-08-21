@@ -2,6 +2,53 @@ use burd_protocol::{PROOF_CAPABILITY_REQUIRED_PROOFS, immutable_image_ref, sha25
 use std::collections::HashSet;
 use std::env;
 use std::fmt;
+use url::Url;
+
+const DEFAULT_HUMAN_SESSION_TTL_SECONDS: u32 = 7 * 24 * 60 * 60;
+const MAX_HUMAN_SESSION_TTL_SECONDS: u32 = 30 * 24 * 60 * 60;
+const DEFAULT_OIDC_TRANSACTION_TTL_SECONDS: u32 = 10 * 60;
+const MAX_OIDC_TRANSACTION_TTL_SECONDS: u32 = 15 * 60;
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretCookieKey(pub [u8; 64]);
+
+impl fmt::Debug for SecretCookieKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SecretCookieKey([REDACTED])")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct GoogleOidcConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_uri: String,
+    pub success_url: String,
+    pub allowed_origins: Vec<String>,
+    pub cookie_key: SecretCookieKey,
+    pub human_session_ttl_seconds: u32,
+    pub transaction_ttl_seconds: u32,
+    #[cfg(test)]
+    pub test_issuer_url: Option<String>,
+}
+
+impl fmt::Debug for GoogleOidcConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("GoogleOidcConfig");
+        debug
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[REDACTED]")
+            .field("redirect_uri", &self.redirect_uri)
+            .field("success_url", &self.success_url)
+            .field("allowed_origins", &self.allowed_origins)
+            .field("cookie_key", &self.cookie_key)
+            .field("human_session_ttl_seconds", &self.human_session_ttl_seconds)
+            .field("transaction_ttl_seconds", &self.transaction_ttl_seconds);
+        #[cfg(test)]
+        debug.field("test_issuer_url", &self.test_issuer_url);
+        debug.finish()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlPlaneConfig {
@@ -43,6 +90,7 @@ pub struct ControlPlaneConfig {
     pub security_require_sbom_hash: bool,
     pub security_accepted_release_channels: Vec<String>,
     pub security_accepted_attestation_modes: Vec<String>,
+    pub google_oidc: Option<GoogleOidcConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -270,6 +318,7 @@ impl ControlPlaneConfig {
                 .unwrap_or_else(|| "none,tpm,os_keychain,hsm,sev_snp,sgx".to_string()),
             "BURD_CONTROL_SECURITY_ACCEPTED_ATTESTATION_MODES",
         )?;
+        let google_oidc = parse_google_oidc_config(&lookup)?;
         Ok(Self {
             environment: lookup("BURD_CONTROL_ENV").unwrap_or_else(|| "local".to_string()),
             host: lookup("BURD_CONTROL_HOST").unwrap_or_else(|| "127.0.0.1".to_string()),
@@ -313,8 +362,120 @@ impl ControlPlaneConfig {
             security_require_sbom_hash,
             security_accepted_release_channels,
             security_accepted_attestation_modes,
+            google_oidc,
         })
     }
+}
+
+fn parse_google_oidc_config<F>(lookup: &F) -> Result<Option<GoogleOidcConfig>, ConfigError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    const REQUIRED: &[&str] = &[
+        "BURD_CONTROL_GOOGLE_OIDC_CLIENT_ID",
+        "BURD_CONTROL_GOOGLE_OIDC_CLIENT_SECRET",
+        "BURD_CONTROL_GOOGLE_OIDC_REDIRECT_URI",
+        "BURD_CONTROL_HUMAN_AUTH_SUCCESS_URL",
+        "BURD_CONTROL_HUMAN_AUTH_ALLOWED_ORIGINS",
+        "BURD_CONTROL_HUMAN_COOKIE_KEY",
+    ];
+    let configured = REQUIRED
+        .iter()
+        .any(|key| lookup(key).is_some_and(|value| !value.trim().is_empty()));
+    if !configured {
+        return Ok(None);
+    }
+    let required = |name: &str| {
+        lookup(name)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                ConfigError::new(format!("{name} is required when Google OIDC is enabled"))
+            })
+    };
+    let client_id = required(REQUIRED[0])?;
+    let client_secret = required(REQUIRED[1])?;
+    let redirect_uri = validate_https_url(REQUIRED[2], required(REQUIRED[2])?)?;
+    let success_url = validate_https_url(REQUIRED[3], required(REQUIRED[3])?)?;
+    let allowed_origins = parse_csv(required(REQUIRED[4])?, REQUIRED[4])?
+        .into_iter()
+        .map(|origin| validate_origin(REQUIRED[4], origin))
+        .collect::<Result<Vec<_>, _>>()?;
+    let cookie_key = SecretCookieKey(parse_cookie_key(&required(REQUIRED[5])?)?);
+    let human_session_ttl_seconds = parse_u32(
+        lookup("BURD_CONTROL_HUMAN_SESSION_TTL_SECONDS")
+            .unwrap_or_else(|| DEFAULT_HUMAN_SESSION_TTL_SECONDS.to_string()),
+        "BURD_CONTROL_HUMAN_SESSION_TTL_SECONDS",
+    )?;
+    if human_session_ttl_seconds > MAX_HUMAN_SESSION_TTL_SECONDS {
+        return Err(ConfigError::new(
+            "BURD_CONTROL_HUMAN_SESSION_TTL_SECONDS must not exceed 2592000",
+        ));
+    }
+    let transaction_ttl_seconds = parse_u32(
+        lookup("BURD_CONTROL_GOOGLE_OIDC_TRANSACTION_TTL_SECONDS")
+            .unwrap_or_else(|| DEFAULT_OIDC_TRANSACTION_TTL_SECONDS.to_string()),
+        "BURD_CONTROL_GOOGLE_OIDC_TRANSACTION_TTL_SECONDS",
+    )?;
+    if transaction_ttl_seconds > MAX_OIDC_TRANSACTION_TTL_SECONDS {
+        return Err(ConfigError::new(
+            "BURD_CONTROL_GOOGLE_OIDC_TRANSACTION_TTL_SECONDS must not exceed 900",
+        ));
+    }
+    Ok(Some(GoogleOidcConfig {
+        client_id,
+        client_secret,
+        redirect_uri,
+        success_url,
+        allowed_origins,
+        cookie_key,
+        human_session_ttl_seconds,
+        transaction_ttl_seconds,
+        #[cfg(test)]
+        test_issuer_url: None,
+    }))
+}
+
+fn validate_https_url(name: &str, raw: String) -> Result<String, ConfigError> {
+    let url =
+        Url::parse(&raw).map_err(|_| ConfigError::new(format!("{name} must be a valid URL")))?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || url.username() != ""
+        || url.password().is_some()
+    {
+        return Err(ConfigError::new(format!(
+            "{name} must be an absolute HTTPS URL"
+        )));
+    }
+    Ok(url.to_string())
+}
+
+fn validate_origin(name: &str, raw: String) -> Result<String, ConfigError> {
+    let url = Url::parse(&raw)
+        .map_err(|_| ConfigError::new(format!("{name} must contain valid origins")))?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.username() != ""
+        || url.password().is_some()
+    {
+        return Err(ConfigError::new(format!(
+            "{name} must contain exact HTTPS origins"
+        )));
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+fn parse_cookie_key(raw: &str) -> Result<[u8; 64], ConfigError> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(raw.trim())
+        .map_err(|_| ConfigError::new("BURD_CONTROL_HUMAN_COOKIE_KEY must be URL-safe base64"))?;
+    bytes.try_into().map_err(|_| {
+        ConfigError::new("BURD_CONTROL_HUMAN_COOKIE_KEY must decode to exactly 64 bytes")
+    })
 }
 
 fn build_verification_proof_profile(
@@ -532,6 +693,55 @@ mod tests {
         );
         assert_eq!(config.admin_token_hash, sha256_hex(b"admin-secret"));
         assert!(!config.admin_token_hash.contains("admin-secret"));
+        assert!(config.google_oidc.is_none());
+    }
+
+    #[test]
+    fn google_oidc_configuration_is_all_or_nothing_and_redacted() {
+        use base64::Engine as _;
+        let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([9_u8; 64]);
+        let values = HashMap::from([
+            ("DATABASE_URL", "postgres://localhost/burd".to_string()),
+            ("BURD_CONTROL_ADMIN_TOKEN", "admin-secret".to_string()),
+            (
+                "BURD_CONTROL_GOOGLE_OIDC_CLIENT_ID",
+                "client-id".to_string(),
+            ),
+            (
+                "BURD_CONTROL_GOOGLE_OIDC_CLIENT_SECRET",
+                "google-secret".to_string(),
+            ),
+            (
+                "BURD_CONTROL_GOOGLE_OIDC_REDIRECT_URI",
+                "https://control.example/v1/auth/google/callback".to_string(),
+            ),
+            (
+                "BURD_CONTROL_HUMAN_AUTH_SUCCESS_URL",
+                "https://app.example/auth/success".to_string(),
+            ),
+            (
+                "BURD_CONTROL_HUMAN_AUTH_ALLOWED_ORIGINS",
+                "https://app.example".to_string(),
+            ),
+            ("BURD_CONTROL_HUMAN_COOKIE_KEY", key),
+        ]);
+        let config = ControlPlaneConfig::from_lookup(|name| values.get(name).cloned()).unwrap();
+        let oidc = config.google_oidc.unwrap();
+        assert_eq!(oidc.human_session_ttl_seconds, 604800);
+        assert!(!format!("{oidc:?}").contains("google-secret"));
+    }
+
+    #[test]
+    fn partial_google_oidc_configuration_fails_startup() {
+        let values = HashMap::from([
+            ("DATABASE_URL", "postgres://localhost/burd"),
+            ("BURD_CONTROL_ADMIN_TOKEN", "admin-secret"),
+            ("BURD_CONTROL_GOOGLE_OIDC_CLIENT_ID", "client-id"),
+        ]);
+        let error =
+            ControlPlaneConfig::from_lookup(|name| values.get(name).map(|value| value.to_string()))
+                .unwrap_err();
+        assert!(error.to_string().contains("CLIENT_SECRET"));
     }
 
     #[test]
