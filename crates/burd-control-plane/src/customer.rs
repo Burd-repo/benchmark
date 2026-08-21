@@ -21,9 +21,9 @@ use chrono::{DateTime, Duration, Utc};
 use tokio_postgres::{Row, Transaction};
 use uuid::Uuid;
 
-const DEFAULT_MAX_ACTIVE_RESERVATIONS: u32 = 2;
-const DEFAULT_MAX_RESERVED_GPU_SECONDS: u64 = 8 * 60 * 60;
-const DEFAULT_MAX_RESERVATION_TTL_SECONDS: u32 = 60 * 60;
+pub(crate) const DEFAULT_MAX_ACTIVE_RESERVATIONS: u32 = 2;
+pub(crate) const DEFAULT_MAX_RESERVED_GPU_SECONDS: u64 = 8 * 60 * 60;
+pub(crate) const DEFAULT_MAX_RESERVATION_TTL_SECONDS: u32 = 60 * 60;
 const MAX_RESERVATION_TTL_SECONDS: u32 = 24 * 60 * 60;
 const MAX_RESERVATION_LIST_LIMIT: u32 = 200;
 const MAX_CUSTOMER_AUDIT_LIMIT: u32 = 200;
@@ -121,16 +121,16 @@ struct ReservationPriceSource {
 }
 
 #[derive(Debug, Clone)]
-struct NewCustomerAuditEvent<'a> {
-    organization_id: &'a str,
-    project_id: Option<String>,
-    actor_type: &'a str,
-    actor_id: Option<String>,
-    event_type: &'a str,
-    entity_type: &'a str,
-    entity_id: &'a str,
-    summary: &'a str,
-    metadata_json: &'a str,
+pub(crate) struct NewCustomerAuditEvent<'a> {
+    pub(crate) organization_id: &'a str,
+    pub(crate) project_id: Option<String>,
+    pub(crate) actor_type: &'a str,
+    pub(crate) actor_id: Option<String>,
+    pub(crate) event_type: &'a str,
+    pub(crate) entity_type: &'a str,
+    pub(crate) entity_id: &'a str,
+    pub(crate) summary: &'a str,
+    pub(crate) metadata_json: &'a str,
 }
 
 impl Database {
@@ -1322,7 +1322,7 @@ async fn append_customer_credit_ledger_entry(
     })
 }
 
-async fn insert_customer_audit_event(
+pub(crate) async fn insert_customer_audit_event(
     transaction: &Transaction<'_>,
     event: NewCustomerAuditEvent<'_>,
 ) -> Result<String, SessionError> {
@@ -1368,7 +1368,7 @@ async fn load_project_quota(
     })
 }
 
-async fn load_customer_api_key(
+pub(crate) async fn load_customer_api_key(
     transaction: &Transaction<'_>,
     api_key_id: &str,
 ) -> Result<CustomerApiKeyRecord, SessionError> {
@@ -1568,7 +1568,7 @@ fn validate_reservation_request(request: &CreateReservationRequest) -> Result<()
     Ok(())
 }
 
-fn normalized_scopes(scopes: &[String]) -> Result<Vec<String>, SessionError> {
+pub(crate) fn normalized_scopes(scopes: &[String]) -> Result<Vec<String>, SessionError> {
     let mut normalized = if scopes.is_empty() {
         DEFAULT_CUSTOMER_SCOPES
             .iter()

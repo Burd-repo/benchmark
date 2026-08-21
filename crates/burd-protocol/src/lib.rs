@@ -7,6 +7,7 @@ pub mod customer_compute;
 pub mod enrollment;
 pub mod evidence;
 pub mod gpu_inventory;
+pub mod human_auth;
 pub mod identity;
 pub mod job;
 pub mod job_execution;
@@ -118,6 +119,12 @@ pub use gpu_inventory::{
     ListProviderDeviceGpuInventoryResponse, SignedDeviceGpuInventory,
     SubmitDeviceGpuInventoryResponse, device_gpu_inventory_hash,
     device_gpu_inventory_signature_message, validate_device_gpu_inventory_payload,
+};
+pub use human_auth::{
+    AddOrganizationMemberRequest, HUMAN_AUTH_SCHEMA_VERSION, HumanIdentitySummary,
+    HumanLogoutResponse, HumanMeResponse, HumanOrganizationMembershipSummary,
+    ListCustomerApiKeysResponse, ListOrganizationMembersResponse, OrganizationMemberResponse,
+    RevokeCustomerApiKeyResponse, UpdateOrganizationMemberRequest,
 };
 pub use identity::{
     AgentConfig, AgentIdentityPublic, AgentStatePaths, ApiTokenStatus, IdentityInitResult,

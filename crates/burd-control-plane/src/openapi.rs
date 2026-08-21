@@ -55,6 +55,12 @@ pub fn document() -> serde_json::Value {
                     "type": "http",
                     "scheme": "bearer",
                     "description": "Customer API key token returned once by the project API-key endpoint. Send only as Authorization: Bearer; never in URLs."
+                },
+                "humanSessionCookie": {
+                    "type": "apiKey",
+                    "in": "cookie",
+                    "name": "__Host-burd_session",
+                    "description": "Opaque Burd human session created only after Google OIDC. Browser management-plane mutations also require an allowed Origin."
                 }
             },
             "parameters": {
@@ -148,6 +154,26 @@ pub fn document() -> serde_json::Value {
                     "responses": { "200": { "description": "text/plain Prometheus metrics" } }
                 }
             },
+            "/v1/auth/google/start": { "get": { "summary": "Start Google OIDC Authorization Code Flow with state, nonce, and PKCE S256", "responses": { "302": { "description": "redirect to the configured Google issuer" } } } },
+            "/v1/auth/google/callback": { "get": { "summary": "Validate Google OIDC callback and create a new opaque Burd human session", "responses": { "303": { "description": "session cookie created and redirected to the configured success URL" }, "401": { "description": "sanitized authentication failure" } } } },
+            "/v1/auth/me": { "get": { "summary": "Return the authenticated human user and current organization memberships", "security": [{ "humanSessionCookie": [] }], "responses": { "200": { "description": "safe human identity summary" }, "401": { "description": "human session invalid" } } } },
+            "/v1/auth/logout": { "post": { "summary": "Revoke the current human session", "security": [{ "humanSessionCookie": [] }], "responses": { "200": { "description": "session revoked and cookie cleared" }, "403": { "description": "Origin not allowed" } } } },
+            "/v1/auth/logout-all": { "post": { "summary": "Revoke all active human sessions for the current user", "security": [{ "humanSessionCookie": [] }], "responses": { "200": { "description": "sessions revoked and cookie cleared" }, "403": { "description": "Origin not allowed" } } } },
+            "/v1/human/organizations": { "post": { "summary": "Create an organization and owner membership atomically", "security": [{ "humanSessionCookie": [] }], "responses": { "201": { "description": "organization created" } } } },
+            "/v1/human/organizations/{organization_id}/members": {
+                "get": { "summary": "List organization members using members.read", "security": [{ "humanSessionCookie": [] }], "responses": { "200": { "description": "members returned" } } },
+                "post": { "summary": "Add an existing user using members.manage", "security": [{ "humanSessionCookie": [] }], "responses": { "201": { "description": "member added" } } }
+            },
+            "/v1/human/organizations/{organization_id}/members/{user_id}": {
+                "patch": { "summary": "Change membership role or status without removing the last owner", "security": [{ "humanSessionCookie": [] }], "responses": { "200": { "description": "membership updated" }, "409": { "description": "last owner invariant" } } },
+                "delete": { "summary": "Remove a member without removing the last owner", "security": [{ "humanSessionCookie": [] }], "responses": { "204": { "description": "membership removed" }, "409": { "description": "last owner invariant" } } }
+            },
+            "/v1/human/organizations/{organization_id}/projects": { "post": { "summary": "Create a project using projects.manage", "security": [{ "humanSessionCookie": [] }], "responses": { "201": { "description": "project created" } } } },
+            "/v1/human/projects/{project_id}/api-keys": {
+                "get": { "summary": "List redacted Project API Keys using api_keys.read", "security": [{ "humanSessionCookie": [] }], "responses": { "200": { "description": "key metadata returned without hashes or plaintext" } } },
+                "post": { "summary": "Create a project-bound Customer API Key using api_keys.manage", "security": [{ "humanSessionCookie": [] }], "responses": { "201": { "description": "plaintext returned once" } } }
+            },
+            "/v1/human/projects/{project_id}/api-keys/{api_key_id}/revoke": { "post": { "summary": "Immediately and idempotently revoke a Project API Key", "security": [{ "humanSessionCookie": [] }], "responses": { "200": { "description": "key revoked" } } } },
             "/v1/observability/snapshot": {
                 "get": {
                     "summary": "Admin control-plane observability snapshot",
@@ -1191,7 +1217,127 @@ pub fn document() -> serde_json::Value {
     add_jobs_scheduler_reservation_contracts(&mut document);
     add_runtime_verification_contracts(&mut document);
     add_control_plane_protocol_examples(&mut document);
+    add_human_auth_contracts(&mut document);
     document
+}
+
+fn add_human_auth_contracts(document: &mut serde_json::Value) {
+    let schemas = document["components"]["schemas"]
+        .as_object_mut()
+        .expect("OpenAPI schemas object");
+    for (name, schema) in [
+        (
+            "CreateHumanOrganizationRequest",
+            serde_json::json!({"type":"object","required":["display_name"],"properties":{"display_name":{"type":"string","minLength":1,"maxLength":160}}}),
+        ),
+        (
+            "CreateHumanProjectRequest",
+            serde_json::json!({"type":"object","required":["display_name"],"properties":{"display_name":{"type":"string","minLength":1,"maxLength":160}}}),
+        ),
+        (
+            "AddOrganizationMemberRequest",
+            serde_json::json!({"type":"object","required":["user_id","role"],"properties":{"user_id":{"type":"string"},"role":{"type":"string","enum":["owner","admin","billing_admin","developer","viewer"]}}}),
+        ),
+        (
+            "UpdateOrganizationMemberRequest",
+            serde_json::json!({"type":"object","minProperties":1,"properties":{"role":{"type":"string","enum":["owner","admin","billing_admin","developer","viewer"]},"status":{"type":"string","enum":["active","inactive"]}}}),
+        ),
+        (
+            "CreateProjectApiKeyRequest",
+            serde_json::json!({"type":"object","properties":{"scopes":{"type":"array","items":{"type":"string"}},"expires_at":{"type":["string","null"],"format":"date-time"}}}),
+        ),
+        (
+            "HumanIdentitySummary",
+            serde_json::json!({"type":"object","required":["provider","email_verified"],"properties":{"provider":{"type":"string","const":"google"},"email":{"type":["string","null"],"format":"email"},"email_verified":{"type":"boolean"}}}),
+        ),
+        (
+            "HumanMembershipSummary",
+            serde_json::json!({"type":"object","required":["organization_id","role","status"],"properties":{"organization_id":{"type":"string"},"role":{"type":"string","enum":["owner","admin","billing_admin","developer","viewer"]},"status":{"type":"string","enum":["active","inactive"]}}}),
+        ),
+        (
+            "HumanMeResponse",
+            serde_json::json!({"type":"object","required":["request_id","schema_version","user_id","status","identity","organization_memberships"],"properties":{"request_id":{"type":"string"},"schema_version":{"type":"string","const":"burd-human-auth-v1"},"user_id":{"type":"string"},"status":{"type":"string"},"identity":{"$ref":"#/components/schemas/HumanIdentitySummary"},"organization_memberships":{"type":"array","items":{"$ref":"#/components/schemas/HumanMembershipSummary"}}}}),
+        ),
+        (
+            "HumanLogoutResponse",
+            serde_json::json!({"type":"object","required":["request_id","revoked_sessions"],"properties":{"request_id":{"type":"string"},"revoked_sessions":{"type":"integer","minimum":0}}}),
+        ),
+        (
+            "OrganizationMembershipRecord",
+            serde_json::json!({"type":"object","required":["organization_id","user_id","role","status","created_at","updated_at"],"properties":{"organization_id":{"type":"string"},"user_id":{"type":"string"},"role":{"type":"string","enum":["owner","admin","billing_admin","developer","viewer"]},"status":{"type":"string","enum":["active","inactive"]},"created_at":{"type":"string","format":"date-time"},"updated_at":{"type":"string","format":"date-time"}}}),
+        ),
+        (
+            "OrganizationRecord",
+            serde_json::json!({"type":"object","required":["organization_id","schema_version","display_name","status","created_at","updated_at"],"properties":{"organization_id":{"type":"string"},"schema_version":{"type":"string"},"display_name":{"type":"string"},"status":{"type":"string"},"created_at":{"type":"string","format":"date-time"},"updated_at":{"type":"string","format":"date-time"}}}),
+        ),
+        (
+            "HumanOrganizationResponse",
+            serde_json::json!({"type":"object","required":["request_id","organization"],"properties":{"request_id":{"type":"string"},"organization":{"$ref":"#/components/schemas/OrganizationRecord"},"membership":{"oneOf":[{"$ref":"#/components/schemas/OrganizationMembershipRecord"},{"type":"null"}]}}}),
+        ),
+        (
+            "ListOrganizationMembersResponse",
+            serde_json::json!({"type":"object","required":["request_id","members"],"properties":{"request_id":{"type":"string"},"members":{"type":"array","items":{"$ref":"#/components/schemas/OrganizationMembershipRecord"}}}}),
+        ),
+        (
+            "OrganizationMemberResponse",
+            serde_json::json!({"type":"object","required":["request_id","member"],"properties":{"request_id":{"type":"string"},"member":{"$ref":"#/components/schemas/OrganizationMembershipRecord"}}}),
+        ),
+        (
+            "ProjectRecord",
+            serde_json::json!({"type":"object","required":["project_id","organization_id","schema_version","display_name","status","created_at","updated_at"],"properties":{"project_id":{"type":"string"},"organization_id":{"type":"string"},"schema_version":{"type":"string"},"display_name":{"type":"string"},"status":{"type":"string"},"created_at":{"type":"string","format":"date-time"},"updated_at":{"type":"string","format":"date-time"}}}),
+        ),
+        (
+            "HumanProjectResponse",
+            serde_json::json!({"type":"object","required":["request_id","project"],"properties":{"request_id":{"type":"string"},"project":{"$ref":"#/components/schemas/ProjectRecord"}}}),
+        ),
+        (
+            "CustomerApiKeyRecord",
+            serde_json::json!({"type":"object","required":["api_key_id","organization_id","schema_version","key_prefix","status","scopes","created_at"],"properties":{"api_key_id":{"type":"string"},"organization_id":{"type":"string"},"project_id":{"type":["string","null"]},"schema_version":{"type":"string"},"key_prefix":{"type":"string"},"status":{"type":"string"},"scopes":{"type":"array","items":{"type":"string"}},"created_at":{"type":"string","format":"date-time"},"last_used_at":{"type":["string","null"],"format":"date-time"},"expires_at":{"type":["string","null"],"format":"date-time"},"revoked_at":{"type":["string","null"],"format":"date-time"}}}),
+        ),
+        (
+            "CreateProjectApiKeyResponse",
+            serde_json::json!({"type":"object","required":["request_id","api_key","token"],"properties":{"request_id":{"type":"string"},"api_key":{"$ref":"#/components/schemas/CustomerApiKeyRecord"},"token":{"type":"string","description":"Plaintext returned once"}}}),
+        ),
+        (
+            "ListProjectApiKeysResponse",
+            serde_json::json!({"type":"object","required":["request_id","api_keys"],"properties":{"request_id":{"type":"string"},"api_keys":{"type":"array","items":{"$ref":"#/components/schemas/CustomerApiKeyRecord"}}}}),
+        ),
+        (
+            "RevokeProjectApiKeyResponse",
+            serde_json::json!({"type":"object","required":["request_id","api_key"],"properties":{"request_id":{"type":"string"},"api_key":{"$ref":"#/components/schemas/CustomerApiKeyRecord"}}}),
+        ),
+    ] {
+        schemas.insert(name.to_string(), schema);
+    }
+
+    let paths = document["paths"]
+        .as_object_mut()
+        .expect("OpenAPI paths object");
+    paths.insert("/v1/auth/google/start".into(), serde_json::json!({"get":{"summary":"Start Google OIDC Authorization Code Flow with state, nonce, and PKCE S256","responses":{"302":{"description":"Redirect to Google with the encrypted transaction cookie"},"401":{"description":"OIDC provider discovery failed","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"503":{"description":"Human authentication is not configured","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}}));
+    paths.insert("/v1/auth/google/callback".into(), serde_json::json!({"get":{"summary":"Validate Google OIDC callback and create a new opaque Burd human session","parameters":[{"name":"code","in":"query","required":false,"schema":{"type":"string"}},{"name":"state","in":"query","required":false,"schema":{"type":"string"}},{"name":"error","in":"query","required":false,"schema":{"type":"string"}}],"responses":{"303":{"description":"Session cookie created and redirected to the configured server-side success URL"},"401":{"description":"Sanitized OIDC or human authentication failure","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"503":{"description":"Human authentication is not configured or persistence is unavailable","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}}));
+    paths.insert("/v1/auth/me".into(), serde_json::json!({"get":{"summary":"Return the authenticated human user and current organization memberships","security":[{"humanSessionCookie":[]}],"responses":{"200":{"description":"Safe human identity summary","content":{"application/json":{"schema":{"$ref":"#/components/schemas/HumanMeResponse"}}}},"401":{"description":"Human session is missing, expired, revoked, or belongs to a disabled user","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"503":{"description":"Human authentication is not configured or persistence is unavailable","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}}));
+    for route in ["/v1/auth/logout", "/v1/auth/logout-all"] {
+        paths.insert(route.into(), serde_json::json!({"post":{"summary":if route.ends_with("all") {"Revoke all active human sessions for the current user"} else {"Revoke the current human session"},"security":[{"humanSessionCookie":[]}],"responses":{"200":{"description":"Session authority revoked and browser cookie cleared","content":{"application/json":{"schema":{"$ref":"#/components/schemas/HumanLogoutResponse"}}}},"401":{"description":"Human session is not currently valid","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"403":{"description":"Origin is missing or not in the exact allowlist","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"503":{"description":"Human authentication is not configured or persistence is unavailable","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}}));
+    }
+    paths.insert("/v1/human/organizations".into(), serde_json::json!({"post":{"summary":"Create an organization and owner membership atomically","security":[{"humanSessionCookie":[]}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreateHumanOrganizationRequest"}}}},"responses":{"201":{"description":"Organization and owner membership created","content":{"application/json":{"schema":{"$ref":"#/components/schemas/HumanOrganizationResponse"}}}},"400":{"description":"Invalid organization request","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"401":{"description":"Human session invalid","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"403":{"description":"Origin is missing or not allowed","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}}));
+    paths.insert("/v1/human/organizations/{organization_id}/members".into(), serde_json::json!({
+        "get":{"summary":"List organization members using members.read","security":[{"humanSessionCookie":[]}],"parameters":[path_parameter("organization_id")],"responses":{"200":{"description":"Members returned","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ListOrganizationMembersResponse"}}}},"401":{"description":"Session or organization membership is unauthorized","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}},
+        "post":{"summary":"Add an existing user using members.manage","security":[{"humanSessionCookie":[]}],"parameters":[path_parameter("organization_id")],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AddOrganizationMemberRequest"}}}},"responses":{"201":{"description":"Member added","content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationMemberResponse"}}}},"400":{"description":"Role or target user invalid","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"401":{"description":"Session, membership, or requested role authority is unauthorized","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"403":{"description":"Origin is missing or not allowed","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}
+    }));
+    paths.insert("/v1/human/organizations/{organization_id}/members/{user_id}".into(), serde_json::json!({
+        "patch":{"summary":"Change membership role or status without removing the last owner","security":[{"humanSessionCookie":[]}],"parameters":[path_parameter("organization_id"),path_parameter("user_id")],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/UpdateOrganizationMemberRequest"}}}},"responses":{"200":{"description":"Membership updated","content":{"application/json":{"schema":{"$ref":"#/components/schemas/OrganizationMemberResponse"}}}},"400":{"description":"Role or membership status invalid","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"401":{"description":"Session or membership authority unauthorized","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"403":{"description":"Origin is missing or not allowed","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"404":{"description":"Organization member not found","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"409":{"description":"Operation would remove the last active owner","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}},
+        "delete":{"summary":"Remove a member without removing the last owner","security":[{"humanSessionCookie":[]}],"parameters":[path_parameter("organization_id"),path_parameter("user_id")],"responses":{"204":{"description":"Membership removed"},"401":{"description":"Session or membership authority unauthorized","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"403":{"description":"Origin is missing or not allowed","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"404":{"description":"Organization member not found","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"409":{"description":"Operation would remove the last active owner","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}
+    }));
+    paths.insert("/v1/human/organizations/{organization_id}/projects".into(), serde_json::json!({"post":{"summary":"Create a project using projects.manage","security":[{"humanSessionCookie":[]}],"parameters":[path_parameter("organization_id")],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreateHumanProjectRequest"}}}},"responses":{"201":{"description":"Project created in the authorized organization","content":{"application/json":{"schema":{"$ref":"#/components/schemas/HumanProjectResponse"}}}},"400":{"description":"Invalid project request","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"401":{"description":"Session or organization membership unauthorized","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"403":{"description":"Origin is missing or not allowed","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}}));
+    paths.insert("/v1/human/projects/{project_id}/api-keys".into(), serde_json::json!({
+        "get":{"summary":"List redacted Project API Keys using api_keys.read","security":[{"humanSessionCookie":[]}],"parameters":[path_parameter("project_id")],"responses":{"200":{"description":"Key metadata without hashes or plaintext","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ListProjectApiKeysResponse"}}}},"401":{"description":"Session or project organization membership unauthorized","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"404":{"description":"Active project not found","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}},
+        "post":{"summary":"Create a project-bound Customer API Key using api_keys.manage","security":[{"humanSessionCookie":[]}],"parameters":[path_parameter("project_id")],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreateProjectApiKeyRequest"}}}},"responses":{"201":{"description":"Plaintext Project API Key returned once","content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreateProjectApiKeyResponse"}}}},"400":{"description":"Invalid scopes or expiry","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"401":{"description":"Session or project organization membership unauthorized","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"403":{"description":"Origin is missing or not allowed","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"404":{"description":"Active project not found","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}
+    }));
+    paths.insert("/v1/human/projects/{project_id}/api-keys/{api_key_id}/revoke".into(), serde_json::json!({"post":{"summary":"Immediately and idempotently revoke a Project API Key","security":[{"humanSessionCookie":[]}],"parameters":[path_parameter("project_id"),path_parameter("api_key_id")],"responses":{"200":{"description":"Key revoked or already revoked","content":{"application/json":{"schema":{"$ref":"#/components/schemas/RevokeProjectApiKeyResponse"}}}},"401":{"description":"Session or project organization membership unauthorized","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"403":{"description":"Origin is missing or not allowed","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}},"404":{"description":"Active project or matching API key not found","content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorEnvelope"}}}}}}}));
+}
+
+fn path_parameter(name: &str) -> serde_json::Value {
+    serde_json::json!({"name":name,"in":"path","required":true,"schema":{"type":"string"}})
 }
 
 fn add_runtime_verification_contracts(document: &mut serde_json::Value) {
@@ -4111,6 +4257,17 @@ mod tests {
             "/health",
             "/ready",
             "/metrics",
+            "/v1/auth/google/start",
+            "/v1/auth/google/callback",
+            "/v1/auth/me",
+            "/v1/auth/logout",
+            "/v1/auth/logout-all",
+            "/v1/human/organizations",
+            "/v1/human/organizations/{organization_id}/members",
+            "/v1/human/organizations/{organization_id}/members/{user_id}",
+            "/v1/human/organizations/{organization_id}/projects",
+            "/v1/human/projects/{project_id}/api-keys",
+            "/v1/human/projects/{project_id}/api-keys/{api_key_id}/revoke",
             "/v1/observability/snapshot",
             "/v1/security/policy",
             "/v1/providers",
@@ -4211,6 +4368,7 @@ mod tests {
         assert!(document["components"]["securitySchemes"]["deviceBearer"].is_object());
         assert!(document["components"]["securitySchemes"]["customerBearer"].is_object());
         assert!(document["components"]["securitySchemes"]["jobDataPlaneBearer"].is_object());
+        assert!(document["components"]["securitySchemes"]["humanSessionCookie"].is_object());
     }
 
     #[test]
@@ -4384,6 +4542,104 @@ mod tests {
             assert_eq!(schema["minLength"], 1);
             assert_eq!(schema["maxLength"], 128);
             assert_eq!(schema["pattern"], "^[!-~]+$");
+        }
+    }
+
+    #[test]
+    fn openapi_human_routes_bind_paths_bodies_responses_and_distinct_cookie_security() {
+        let document = document();
+        let operations = [
+            ("/v1/auth/google/start", "get", false),
+            ("/v1/auth/google/callback", "get", false),
+            ("/v1/auth/me", "get", false),
+            ("/v1/auth/logout", "post", false),
+            ("/v1/auth/logout-all", "post", false),
+            ("/v1/human/organizations", "post", true),
+            (
+                "/v1/human/organizations/{organization_id}/members",
+                "get",
+                false,
+            ),
+            (
+                "/v1/human/organizations/{organization_id}/members",
+                "post",
+                true,
+            ),
+            (
+                "/v1/human/organizations/{organization_id}/members/{user_id}",
+                "patch",
+                true,
+            ),
+            (
+                "/v1/human/organizations/{organization_id}/members/{user_id}",
+                "delete",
+                false,
+            ),
+            (
+                "/v1/human/organizations/{organization_id}/projects",
+                "post",
+                true,
+            ),
+            ("/v1/human/projects/{project_id}/api-keys", "get", false),
+            ("/v1/human/projects/{project_id}/api-keys", "post", true),
+            (
+                "/v1/human/projects/{project_id}/api-keys/{api_key_id}/revoke",
+                "post",
+                false,
+            ),
+        ];
+        for (path, method, has_body) in operations {
+            let operation = &document["paths"][path][method];
+            assert!(operation.is_object(), "missing {method} {path}");
+            assert_eq!(
+                operation.get("requestBody").is_some(),
+                has_body,
+                "body {method} {path}"
+            );
+            for variable in ["organization_id", "user_id", "project_id", "api_key_id"] {
+                if path.contains(&format!("{{{variable}}}")) {
+                    assert!(
+                        operation["parameters"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|parameter| {
+                                parameter["name"] == variable
+                                    && parameter["in"] == "path"
+                                    && parameter["required"] == true
+                            })
+                    );
+                }
+            }
+            if path.starts_with("/v1/human/")
+                || path.starts_with("/v1/auth/m")
+                || path.contains("logout")
+            {
+                assert_eq!(
+                    operation["security"],
+                    serde_json::json!([{"humanSessionCookie": []}])
+                );
+            }
+            if method != "get" {
+                assert!(
+                    operation["responses"].get("403").is_some(),
+                    "Origin response {method} {path}"
+                );
+            }
+            for response in operation["responses"].as_object().unwrap().values() {
+                if let Some(content) = response.get("content") {
+                    assert!(content["application/json"]["schema"].is_object());
+                }
+            }
+        }
+        for scheme in [
+            "adminBearer",
+            "humanSessionCookie",
+            "customerBearer",
+            "deviceBearer",
+            "jobDataPlaneBearer",
+        ] {
+            assert!(document["components"]["securitySchemes"][scheme].is_object());
         }
     }
 

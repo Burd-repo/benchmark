@@ -23,6 +23,7 @@ anyhow = "1.0"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["clock", "serde"] }
+cookie = { version = "0.18", features = ["private"] }
 clap = { version = "4.5", features = ["derive"] }
 csv = "1.4"
 cudarc = { version = "0.19.8", default-features = false, features = ["std", "driver", "runtime", "cublas", "dynamic-loading", "cuda-12000"] }
@@ -34,6 +35,7 @@ llmfit-core = { path = "third_party/llmfit/llmfit-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 semver = "1.0"
+openidconnect = { version = "3.5", default-features = false, features = ["reqwest"] }
 sha2 = "0.10"
 sysinfo = "0.38"
 tokio = { version = "1.48", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
@@ -42,4 +44,5 @@ tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 tower = "0.5"
 ureq = { version = "3.2", features = ["json"] }
 uuid = { version = "1.18", features = ["serde", "v4"] }
+url = "2.5"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }

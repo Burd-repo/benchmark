@@ -186,6 +186,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "agent_protocol_negotiation",
         sql: include_str!("../migrations/0036_agent_protocol_negotiation.sql"),
     },
+    Migration {
+        version: "0037",
+        name: "human_oidc_organization_rbac",
+        sql: include_str!("../migrations/0037_human_oidc_organization_rbac.sql"),
+    },
 ];
 
 #[cfg(test)]
@@ -228,6 +233,90 @@ mod tests {
         ] {
             assert!(sql.contains(needle));
         }
+    }
+
+    #[test]
+    fn human_oidc_migration_preserves_identity_and_session_authority() {
+        let sql = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == "0037")
+            .unwrap()
+            .sql;
+        for needle in [
+            "CREATE TABLE IF NOT EXISTS human_oidc_identities",
+            "UNIQUE (provider, provider_subject)",
+            "CREATE TABLE IF NOT EXISTS human_sessions",
+            "token_hash TEXT NOT NULL UNIQUE",
+            "organization_users_role_known",
+            "organization_users_status_known",
+        ] {
+            assert!(sql.contains(needle), "missing migration invariant {needle}");
+        }
+        for forbidden in [
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "authorization_code",
+            "password_hash",
+        ] {
+            assert!(
+                !sql.contains(forbidden),
+                "migration persists forbidden secret {forbidden}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_human_oidc_migration_preserves_legacy_customer_state_without_invention() {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
+            .expect("BURD_CONTROL_TEST_DATABASE_URL is required");
+        let schema = format!("burd_auth_migration_{}", Uuid::new_v4().simple());
+        let db = Database::new(url, Some(schema)).unwrap();
+        let mut client = db.connect().await.unwrap();
+        let tx = client.transaction().await.unwrap();
+        for migration in MIGRATIONS
+            .iter()
+            .filter(|migration| migration.version < "0037")
+        {
+            tx.batch_execute(migration.sql).await.unwrap();
+        }
+        let now = Utc::now().to_rfc3339();
+        tx.execute("INSERT INTO users(user_id,email,status,created_at,updated_at) VALUES('user_legacy_auth','legacy@example.test','active',$1,$1)",&[&now]).await.unwrap();
+        tx.execute("INSERT INTO organizations(organization_id,schema_version,display_name,status,created_at,updated_at) VALUES('org_legacy_auth','burd-customer-organization-v1','Legacy','active',$1,$1)",&[&now]).await.unwrap();
+        tx.execute("INSERT INTO organization_users(organization_id,user_id,role,status,created_at,updated_at) VALUES('org_legacy_auth','user_legacy_auth','owner','active',$1,$1)",&[&now]).await.unwrap();
+        tx.execute("INSERT INTO projects(project_id,organization_id,schema_version,display_name,status,created_at,updated_at) VALUES('project_legacy_auth','org_legacy_auth','burd-customer-project-v1','Legacy Project','active',$1,$1)",&[&now]).await.unwrap();
+        tx.execute("INSERT INTO customer_api_keys(api_key_id,organization_id,project_id,schema_version,key_prefix,key_hash,status,scopes_json,created_at) VALUES('key_legacy_auth','org_legacy_auth','project_legacy_auth','burd-customer-api-key-v1','legacy','legacy_hash','active','[]',$1)",&[&now]).await.unwrap();
+        tx.batch_execute(
+            MIGRATIONS
+                .iter()
+                .find(|migration| migration.version == "0037")
+                .unwrap()
+                .sql,
+        )
+        .await
+        .unwrap();
+        for (table, expected) in [
+            ("users", 1_i64),
+            ("organizations", 1),
+            ("organization_users", 1),
+            ("projects", 1),
+            ("customer_api_keys", 1),
+            ("human_oidc_identities", 0),
+            ("human_sessions", 0),
+        ] {
+            let row = tx
+                .query_one(&format!("SELECT COUNT(*) AS count FROM {table}"), &[])
+                .await
+                .unwrap();
+            assert_eq!(
+                row.get::<_, i64>("count"),
+                expected,
+                "unexpected rows in {table}"
+            );
+        }
+        tx.commit().await.unwrap();
+        db.drop_schema_for_test().await.unwrap();
     }
 
     #[test]

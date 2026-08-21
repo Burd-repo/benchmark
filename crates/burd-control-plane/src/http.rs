@@ -9,6 +9,11 @@ use crate::customer_compute::{CreateCustomerWorkloadCommand, CreateCustomerWorkl
 use crate::db::{CreateProviderCommand, CreateProviderOutcome, Database, ProviderRecord};
 use crate::enrollment::EnrollmentError;
 use crate::error::{ApiError, ErrorCode};
+use crate::google_oidc::{
+    GoogleCallbackQuery, HUMAN_SESSION_COOKIE, OIDC_TRANSACTION_COOKIE, clear_cookie,
+    complete_google_oidc, cookie_value, human_session_cookie, start_google_oidc,
+};
+use crate::human_auth::HumanSessionAuth;
 use crate::job_artifact::JobArtifactDirection;
 use crate::job_control::{CreateJobCommand, CreateJobOutcome};
 use crate::observability::{
@@ -33,15 +38,16 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use burd_protocol::{
-    AcceptJobRequest, CancelCustomerWorkloadRequest, CancelJobRequest, CancelReservationRequest,
-    ClientControlMessage, ConfirmPixPaymentIntentRequest, CreateCustomerApiKeyRequest,
-    CreateCustomerArtifactRequest, CreateCustomerUserRequest, CreateCustomerWorkloadRequest,
-    CreateJobRequest, CreateOrganizationRequest, CreatePixPaymentIntentRequest,
-    CreateProjectRequest, CreateProviderPayoutRequest, CreateReservationRequest,
-    EnrollmentProofRequest, GrantCustomerCreditsRequest, IssueProofChallengeRequest,
+    AcceptJobRequest, AddOrganizationMemberRequest, CancelCustomerWorkloadRequest,
+    CancelJobRequest, CancelReservationRequest, ClientControlMessage,
+    ConfirmPixPaymentIntentRequest, CreateCustomerApiKeyRequest, CreateCustomerArtifactRequest,
+    CreateCustomerUserRequest, CreateCustomerWorkloadRequest, CreateJobRequest,
+    CreateOrganizationRequest, CreatePixPaymentIntentRequest, CreateProjectRequest,
+    CreateProviderPayoutRequest, CreateReservationRequest, EnrollmentProofRequest,
+    GrantCustomerCreditsRequest, IssueProofChallengeRequest,
     IssueRuntimeVerificationChallengeRequest, JOB_ARTIFACT_UPLOAD_VERSION,
     JobArtifactUploadResponse, JobEventRequest, KeyRotationProofRequest, RevokeEvidenceRequest,
     RunMarketplaceListingSweepRequest, RunSchedulerRequest, RunTrustSweepRequest,
@@ -50,9 +56,9 @@ use burd_protocol::{
     SignedDeviceGpuInventory, SignedProofCapabilityResponse, SignedProviderRuntimeObservation,
     SignedRuntimeVerificationResponse, SignedSecurityPosture, StartEnrollmentRequest,
     StartKeyRotationRequest, StartRemoteSessionRequest, SubmitEvidenceRequest,
-    SubmitJobResultRequest, SubmitNetworkProbeObservationRequest, UpsertBenchmarkProfileRequest,
-    UpsertMarketplacePriceRequest, UpsertProjectQuotaRequest, UpsertProviderPayoutAccountRequest,
-    UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
+    SubmitJobResultRequest, SubmitNetworkProbeObservationRequest, UpdateOrganizationMemberRequest,
+    UpsertBenchmarkProfileRequest, UpsertMarketplacePriceRequest, UpsertProjectQuotaRequest,
+    UpsertProviderPayoutAccountRequest, UpsertWorkloadPolicyRequest, hash_canonical, sha256_hex,
 };
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
@@ -200,6 +206,32 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ready", get(ready))
         .route("/openapi.json", get(openapi_json))
         .route("/metrics", get(metrics))
+        .route("/v1/auth/google/start", get(google_auth_start))
+        .route("/v1/auth/google/callback", get(google_auth_callback))
+        .route("/v1/auth/me", get(human_me))
+        .route("/v1/auth/logout", post(human_logout))
+        .route("/v1/auth/logout-all", post(human_logout_all))
+        .route("/v1/human/organizations", post(create_human_organization))
+        .route(
+            "/v1/human/organizations/{organization_id}/members",
+            get(list_human_organization_members).post(add_human_organization_member),
+        )
+        .route(
+            "/v1/human/organizations/{organization_id}/members/{user_id}",
+            patch(update_human_organization_member).delete(remove_human_organization_member),
+        )
+        .route(
+            "/v1/human/organizations/{organization_id}/projects",
+            post(create_human_project),
+        )
+        .route(
+            "/v1/human/projects/{project_id}/api-keys",
+            get(list_human_customer_api_keys).post(create_human_customer_api_key),
+        )
+        .route(
+            "/v1/human/projects/{project_id}/api-keys/{api_key_id}/revoke",
+            post(revoke_human_customer_api_key),
+        )
         .route("/v1/observability/snapshot", get(observability_snapshot))
         .route("/v1/security/policy", get(security_policy_status))
         .route("/v1/providers", post(create_provider))
@@ -544,6 +576,380 @@ pub fn router(state: Arc<AppState>) -> Router {
             observability_middleware,
         ))
         .with_state(state)
+}
+
+async fn google_auth_start(State(state): State<Arc<AppState>>) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let config = human_auth_config(&state.config, &request_id)?;
+    let (authorization_url, transaction_cookie) = start_google_oidc(config)
+        .await
+        .map_err(|_| sanitized_oidc_error(&request_id))?;
+    let mut response = Response::builder()
+        .status(StatusCode::FOUND)
+        .header(header::LOCATION, authorization_url)
+        .header(header::SET_COOKIE, transaction_cookie)
+        .body(Body::empty())
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorCode::Internal,
+                "authentication could not be started",
+                request_id,
+            )
+        })?;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+async fn google_auth_callback(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<GoogleCallbackQuery>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let config = human_auth_config(&state.config, &request_id)?;
+    let cookie_header = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok());
+    let identity = match complete_google_oidc(config, cookie_header, &query).await {
+        Ok(identity) => identity,
+        Err(_) => return Ok(oidc_failure_response(&request_id)),
+    };
+    let created = match state
+        .db
+        .create_google_human_session(&request_id, &identity, config.human_session_ttl_seconds)
+        .await
+    {
+        Ok(created) => created,
+        Err(error) => {
+            let mut response = session_api_error(error, request_id.clone()).into_response();
+            clear_oidc_transaction_cookie(&mut response);
+            return Ok(response);
+        }
+    };
+    let mut response = Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(header::LOCATION, &config.success_url)
+        .body(Body::empty())
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorCode::Internal,
+                "authentication could not be completed",
+                &request_id,
+            )
+        })?;
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&clear_cookie(OIDC_TRANSACTION_COOKIE))
+            .map_err(|_| sanitized_oidc_error(&request_id))?,
+    );
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&human_session_cookie(
+            created.token,
+            config.human_session_ttl_seconds,
+        ))
+        .map_err(|_| sanitized_oidc_error(&request_id))?,
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+async fn human_me(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::HumanMeResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_human(&state, &headers, &request_id).await?;
+    state
+        .db
+        .human_me(&request_id, &auth)
+        .await
+        .map(Json)
+        .map_err(|error| session_api_error(error, request_id))
+}
+
+async fn human_logout(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    require_human_origin(&state.config, &headers, &request_id)?;
+    let auth = authorize_human(&state, &headers, &request_id).await?;
+    let count = state
+        .db
+        .revoke_human_session(&request_id, &auth)
+        .await
+        .map_err(|e| session_api_error(e, request_id.clone()))?;
+    Ok((
+        [
+            (header::SET_COOKIE, clear_cookie(HUMAN_SESSION_COOKIE)),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        Json(burd_protocol::HumanLogoutResponse {
+            request_id,
+            revoked_sessions: count,
+        }),
+    )
+        .into_response())
+}
+
+async fn human_logout_all(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    require_human_origin(&state.config, &headers, &request_id)?;
+    let auth = authorize_human(&state, &headers, &request_id).await?;
+    let count = state
+        .db
+        .revoke_all_human_sessions(&request_id, &auth)
+        .await
+        .map_err(|e| session_api_error(e, request_id.clone()))?;
+    Ok((
+        [
+            (header::SET_COOKIE, clear_cookie(HUMAN_SESSION_COOKIE)),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        Json(burd_protocol::HumanLogoutResponse {
+            request_id,
+            revoked_sessions: count,
+        }),
+    )
+        .into_response())
+}
+
+async fn create_human_organization(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateOrganizationRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_human_mutation(&state, &headers, &request_id).await?;
+    let value = state
+        .db
+        .create_human_organization(&request_id, &auth, &payload)
+        .await
+        .map_err(|e| session_api_error(e, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(value)).into_response())
+}
+async fn list_human_organization_members(
+    State(state): State<Arc<AppState>>,
+    Path(org): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListOrganizationMembersResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_human(&state, &headers, &request_id).await?;
+    state
+        .db
+        .list_organization_members(&request_id, &auth, &org)
+        .await
+        .map(Json)
+        .map_err(|e| session_api_error(e, request_id))
+}
+async fn add_human_organization_member(
+    State(state): State<Arc<AppState>>,
+    Path(org): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<AddOrganizationMemberRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_human_mutation(&state, &headers, &request_id).await?;
+    let value = state
+        .db
+        .add_organization_member(&request_id, &auth, &org, &payload)
+        .await
+        .map_err(|e| session_api_error(e, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(value)).into_response())
+}
+async fn update_human_organization_member(
+    State(state): State<Arc<AppState>>,
+    Path((org, user)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateOrganizationMemberRequest>,
+) -> Result<Json<burd_protocol::OrganizationMemberResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_human_mutation(&state, &headers, &request_id).await?;
+    state
+        .db
+        .update_organization_member(&request_id, &auth, &org, &user, &payload)
+        .await
+        .map(Json)
+        .map_err(|e| session_api_error(e, request_id))
+}
+async fn remove_human_organization_member(
+    State(state): State<Arc<AppState>>,
+    Path((org, user)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_human_mutation(&state, &headers, &request_id).await?;
+    state
+        .db
+        .remove_organization_member(&request_id, &auth, &org, &user)
+        .await
+        .map_err(|e| session_api_error(e, request_id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn create_human_project(
+    State(state): State<Arc<AppState>>,
+    Path(org): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateProjectRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_human_mutation(&state, &headers, &request_id).await?;
+    let value = state
+        .db
+        .create_human_project(&request_id, &auth, &org, &payload)
+        .await
+        .map_err(|e| session_api_error(e, request_id.clone()))?;
+    Ok((StatusCode::CREATED, Json(value)).into_response())
+}
+async fn list_human_customer_api_keys(
+    State(state): State<Arc<AppState>>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::ListCustomerApiKeysResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_human(&state, &headers, &request_id).await?;
+    state
+        .db
+        .list_human_customer_api_keys(&request_id, &auth, &project)
+        .await
+        .map(Json)
+        .map_err(|e| session_api_error(e, request_id))
+}
+async fn create_human_customer_api_key(
+    State(state): State<Arc<AppState>>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateCustomerApiKeyRequest>,
+) -> Result<Response, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_human_mutation(&state, &headers, &request_id).await?;
+    let value = state
+        .db
+        .create_human_customer_api_key(&request_id, &auth, &project, &payload)
+        .await
+        .map_err(|e| session_api_error(e, request_id.clone()))?;
+    Ok(sensitive_json_response(StatusCode::CREATED, value))
+}
+async fn revoke_human_customer_api_key(
+    State(state): State<Arc<AppState>>,
+    Path((project, key)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<burd_protocol::RevokeCustomerApiKeyResponse>, ApiError> {
+    let request_id = new_request_id();
+    let auth = authorize_human_mutation(&state, &headers, &request_id).await?;
+    state
+        .db
+        .revoke_human_customer_api_key(&request_id, &auth, &project, &key)
+        .await
+        .map(Json)
+        .map_err(|e| session_api_error(e, request_id))
+}
+
+fn human_auth_config<'a>(
+    config: &'a ControlPlaneConfig,
+    request_id: &str,
+) -> Result<&'a crate::config::GoogleOidcConfig, ApiError> {
+    config.google_oidc.as_ref().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::PolicyBlocked,
+            "human authentication is not configured",
+            request_id,
+        )
+    })
+}
+async fn authorize_human(
+    state: &AppState,
+    headers: &HeaderMap,
+    request_id: &str,
+) -> Result<HumanSessionAuth, ApiError> {
+    human_auth_config(&state.config, request_id)?;
+    let raw = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
+    let token = cookie_value(raw, HUMAN_SESSION_COOKIE).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::Unauthorized,
+            "human session is invalid",
+            request_id,
+        )
+    })?;
+    state.db.authorize_human_session(&token).await.map_err(|_| {
+        ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            ErrorCode::Unauthorized,
+            "human session is invalid",
+            request_id,
+        )
+    })
+}
+async fn authorize_human_mutation(
+    state: &AppState,
+    headers: &HeaderMap,
+    request_id: &str,
+) -> Result<HumanSessionAuth, ApiError> {
+    require_human_origin(&state.config, headers, request_id)?;
+    authorize_human(state, headers, request_id).await
+}
+fn require_human_origin(
+    config: &ControlPlaneConfig,
+    headers: &HeaderMap,
+    request_id: &str,
+) -> Result<(), ApiError> {
+    let oidc = human_auth_config(config, request_id)?;
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::FORBIDDEN,
+                ErrorCode::Forbidden,
+                "request origin is not allowed",
+                request_id,
+            )
+        })?;
+    if oidc.allowed_origins.iter().any(|allowed| allowed == origin) {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            ErrorCode::Forbidden,
+            "request origin is not allowed",
+            request_id,
+        ))
+    }
+}
+fn sanitized_oidc_error(request_id: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        ErrorCode::Unauthorized,
+        "Google authentication could not be completed",
+        request_id,
+    )
+}
+
+fn oidc_failure_response(request_id: &str) -> Response {
+    let mut response = sanitized_oidc_error(request_id).into_response();
+    clear_oidc_transaction_cookie(&mut response);
+    response
+}
+
+fn clear_oidc_transaction_cookie(response: &mut Response) {
+    if let Ok(value) = HeaderValue::from_str(&clear_cookie(OIDC_TRANSACTION_COOKIE)) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
@@ -3793,6 +4199,7 @@ fn migrations_are_current(applied: &[String], expected: &[&str]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::google_oidc::oidc_test_support::{MockOidcIssuer, TokenScenario};
     use axum::body::{Body, to_bytes};
     use axum::http::{HeaderValue, Method, Request};
     use futures_util::{SinkExt, StreamExt};
@@ -3850,6 +4257,7 @@ mod tests {
                 "sev_snp".to_string(),
                 "sgx".to_string(),
             ],
+            google_oidc: None,
         }
     }
 
@@ -3887,6 +4295,79 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
+    fn oidc_config(
+        issuer_url: String,
+        transaction_ttl_seconds: u32,
+    ) -> crate::config::GoogleOidcConfig {
+        crate::config::GoogleOidcConfig {
+            client_id: "mock-google-client".into(),
+            client_secret: "mock-google-secret".into(),
+            redirect_uri: "https://control.example/v1/auth/google/callback".into(),
+            success_url: "https://app.example/auth/success".into(),
+            allowed_origins: vec!["https://app.example".into()],
+            cookie_key: crate::config::SecretCookieKey([19; 64]),
+            human_session_ttl_seconds: 3600,
+            transaction_ttl_seconds,
+            test_issuer_url: Some(issuer_url),
+        }
+    }
+
+    fn set_cookie(response: &axum::response::Response, name: &str) -> String {
+        response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .find(|value| value.starts_with(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("missing {name} cookie"))
+            .to_string()
+    }
+
+    fn cookie_pair(set_cookie: &str) -> String {
+        set_cookie.split(';').next().unwrap().to_string()
+    }
+
+    async fn oidc_start(app: Router) -> (String, String) {
+        let response = send_request(app, Method::GET, "/v1/auth/google/start", None, &[]).await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let transaction_cookie = set_cookie(&response, OIDC_TRANSACTION_COOKIE);
+        assert!(transaction_cookie.contains("Secure"));
+        assert!(transaction_cookie.contains("HttpOnly"));
+        assert!(transaction_cookie.contains("SameSite=Lax"));
+        assert!(transaction_cookie.contains("Path=/"));
+        assert!(!transaction_cookie.contains("Domain="));
+        (location, cookie_pair(&transaction_cookie))
+    }
+
+    async fn oidc_callback(
+        app: Router,
+        issuer: &MockOidcIssuer,
+        authorization_url: &str,
+        transaction_cookie: &str,
+        scenario: TokenScenario,
+    ) -> axum::response::Response {
+        let issued = issuer.issue_code(authorization_url, scenario);
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("code", &issued.code)
+            .append_pair("state", &issued.state)
+            .finish();
+        send_request(
+            app,
+            Method::GET,
+            &format!("/v1/auth/google/callback?{query}"),
+            None,
+            &[("cookie", transaction_cookie)],
+        )
+        .await
+    }
+
     fn assert_error_envelope(value: &serde_json::Value, code: &str) {
         assert_eq!(value["error"]["code"], code);
         assert!(value["error"]["message"].as_str().unwrap().len() > 2);
@@ -3897,6 +4378,611 @@ mod tests {
                 .starts_with("req_")
         );
         assert!(value["error"]["details"].is_object());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_human_session_http_origin_and_authority_boundaries() {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL")
+            .expect("BURD_CONTROL_TEST_DATABASE_URL is required");
+        let schema = format!("burd_http_human_{}", Uuid::new_v4().simple());
+        let mut config = test_config(&url);
+        config.database_schema = Some(schema.clone());
+        config.google_oidc = Some(crate::config::GoogleOidcConfig {
+            client_id: "test-client".into(),
+            client_secret: "test-secret".into(),
+            redirect_uri: "https://control.example/v1/auth/google/callback".into(),
+            success_url: "https://app.example/auth/success".into(),
+            allowed_origins: vec!["https://app.example".into()],
+            cookie_key: crate::config::SecretCookieKey([3; 64]),
+            human_session_ttl_seconds: 3600,
+            transaction_ttl_seconds: 600,
+            test_issuer_url: None,
+        });
+        let db = Database::new(url, Some(schema)).unwrap();
+        db.migrate().await.unwrap();
+        let session = db
+            .create_google_human_session(
+                "req_http_jit",
+                &crate::human_auth::VerifiedGoogleIdentity {
+                    subject: "http-google-sub".into(),
+                    email: Some("human@example.test".into()),
+                    email_verified: true,
+                },
+                3600,
+            )
+            .await
+            .unwrap();
+        let app = router(Arc::new(AppState::new(config, db.clone())));
+        let cookie = format!("{}={}", HUMAN_SESSION_COOKIE, session.token);
+        let failed_callback = send_request(
+            app.clone(),
+            Method::GET,
+            "/v1/auth/google/callback?code=redacted&state=invalid",
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(failed_callback.status(), StatusCode::UNAUTHORIZED);
+        let cleared_transaction = failed_callback
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(cleared_transaction.starts_with("__Host-burd_oidc_tx="));
+        assert!(cleared_transaction.contains("Max-Age=0"));
+        assert_eq!(
+            send_request(
+                app.clone(),
+                Method::GET,
+                "/v1/auth/me",
+                None,
+                &[("cookie", &cookie)]
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        let body = r#"{"display_name":"Human Org"}"#;
+        assert_eq!(
+            send_request(
+                app.clone(),
+                Method::POST,
+                "/v1/human/organizations",
+                Some(body),
+                &[("cookie", &cookie), ("origin", "https://evil.example")]
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send_request(
+                app.clone(),
+                Method::POST,
+                "/v1/human/organizations",
+                Some(body),
+                &[("cookie", &cookie), ("origin", "https://app.example")]
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            send_request(
+                app.clone(),
+                Method::GET,
+                "/v1/customer/projects/missing/usage",
+                None,
+                &[("cookie", &cookie)]
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let logout = send_request(
+            app.clone(),
+            Method::POST,
+            "/v1/auth/logout",
+            None,
+            &[("cookie", &cookie), ("origin", "https://app.example")],
+        )
+        .await;
+        assert_eq!(logout.status(), StatusCode::OK);
+        let clear = logout
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(clear.starts_with("__Host-burd_session="));
+        assert!(clear.contains("Max-Age=0"));
+        assert_eq!(
+            send_request(
+                app,
+                Method::GET,
+                "/v1/auth/me",
+                None,
+                &[("cookie", &cookie)]
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        db.drop_schema_for_test().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_mock_google_oidc_e2e_is_browser_safe_and_does_not_take_over_legacy_email() {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL").expect("test database URL");
+        let schema = format!("burd_oidc_e2e_{}", Uuid::new_v4().simple());
+        let issuer = MockOidcIssuer::start("mock-google-client").await;
+        let mut config = test_config(&url);
+        config.database_schema = Some(schema.clone());
+        config.google_oidc = Some(oidc_config(issuer.issuer_url.clone(), 600));
+        let db = Database::new(url, Some(schema)).unwrap();
+        db.migrate().await.unwrap();
+        let client = db.connect().await.unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        client.execute(
+            "INSERT INTO users (user_id,email,status,created_at,updated_at) VALUES ('legacy','alice@example.com','active',$1,$1)",
+            &[&now],
+        ).await.unwrap();
+        let app = router(Arc::new(AppState::new(config, db.clone())));
+
+        let (authorization_url, transaction_cookie) = oidc_start(app.clone()).await;
+        let callback = oidc_callback(
+            app.clone(),
+            &issuer,
+            &authorization_url,
+            &transaction_cookie,
+            TokenScenario::Valid,
+        )
+        .await;
+        assert_eq!(callback.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            callback.headers().get(header::LOCATION).unwrap(),
+            "https://app.example/auth/success"
+        );
+        assert!(
+            !callback
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("token")
+        );
+        let cleared_tx = set_cookie(&callback, OIDC_TRANSACTION_COOKIE);
+        assert!(cleared_tx.contains("Max-Age=0"));
+        let session_set_cookie = set_cookie(&callback, HUMAN_SESSION_COOKIE);
+        for attribute in ["Secure", "HttpOnly", "SameSite=Lax", "Path=/"] {
+            assert!(session_set_cookie.contains(attribute));
+        }
+        assert!(!session_set_cookie.contains("Domain="));
+        let session_cookie = cookie_pair(&session_set_cookie);
+        let plaintext_token = session_cookie.split_once('=').unwrap().1.to_string();
+
+        let me = send_request(
+            app.clone(),
+            Method::GET,
+            "/v1/auth/me",
+            None,
+            &[("cookie", &session_cookie)],
+        )
+        .await;
+        assert_eq!(me.status(), StatusCode::OK);
+        let me_json = response_json(me).await;
+        let oidc_user = me_json["user_id"].as_str().unwrap();
+        assert_ne!(oidc_user, "legacy");
+        let identity = client.query_one(
+            "SELECT user_id,provider_subject,email FROM human_oidc_identities WHERE provider='google' AND provider_subject='google-sub-new'",
+            &[],
+        ).await.unwrap();
+        assert_eq!(identity.get::<_, String>("user_id"), oidc_user);
+        assert_eq!(identity.get::<_, String>("email"), "alice@example.com");
+        let hashes = client
+            .query(
+                "SELECT token_hash FROM human_sessions WHERE user_id=$1",
+                &[&oidc_user],
+            )
+            .await
+            .unwrap();
+        assert_eq!(hashes.len(), 1);
+        assert_ne!(hashes[0].get::<_, String>(0), plaintext_token);
+        assert_eq!(
+            hashes[0].get::<_, String>(0),
+            sha256_hex(plaintext_token.as_bytes())
+        );
+        let columns = client.query(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name IN ('human_oidc_identities','human_sessions')",
+            &[],
+        ).await.unwrap().into_iter().map(|row| row.get::<_, String>(0)).collect::<Vec<_>>();
+        for forbidden in [
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "authorization_code",
+        ] {
+            assert!(!columns.iter().any(|column| column == forbidden));
+        }
+
+        assert_eq!(
+            send_request(
+                app.clone(),
+                Method::POST,
+                "/v1/human/organizations",
+                Some(r#"{"display_name":"OIDC Org"}"#),
+                &[
+                    ("cookie", &session_cookie),
+                    ("origin", "https://app.example")
+                ]
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            send_request(
+                app.clone(),
+                Method::POST,
+                "/v1/human/organizations",
+                Some(r#"{"display_name":"Bad Origin"}"#),
+                &[
+                    ("cookie", &session_cookie),
+                    ("origin", "https://evil.example")
+                ]
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send_request(
+                app.clone(),
+                Method::POST,
+                "/v1/human/organizations",
+                Some(r#"{"display_name":"No Origin"}"#),
+                &[("cookie", &session_cookie)]
+            )
+            .await
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            send_request(
+                app.clone(),
+                Method::GET,
+                "/v1/customer/projects/missing/usage",
+                None,
+                &[("cookie", &session_cookie)]
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let logout = send_request(
+            app.clone(),
+            Method::POST,
+            "/v1/auth/logout",
+            None,
+            &[
+                ("cookie", &session_cookie),
+                ("origin", "https://app.example"),
+            ],
+        )
+        .await;
+        assert_eq!(logout.status(), StatusCode::OK);
+        assert!(set_cookie(&logout, HUMAN_SESSION_COOKIE).contains("Max-Age=0"));
+        // Logout requires a currently valid session. A retry is therefore fail-closed with 401;
+        // it never restores authority and never becomes an internal error.
+        assert_eq!(
+            send_request(
+                app.clone(),
+                Method::POST,
+                "/v1/auth/logout",
+                None,
+                &[
+                    ("cookie", &session_cookie),
+                    ("origin", "https://app.example"),
+                ],
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            send_request(
+                app.clone(),
+                Method::GET,
+                "/v1/auth/me",
+                None,
+                &[("cookie", &session_cookie)]
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        let mut active_cookies = Vec::new();
+        for _ in 0..2 {
+            let (authorization_url, transaction_cookie) = oidc_start(app.clone()).await;
+            let response = oidc_callback(
+                app.clone(),
+                &issuer,
+                &authorization_url,
+                &transaction_cookie,
+                TokenScenario::Valid,
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            active_cookies.push(cookie_pair(&set_cookie(&response, HUMAN_SESSION_COOKIE)));
+        }
+        assert_ne!(active_cookies[0], active_cookies[1]);
+        let active_tokens = active_cookies
+            .iter()
+            .map(|cookie| cookie.split_once('=').unwrap().1.to_string())
+            .collect::<Vec<_>>();
+        let auth_a = db.authorize_human_session(&active_tokens[0]).await.unwrap();
+        let auth_b = db.authorize_human_session(&active_tokens[1]).await.unwrap();
+        let (logout_all_a, logout_all_b) = tokio::join!(
+            db.revoke_all_human_sessions("req_logout_all_concurrent_a", &auth_a),
+            db.revoke_all_human_sessions("req_logout_all_concurrent_b", &auth_b),
+        );
+        assert!(logout_all_a.is_ok());
+        assert!(logout_all_b.is_ok());
+        assert_eq!(logout_all_a.unwrap() + logout_all_b.unwrap(), 2);
+        let active_count = client
+            .query_one(
+                "SELECT count(*) FROM human_sessions WHERE user_id=$1 AND status='active'",
+                &[&oidc_user],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0);
+        assert_eq!(active_count, 0);
+        for cookie in &active_cookies {
+            assert_eq!(
+                send_request(
+                    app.clone(),
+                    Method::GET,
+                    "/v1/auth/me",
+                    None,
+                    &[("cookie", cookie)]
+                )
+                .await
+                .status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+
+        let (authorization_url, transaction_cookie) = oidc_start(app.clone()).await;
+        let response = oidc_callback(
+            app.clone(),
+            &issuer,
+            &authorization_url,
+            &transaction_cookie,
+            TokenScenario::Valid,
+        )
+        .await;
+        let disabled_cookie = cookie_pair(&set_cookie(&response, HUMAN_SESSION_COOKIE));
+        client
+            .execute(
+                "UPDATE users SET status='disabled' WHERE user_id=$1",
+                &[&oidc_user],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            send_request(
+                app,
+                Method::GET,
+                "/v1/auth/me",
+                None,
+                &[("cookie", &disabled_cookie)]
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        db.drop_schema_for_test().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_mock_google_oidc_e2e_failure_matrix_and_replays_fail_closed() {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL").expect("test database URL");
+        let schema = format!("burd_oidc_fail_{}", Uuid::new_v4().simple());
+        let issuer = MockOidcIssuer::start("mock-google-client").await;
+        let mut config = test_config(&url);
+        config.database_schema = Some(schema.clone());
+        config.google_oidc = Some(oidc_config(issuer.issuer_url.clone(), 600));
+        let db = Database::new(url.clone(), Some(schema)).unwrap();
+        db.migrate().await.unwrap();
+        let app = router(Arc::new(AppState::new(config, db.clone())));
+
+        for scenario in [
+            TokenScenario::InvalidPkce,
+            TokenScenario::WrongNonce,
+            TokenScenario::WrongIssuer,
+            TokenScenario::WrongAudience,
+            TokenScenario::UnknownSigningKey,
+            TokenScenario::Expired,
+            TokenScenario::MissingSubject,
+            TokenScenario::EmailUnverified,
+        ] {
+            let (authorization_url, transaction_cookie) = oidc_start(app.clone()).await;
+            let response = oidc_callback(
+                app.clone(),
+                &issuer,
+                &authorization_url,
+                &transaction_cookie,
+                scenario,
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "scenario {scenario:?}"
+            );
+            assert!(set_cookie(&response, OIDC_TRANSACTION_COOKIE).contains("Max-Age=0"));
+        }
+        let client = db.connect().await.unwrap();
+        assert_eq!(
+            client
+                .query_one("SELECT count(*) FROM human_sessions", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+
+        let (authorization_url, transaction_cookie) = oidc_start(app.clone()).await;
+        let issued = issuer.issue_code(&authorization_url, TokenScenario::Valid);
+        let wrong_state = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("code", &issued.code)
+            .append_pair("state", "wrong-state")
+            .finish();
+        let response = send_request(
+            app.clone(),
+            Method::GET,
+            &format!("/v1/auth/google/callback?{wrong_state}"),
+            None,
+            &[("cookie", &transaction_cookie)],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(set_cookie(&response, OIDC_TRANSACTION_COOKIE).contains("Max-Age=0"));
+        let missing_cookie = send_request(
+            app.clone(),
+            Method::GET,
+            &format!(
+                "/v1/auth/google/callback?code={}&state={}",
+                issued.code, issued.state
+            ),
+            None,
+            &[],
+        )
+        .await;
+        assert_eq!(missing_cookie.status(), StatusCode::UNAUTHORIZED);
+
+        let (authorization_url, transaction_cookie) = oidc_start(app.clone()).await;
+        let issued = issuer.issue_code(&authorization_url, TokenScenario::Valid);
+        let callback_uri = format!(
+            "/v1/auth/google/callback?code={}&state={}",
+            issued.code, issued.state
+        );
+        let first = send_request(
+            app.clone(),
+            Method::GET,
+            &callback_uri,
+            None,
+            &[("cookie", &transaction_cookie)],
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::SEE_OTHER);
+        let sessions_after_first = client
+            .query_one("SELECT count(*) FROM human_sessions", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0);
+        let code_replay = send_request(
+            app.clone(),
+            Method::GET,
+            &callback_uri,
+            None,
+            &[("cookie", &transaction_cookie)],
+        )
+        .await;
+        assert_eq!(code_replay.status(), StatusCode::UNAUTHORIZED);
+        let callback_replay =
+            send_request(app.clone(), Method::GET, &callback_uri, None, &[]).await;
+        assert_eq!(callback_replay.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            client
+                .query_one("SELECT count(*) FROM human_sessions", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            sessions_after_first
+        );
+
+        let expired_schema = format!("burd_oidc_expired_{}", Uuid::new_v4().simple());
+        let mut expired_config = test_config(&url);
+        expired_config.database_schema = Some(expired_schema.clone());
+        expired_config.google_oidc = Some(oidc_config(issuer.issuer_url.clone(), 1));
+        let expired_db = Database::new(url, Some(expired_schema)).unwrap();
+        expired_db.migrate().await.unwrap();
+        let expired_app = router(Arc::new(AppState::new(expired_config, expired_db.clone())));
+        let (authorization_url, transaction_cookie) = oidc_start(expired_app.clone()).await;
+        let issued = issuer.issue_code(&authorization_url, TokenScenario::Valid);
+        tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+        let response = send_request(
+            expired_app,
+            Method::GET,
+            &format!(
+                "/v1/auth/google/callback?code={}&state={}",
+                issued.code, issued.state
+            ),
+            None,
+            &[("cookie", &transaction_cookie)],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(set_cookie(&response, OIDC_TRANSACTION_COOKIE).contains("Max-Age=0"));
+        assert_eq!(
+            expired_db
+                .connect()
+                .await
+                .unwrap()
+                .query_one("SELECT count(*) FROM human_sessions", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+        expired_db.drop_schema_for_test().await.unwrap();
+        db.drop_schema_for_test().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn postgres_concurrent_google_jit_creates_one_identity_user_and_two_sessions() {
+        let url = std::env::var("BURD_CONTROL_TEST_DATABASE_URL").expect("test database URL");
+        let schema = format!("burd_oidc_race_{}", Uuid::new_v4().simple());
+        let db = Database::new(url, Some(schema)).unwrap();
+        db.migrate().await.unwrap();
+        let identity = crate::human_auth::VerifiedGoogleIdentity {
+            subject: "concurrent-google-sub".into(),
+            email: Some("race@example.com".into()),
+            email_verified: true,
+        };
+        let (first, second) = tokio::join!(
+            db.create_google_human_session("req_race_1", &identity, 3600),
+            db.create_google_human_session("req_race_2", &identity, 3600),
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(first.auth.user_id, second.auth.user_id);
+        assert_ne!(first.token, second.token);
+        let client = db.connect().await.unwrap();
+        assert_eq!(client.query_one("SELECT count(*) FROM human_oidc_identities WHERE provider='google' AND provider_subject='concurrent-google-sub'", &[]).await.unwrap().get::<_, i64>(0), 1);
+        assert_eq!(client.query_one("SELECT count(DISTINCT user_id) FROM human_oidc_identities WHERE provider='google' AND provider_subject='concurrent-google-sub'", &[]).await.unwrap().get::<_, i64>(0), 1);
+        assert_eq!(
+            client
+                .query_one(
+                    "SELECT count(*) FROM human_sessions WHERE user_id=$1",
+                    &[&first.auth.user_id]
+                )
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            2
+        );
+        db.drop_schema_for_test().await.unwrap();
     }
 
     #[test]
